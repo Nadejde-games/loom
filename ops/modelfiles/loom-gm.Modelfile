@@ -1,0 +1,16 @@
+# Game-master / world-manipulator model variant.
+#
+# Same weights as qwen3.5:27b, but with a large context window baked in so the
+# GM can hold world state, history, and many entities at once — INDEPENDENT of
+# the global OLLAMA_CONTEXT_LENGTH (which is the small, fast default for NPC
+# dialogue). Ollama's OpenAI /v1 endpoint ignores per-request num_ctx, so the
+# only clean way to give one role a bigger window is a model variant like this.
+#
+# Build:  ollama create loom-gm -f ops/modelfiles/loom-gm.Modelfile
+# Use:    point the GM provider at model "loom-gm" (Phase 3).
+#
+# VRAM note: context is expensive (KV cache grows with num_ctx). 32K on a 27B
+# takes a large slice of one 48GB card. Lower num_ctx or set
+# OLLAMA_KV_CACHE_TYPE=q8_0 on the service if it gets tight.
+FROM qwen3.5:27b
+PARAMETER num_ctx 32768

@@ -1,0 +1,37 @@
+{
+  "start_location": "cave_mouth",
+  "locations": [
+    {
+      "id": "cave_mouth",
+      "name": "The Cave Mouth",
+      "description": "A jagged opening in the hillside breathes cold air. Moss clings to wet stone, and somewhere within, water drips in no particular rhythm. A thin trail leads out to the north; the dark slopes down deeper in.",
+      "exits": { "north": "hill_path", "down": "cave_interior" }
+    },
+    {
+      "id": "hill_path",
+      "name": "The Hill Path",
+      "description": "A muddy path winds along the hillside under a bruised evening sky. The cave mouth yawns to the south.",
+      "exits": { "south": "cave_mouth" }
+    },
+    {
+      "id": "cave_interior",
+      "name": "Inside the Cave",
+      "description": "Darkness, and the smell of old smoke. A dead fire pit sits at the center, ringed by blackened stones. The only way out is up.",
+      "exits": { "up": "cave_mouth" }
+    }
+  ],
+  "npcs": [
+    {
+      "id": "hermit",
+      "name": "Odd the Hermit",
+      "description": "A weathered figure wrapped in furs, eyes bright and wary.",
+      "location": "cave_mouth",
+      "persona": {
+        "backstory": "You have lived alone at this cave for thirty winters, since the war took your village. You trust slowly and you remember everything.",
+        "traits": ["wary", "dryly humorous", "observant", "lonely but proud"],
+        "goals": ["protect your solitude", "judge whether this stranger is a threat", "hint that you know these hills better than you let on"],
+        "voice": "terse, old-fashioned, fond of short proverbs"
+      }
+    }
+  ]
+}

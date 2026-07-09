@@ -1,0 +1,19 @@
+[project]
+name = "loom-engine"
+version = "0.0.1"
+description = "A framework for AI-driven, text-first, server-client game worlds."
+requires-python = ">=3.11"
+dependencies = []
+
+# The core is dependency-free and runs offline via the FakeProvider.
+# Install this extra to enable real Claude-driven NPCs:
+#   pip install -e ".[anthropic]"
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["loom", "loom.world", "loom.ai"]
