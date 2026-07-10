@@ -30,6 +30,22 @@ class Turn:
     actions: list = field(default_factory=list)   # list[ActionIntent]
 
 
+@dataclass
+class Scene:
+    """A read-only snapshot of an NPC's surroundings, handed in by the engine.
+
+    The mind must never read the ``World`` itself — that is the engine's layer.
+    Instead the engine composes this from the world and passes it in, so the NPC
+    can perceive where it is, where it can go, and who else is present, and can
+    therefore choose actions like ``move`` against real exits rather than
+    guessing. Plain data: names and strings, no world objects.
+    """
+    location: str = ""
+    description: str = ""
+    exits: list = field(default_factory=list)     # exit directions it can take
+    others: list = field(default_factory=list)    # names of other entities here
+
+
 _FENCE_RE = re.compile(r"^```(?:json)?[ \t]*\r?\n?|\r?\n?```$",
                        re.IGNORECASE | re.MULTILINE)
 
@@ -89,7 +105,7 @@ class NpcMind:
         self.registry = registry
 
     # ---- prompt ----
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, scene: Scene | None = None) -> str:
         p = self.npc.persona or {}
         parts = [f"You are {self.npc.name}, a character in a living text world."]
         if p.get("backstory"):
@@ -103,6 +119,8 @@ class NpcMind:
         mems = self.memory.recent()
         if mems:
             parts.append("Recent memories:\n" + "\n".join(f"- {m.text}" for m in mems))
+        if scene is not None:
+            parts.append(self._scene_description(scene))
         parts.append("Stay in character. Never break character or mention being an AI.")
         if self.registry is not None:
             parts.append(self._action_instructions())
@@ -110,6 +128,24 @@ class NpcMind:
             parts.append("Reply with a single short spoken line, optionally a "
                          "brief physical action.")
         return "\n\n".join(parts)
+
+    def _scene_description(self, scene: Scene) -> str:
+        """Render the engine's perception snapshot as prompt lines the NPC reads
+        to ground its choices — crucially, the exits it may actually take."""
+        lines = ["Your surroundings right now:"]
+        if scene.location:
+            lines.append(f"- Place: {scene.location}")
+        if scene.description:
+            lines.append(f"- {scene.description}")
+        if scene.exits:
+            lines.append("- Exits you can take: " + ", ".join(scene.exits))
+        else:
+            lines.append("- There are no exits you can take from here.")
+        if scene.others:
+            lines.append("- Also here with you: " + ", ".join(scene.others))
+        else:
+            lines.append("- You are alone here.")
+        return "\n".join(lines)
 
     def _action_instructions(self) -> str:
         return (
@@ -128,10 +164,15 @@ class NpcMind:
         )
 
     # ---- turn ----
-    async def converse(self, speaker_name: str, utterance: str) -> Turn:
-        """Hear an utterance; return a validated Turn (speech + safe actions)."""
+    async def converse(self, speaker_name: str, utterance: str,
+                       scene: Scene | None = None) -> Turn:
+        """Hear an utterance; return a validated Turn (speech + safe actions).
+
+        ``scene`` is the engine's read-only snapshot of the NPC's surroundings;
+        when given, the NPC perceives its exits and company and can act on them.
+        """
         self.memory.add(f'{speaker_name} said to me: "{utterance}"', kind="speech")
-        system = self._system_prompt()
+        system = self._system_prompt(scene)
         messages = [{"role": "user", "content": f'{speaker_name} says: "{utterance}"'}]
 
         raw = await self.provider.complete(system, messages)

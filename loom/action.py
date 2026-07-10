@@ -58,6 +58,11 @@ class ActionResult:
     """The observable outcome of an executed action."""
     narration: str = ""               # room-visible line, e.g. "Odd nods slowly"
     actor_memory: str | None = None   # what the actor remembers having done
+    # Room-targeted lines for actions that touch more than the actor's current
+    # room — a list of (location_id, text). ``move`` uses this to narrate a
+    # departure to the room left behind and an arrival to the room entered.
+    # Generalises to any number of rooms without further changes to the seam.
+    broadcasts: list = field(default_factory=list)
 
 
 Handler = Callable[[ActionContext], ActionResult]
@@ -177,6 +182,44 @@ def _emote(ctx: ActionContext) -> ActionResult:
     return ActionResult(narration=f"{name} {text}", actor_memory=f"I {text}.")
 
 
+def _move(ctx: ActionContext) -> ActionResult:
+    """Walk the actor through one of its current room's exits.
+
+    The first action that mutates real world state and speaks to *two* rooms —
+    a departure line to the room left behind and an arrival line to the room
+    entered. The schema only guaranteed ``direction`` is a string; this handler
+    is the world-aware gate that resolves it against the actor's actual exits,
+    raising ``ActionError`` (which the engine drops silently) when it doesn't
+    fit. Nothing here trusts the direction until the world confirms it.
+    """
+    direction = str(ctx.args["direction"]).strip().lower()
+    world, actor = ctx.world, ctx.actor
+    aid = getattr(actor, "id", "actor")
+    origin_id = getattr(actor, "location_id", None)
+    origin = world.locations.get(origin_id) if origin_id else None
+    if origin is None or direction not in getattr(origin, "exits", {}):
+        raise ActionError(f'{aid} has no exit "{direction}" from {origin_id!r}')
+    dest_id = origin.exits[direction]
+    dest = world.locations.get(dest_id)
+    if dest is None:
+        raise ActionError(f'exit "{direction}" leads nowhere ({dest_id!r})')
+    if not world.move(aid, dest_id):
+        raise ActionError(f'{aid} could not move to {dest_id!r}')
+    name = getattr(actor, "name", "Someone")
+    # Arrival direction: the destination's own exit that points back to origin,
+    # so asymmetric / one-way worlds narrate correctly rather than assuming a
+    # fixed opposite. None ⇒ a one-way passage, so we narrate a plain arrival.
+    back = next((d for d, t in dest.exits.items() if t == origin_id), None)
+    arrival = f"{name} arrives from the {back}." if back else f"{name} arrives."
+    return ActionResult(
+        actor_memory=f"I left {origin.name} and went {direction} to {dest.name}.",
+        broadcasts=[
+            (origin_id, f"{name} leaves, heading {direction}."),
+            (dest_id, arrival),
+        ],
+    )
+
+
 def default_registry() -> ActionRegistry:
     """A registry preloaded with the built-in actions every world gets."""
     reg = ActionRegistry()
@@ -188,5 +231,15 @@ def default_registry() -> ActionRegistry:
         params={"text": Param("str", required=True,
                               desc="the gesture as a verb phrase, no name")},
         handler=_emote,
+    ))
+    reg.register(ActionSpec(
+        name="move",
+        description=('walk to an adjacent place through one of the exits in your '
+                     'surroundings; give the direction only, e.g. "north" or '
+                     '"down". Use only an exit you can currently see.'),
+        params={"direction": Param("str", required=True,
+                                   desc="a single exit direction from your "
+                                        "current location, e.g. north")},
+        handler=_move,
     ))
     return reg

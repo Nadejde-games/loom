@@ -7,7 +7,7 @@ import unittest
 from loom.world.entity import Npc
 from loom.action import default_registry
 from loom.ai import FakeProvider
-from loom.ai.mind import NpcMind
+from loom.ai.mind import NpcMind, Scene
 
 
 def run(coro):
@@ -117,6 +117,36 @@ class FakeProviderTests(unittest.TestCase):
         self.assertEqual([a.name for a in turn.actions], ["emote"])
 
     def test_speech_only_when_no_trigger(self):
+        turn = run(mind(FakeProvider()).converse("W", "hello there"))
+        self.assertTrue(turn.speech)
+        self.assertEqual(turn.actions, [])
+
+
+class SceneTests(unittest.TestCase):
+    def test_scene_renders_into_prompt(self):
+        m = mind(FakeProvider())
+        prompt = m._system_prompt(Scene(location="Room A",
+                                        description="A bare room.",
+                                        exits=["north", "down"],
+                                        others=["Wanderer-1"]))
+        self.assertIn("Room A", prompt)
+        self.assertIn("Exits you can take: north, down", prompt)
+        self.assertIn("Also here with you: Wanderer-1", prompt)
+
+    def test_no_exits_is_stated(self):
+        m = mind(FakeProvider())
+        prompt = m._system_prompt(Scene(location="Cell", exits=[]))
+        self.assertIn("no exits you can take", prompt)
+
+    def test_perceived_exit_drives_move_action(self):
+        # With a real exit in view and a departure cue, the fake proposes move
+        # bound to that exit — the perception → action path, offline.
+        turn = run(mind(FakeProvider()).converse(
+            "W", "please leave", scene=Scene(location="Room A", exits=["north"])))
+        self.assertEqual([a.name for a in turn.actions], ["move"])
+        self.assertEqual(turn.actions[0].args, {"direction": "north"})
+
+    def test_no_scene_stays_backward_compatible(self):
         turn = run(mind(FakeProvider()).converse("W", "hello there"))
         self.assertTrue(turn.speech)
         self.assertEqual(turn.actions, [])

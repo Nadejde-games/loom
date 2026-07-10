@@ -121,5 +121,43 @@ be **choice on the NPC's side** whether (and when) to respond.
 
 ---
 
-*Add new observations below with an ID (`B5…`), a date, and the same
+## B5 — The model under-selects world-mutating actions (move) vs. emote
+*Noticed 2026-07-10.*
+
+**Want:** when an NPC's *intent* is to act on the world (e.g. a guide asked to
+lead should **walk**), it should reliably emit that action — not settle for a
+cosmetic `emote` ("gestures toward the trail") that changes nothing.
+
+**Observed:** with `qwen3.5:35b-a3b`, a willing guide (Wren) produced enthusiastic
+lead-the-way *speech* every time but emitted the `move` action only on a fraction
+of turns (≈1–3 in 5, high run-to-run variance), frequently substituting or pairing
+an `emote`. A stubborn NPC (Odd) never moved — correct for *him*, but the willing
+one should. The split tracks the model's action-selection bias and sampling
+temperature, **not** the persona wording (tuning the goal text moved the rate
+around within the noise). So this is a framework lever, not a content fix.
+
+**Where it lands:** the AI layer — `mind._action_instructions` (how actions are
+described/weighted) and the provider's sampling for the action decision. Related
+to the salience/intent gate in B4.
+
+**Considerations for later:**
+- **Lower temperature for the action decision** (or a two-pass turn: a cheap,
+  low-temp "should I act, and how?" then the in-character speech). Overlaps B4's
+  salience gate — the same gate that decides *whether* to react can decide
+  *whether an action is warranted*.
+- **Rebalance the catalogue prompt:** `emote`'s invitation may over-attract;
+  make world-mutating actions first-class, and/or add a short few-shot example
+  that includes a `move` so the shape is primed (careful: negative phrasing like
+  "don't just point" backfires — it primes "point").
+- **Pairing is often good, not a bug:** the guide that *both* gestured and moved
+  ("gestures toward the trail" + `move north`) read best. The goal is reliable
+  *inclusion* of the world action, not suppression of the flavor emote — which
+  also motivates B2 (fuse the two into one rendered line).
+
+**Related:** the action seam (Phase 2), B4 (choice-to-react / salience gate),
+B2 (fused rendering), Phase 3 (a director could also arbitrate/insist).
+
+---
+
+*Add new observations below with an ID (`B6…`), a date, and the same
 what / where-it-lands / considerations shape.*

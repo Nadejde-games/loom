@@ -7,7 +7,7 @@ import asyncio
 from .session import Session
 from .world import World, Player, Npc
 from .action import ActionRegistry, ActionContext, default_registry
-from .ai import NpcMind, LLMProvider, ProviderError
+from .ai import NpcMind, LLMProvider, ProviderError, Scene
 
 
 class Engine:
@@ -111,8 +111,9 @@ class Engine:
                                  speaker_name: str, words: str) -> None:
         # Out-of-band "thinking" beat covers the inference latency.
         await self._broadcast(location_id, "system", f"{npc.name} is considering your words…")
+        scene = self._scene_for(npc, location_id)
         try:
-            turn = await mind.converse(speaker_name, words)
+            turn = await mind.converse(speaker_name, words, scene=scene)
         except ProviderError as exc:
             print(f"[loom] NPC {npc.id} reply failed: {exc}")
             await self._broadcast(location_id, "text", f"{npc.name} frowns, at a loss for words.")
@@ -127,6 +128,16 @@ class Engine:
         # registry; the engine executes and narrates the outcome to the room.
         for intent in turn.actions:
             await self._perform(location_id, npc, mind, intent)
+
+    def _scene_for(self, actor, location_id: str) -> Scene:
+        """Compose the read-only perception snapshot the mind gets — the NPC's
+        room, its exits, and the other entities present it can see and address."""
+        loc = self.world.locations.get(location_id)
+        if loc is None:
+            return Scene()
+        others = [e.name for e in self.world.occupants(location_id, exclude=actor.id)]
+        return Scene(location=loc.name, description=loc.description,
+                     exits=list(loc.exits.keys()), others=others)
 
     async def _perform(self, location_id: str, actor, mind: NpcMind, intent) -> None:
         spec = self.actions.get(intent.name)
@@ -145,6 +156,12 @@ class Engine:
             # relocated it; emote leaves it put.
             where = getattr(actor, "location_id", None) or location_id
             await self._broadcast(where, "text", result.narration)
+        # Room-targeted lines: an action that touches more than one room (move's
+        # departure + arrival) names each room explicitly. Correct for multiplayer
+        # — each room hears only its own line.
+        for target, line in result.broadcasts:
+            if target and line:
+                await self._broadcast(target, "text", line)
 
     async def _broadcast(self, location_id: str, kind: str, text: str) -> None:
         """Send to every connected player currently in a location."""

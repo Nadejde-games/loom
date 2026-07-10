@@ -88,7 +88,7 @@ Remaining in this phase:
   instead of JSON envelopes (graceful degradation, GMCP-style).
 - Deferred to when it pays: Anthropic path stays available for comparison.
 
-### Phase 2 — The action seam  ▶ in progress (emote slice landed 2026-07-10)
+### Phase 2 — The action seam  ▶ in progress (emote + move slices landed 2026-07-10)
 Give NPCs (and later the GM) the ability to *act*, not just speak, via
 schema-validated actions. A validation + retry layer turns model output into
 safe game actions. This is the interface the game-master and loot engine both
@@ -105,25 +105,48 @@ is asked is swappable like the provider.
 Built:
 - `loom/action.py` — game-agnostic `ActionRegistry`: an action is a name +
   description + tiny param schema (`str|int|float|bool|enum`, required/optional)
-  + a handler. Dependency-free validation. `default_registry()` ships `emote`.
-- `loom/ai/mind.py` — `NpcMind.converse()` returns a validated `Turn` (speech +
-  `ActionIntent`s). Tolerant JSON extraction (bare / fenced / prose-wrapped /
-  **trailing-junk** — Qwen3.5 sometimes appends a stray `}` or sends `args` as a
-  bare list); one bounded **retry** feeding the exact validation error back;
-  degrades to pure speech on total parse failure. Never mutates the world.
-- `loom/engine.py` — the mind proposes, the engine disposes: it executes only
-  validated intents via the registry handler, writes the actor's memory, and
-  **broadcasts** narration to everyone in the room (`_broadcast_to_location`;
-  correct for multiplayer).
-- `tests/` — 32 offline tests (validation, parse-tolerance incl. the live
-  malformations, retry recovery, engine end-to-end emote). No GPU needed.
+  + a handler. Dependency-free validation. `default_registry()` ships `emote`
+  and `move`. `ActionResult` grew a `broadcasts` list — `(location_id, text)`
+  lines for actions that touch more than the actor's room (move's departure +
+  arrival), generalising to N rooms without another seam change.
+- `loom/ai/mind.py` — `NpcMind.converse(scene=…)` returns a validated `Turn`
+  (speech + `ActionIntent`s). Tolerant JSON extraction (bare / fenced /
+  prose-wrapped / **trailing-junk** — Qwen3.5 sometimes appends a stray `}` or
+  sends `args` as a bare list); one bounded **retry** feeding the exact
+  validation error back; degrades to pure speech on total parse failure. Never
+  mutates the world. `Scene` is a read-only perception snapshot the engine hands
+  in (place, exits, others present) so the NPC can choose real exits — the mind
+  still never reads `World`.
+- `loom/engine.py` — the mind proposes, the engine disposes: it composes a
+  `Scene` from the world (`_scene_for`), executes only validated intents via the
+  registry handler, writes the actor's memory, and **broadcasts** narration —
+  including per-room `broadcasts` for a move — to everyone in the affected rooms
+  (correct for multiplayer: each room hears only its own line).
+- The `move` action: schema is `direction: str` (exit vocabulary is world-data,
+  never hardcoded); the handler is the world-aware gate — resolves the direction
+  against the actor's *actual* exits, mutates via `World.move`, reads the
+  arrival direction back from the destination's own exits (asymmetric/one-way
+  safe), and raises `ActionError` (silently dropped) on a bad direction.
+- `tests/` — 48 offline tests (validation, parse-tolerance incl. the live
+  malformations, retry recovery, engine end-to-end emote **and** a two-room
+  move, perception rendering). No GPU needed.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
-  emote ~0.6 s warm, and the emote broadcasts over the socket end-to-end.
+  emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
+  compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
+  A stubborn persona correctly *declines* to move (chooses `emote`): the NPC's
+  choice is real, foreshadowing B4.
+- Demo content (`game/world/world.json`): a second NPC, **Wren the Wayfinder**, a
+  cheerful guide, now shares the start room with Odd — a willing foil to his
+  refusal, so one `say` shows both minds and gives `move` a character who will
+  actually walk. The two-NPC room is itself the live case for B1 (`say to X`) and
+  B4 (choice-to-react): today *both* answer every `say`. It also surfaced **B5**
+  — the model under-selects the world-mutating `move` in favour of `emote`
+  (persona wording can't fix it; it's a sampling/prompt-weight lever).
 
 Remaining actions to build out on this seam (each ~a handler + schema + a world
-capability where needed): NPC-initiated **move** (departure/arrival narration to
-two rooms), **give_item** (needs an item/inventory world-model first — near
-Phase 4), **offer_quest**, **remember_fact**. Also: let *players* emote/act.
+capability where needed): **give_item** (needs an item/inventory world-model
+first — near Phase 4), **offer_quest**, **remember_fact**. Also: let *players*
+emote/act (the player-side mirror of the seam — see B1).
 
 ### Phase 3 — Game-master director  ○
 A world-observing "director" agent on a slow cadence (hangs off the game loop),

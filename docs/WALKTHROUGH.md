@@ -168,7 +168,10 @@ Plain data, no AI, no networking. These are the nouns an author edits.
 - `content.py` — `load_world` (`loom/content.py:23`) reads `world.json` into a
   `World`. **This is design commitment #2 made real:** the world is editable
   data, not code. Open `game/world/world.json` alongside it and match the fields
-  to the parser — the cave, the exits, and "Odd the Hermit" with his persona.
+  to the parser — the cave, the exits, and its two NPCs: "Odd the Hermit"
+  (wary, command-averse — he refuses to be led) and "Wren the Wayfinder" (a
+  cheerful guide who gladly walks you around). They share the start room so one
+  `say` shows the contrast, and Wren is what exercises the `move` action live.
 
 ---
 
@@ -378,7 +381,7 @@ loom/                     the reusable, game-agnostic framework
   server.py               async TCP server; drives any Handler
   loop.py                 continuous tick loop (idle hook for ambient/GM)
   engine.py               commands, session↔player binding, NPC dispatch, action execution
-  action.py               ActionRegistry: schema + validation + handlers (the seam)
+  action.py               ActionRegistry: schema + validation + handlers (emote, move)
   content.py              load a World from editable JSON
   world/
     entity.py             Entity → Character → Npc / Player (dataclasses)
@@ -387,11 +390,11 @@ loom/                     the reusable, game-agnostic framework
   ai/
     provider.py           LLMProvider + Fake / OpenAI-compat / Ollama / Anthropic
     memory.py             MemoryStream (append + recency; the substrate)
-    mind.py               NpcMind: persona + memory + the validated turn pipeline
+    mind.py               NpcMind: persona + memory + turn pipeline + Scene (perception)
 
 game/                     the first world built on Loom (content only)
   main.py                 entry point: assemble + run server & loop
-  world/world.json        the cave + Odd the Hermit, as editable data
+  world/world.json        the cave + its NPCs (Odd the Hermit, Wren the Wayfinder)
 
 client/
   terminal.py             minimal reference client; knows only the protocol

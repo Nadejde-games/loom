@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from loom.ai import get_default_provider, NpcMind
+from loom.ai import get_default_provider, NpcMind, Scene
 from loom.action import default_registry
 from loom.content import load_world
 
@@ -36,9 +36,19 @@ async def main() -> None:
     hermit = world.entities["hermit"]
     mind = NpcMind(hermit, provider, registry=default_registry())
 
+    # Hand the mind the same perception snapshot the engine builds, so the model
+    # can see its exits and choose to move.
+    loc = world.locations.get(hermit.location_id)
+    scene = Scene(location=loc.name, description=loc.description,
+                  exits=list(loc.exits.keys()),
+                  others=[e.name for e in world.occupants(loc.id, exclude=hermit.id)]
+                  ) if loc else None
+    if scene:
+        print(f"  (at {scene.location}; exits: {', '.join(scene.exits) or 'none'})")
+
     print(f"\n> Wanderer: {PROMPT}\n")
     t0 = time.time()
-    turn = await mind.converse("Wanderer", PROMPT)
+    turn = await mind.converse("Wanderer", PROMPT, scene=scene)
     dt = time.time() - t0
 
     print(f"{hermit.name}: {turn.speech or '(no speech)'}")

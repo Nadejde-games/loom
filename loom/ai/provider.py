@@ -40,6 +40,21 @@ def _strip_think(text: str) -> str:
     return _THINK_RE.sub("", text).strip()
 
 
+# FakeProvider move detection: whole-word cues that invite departure, and the
+# "Exits you can take: …" line the engine puts in the scene, so the fake picks a
+# real exit rather than guessing one the handler would reject.
+_MOVE_RE = re.compile(r"\b(go|leave|away|follow|flee|wander|"
+                      r"north|south|east|west|up|down)\b", re.IGNORECASE)
+_EXITS_RE = re.compile(r"Exits you can take:\s*(.+)")
+
+
+def _perceived_exits(system: str) -> list[str]:
+    m = _EXITS_RE.search(system)
+    if not m:
+        return []
+    return [d.strip() for d in m.group(1).split(",") if d.strip()]
+
+
 class FakeProvider:
     """A stand-in that fabricates persona-flavoured replies with no network.
 
@@ -81,6 +96,13 @@ class FakeProvider:
                                      ("dance", "bow", "nod", "gesture", "wave")):
             actions.append({"name": "emote",
                             "args": {"text": "regards you with a slow, deliberate air"}})
+        # Move when the action is offered, the utterance invites departure, and
+        # the perceived surroundings list a real exit — enough to drive move's
+        # two-room broadcast offline and in tests.
+        if "move" in system and _MOVE_RE.search(u):
+            exits = _perceived_exits(system)
+            if exits:
+                actions.append({"name": "move", "args": {"direction": exits[0]}})
         return json.dumps({"speech": speech, "actions": actions})
 
 
