@@ -1,23 +1,31 @@
 """Ping the active LLM provider with one NPC turn — a live diagnostic.
 
+Exercises the full Phase-2 path: the mind is given the action registry, so the
+model must return the JSON turn envelope, which is parsed, validated, and shown
+here as speech + any validated actions.
+
 The provider is chosen from the environment (see loom.ai.get_default_provider):
 
   python scripts/try_provider.py                                   # FakeProvider
-  LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3:1.7b \\
+  LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b \\
       python scripts/try_provider.py                               # local Ollama
   ANTHROPIC_API_KEY=... LOOM_PROVIDER=anthropic \\
       python scripts/try_provider.py                               # Claude
 
-Prints the provider name, the reply, and the wall-clock latency.
+Prints the provider name, the parsed turn, and the wall-clock latency.
 """
 from __future__ import annotations
 import asyncio
 import os
 import time
 from loom.ai import get_default_provider, NpcMind
+from loom.action import default_registry
 from loom.content import load_world
 
 WORLD = os.path.join(os.path.dirname(__file__), "..", "game", "world", "world.json")
+PROMPT = os.environ.get(
+    "LOOM_PROMPT",
+    "Well met, old one. Greet me properly, and show me you mean no harm.")
 
 
 async def main() -> None:
@@ -26,14 +34,18 @@ async def main() -> None:
 
     world, _ = load_world(WORLD)
     hermit = world.entities["hermit"]
-    mind = NpcMind(hermit, provider)
+    mind = NpcMind(hermit, provider, registry=default_registry())
 
-    prompt = "Hello there, old one. What is this place, and who are you?"
-    print(f"\n> Wanderer: {prompt}\n")
+    print(f"\n> Wanderer: {PROMPT}\n")
     t0 = time.time()
-    reply = await mind.hear_and_respond("Wanderer", prompt)
+    turn = await mind.converse("Wanderer", PROMPT)
     dt = time.time() - t0
-    print(f"{hermit.name}: {reply}")
+
+    print(f"{hermit.name}: {turn.speech or '(no speech)'}")
+    for intent in turn.actions:
+        print(f"  [action] {intent.name} {intent.args}")
+    if not turn.actions:
+        print("  [action] (none)")
     print(f"\n({dt:.1f}s)")
 
 

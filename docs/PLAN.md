@@ -1,7 +1,7 @@
 # Project plan — Loom engine & the forever game
 
 Living document. The reference for where we are and where we're going.
-Last updated: 2026-07-09.
+Last updated: 2026-07-10.
 
 ## Vision
 
@@ -80,18 +80,50 @@ Remaining in this phase:
   (room commands respond instantly while an NPC "considers your words…") — and a
   provider outage degrades to a stock in-character line, never crashing the
   connection. Provider already had timeouts + retries on 429/503/529.
-- **Service tuning** authored at `ops/ollama.service.d/override.conf`
-  (NUM_PARALLEL / CONTEXT_LENGTH / MAX_LOADED_MODELS / KEEP_ALIVE / FLASH_ATTENTION)
-  — awaiting a sudo `systemctl` install (no passwordless sudo on this box).
+- ✓ **Service tuning** installed (2026-07-09) from `ops/ollama.service.d/override.conf`
+  (NUM_PARALLEL / CONTEXT_LENGTH / MAX_LOADED_MODELS / KEEP_ALIVE / FLASH_ATTENTION);
+  verified default ctx 8192, keep-alive forever. (No passwordless sudo — the user
+  ran the install.)
 - Optional: a server "plain-text mode" so a bare telnet/nc client gets clean prose
   instead of JSON envelopes (graceful degradation, GMCP-style).
 - Deferred to when it pays: Anthropic path stays available for comparison.
 
-### Phase 2 — The action seam  ▶ (recommended next structural step)
+### Phase 2 — The action seam  ▶ in progress (emote slice landed 2026-07-10)
 Give NPCs (and later the GM) the ability to *act*, not just speak, via
-schema-validated tool-calls: move, give item, offer quest, emote, remember-fact.
-A validation + retry layer turns model output into safe game actions. This is
-the interface the game-master and loot engine both build on.
+schema-validated actions. A validation + retry layer turns model output into
+safe game actions. This is the interface the game-master and loot engine both
+build on.
+
+Design (signed off 2026-07-10): **structured JSON envelope**, not native
+OpenAI tool-calling. A turn is one JSON object `{"speech": ..., "actions":[...]}`;
+chosen because it keeps `LLMProvider` a plain `complete()->str` (no per-backend
+tool-call fidelity dependence), lets `FakeProvider` and the whole test suite run
+offline, and is one round trip. Native tools can graduate later *behind the same
+registry* — the registry (schemas + handlers) is the durable part, how the model
+is asked is swappable like the provider.
+
+Built:
+- `loom/action.py` — game-agnostic `ActionRegistry`: an action is a name +
+  description + tiny param schema (`str|int|float|bool|enum`, required/optional)
+  + a handler. Dependency-free validation. `default_registry()` ships `emote`.
+- `loom/ai/mind.py` — `NpcMind.converse()` returns a validated `Turn` (speech +
+  `ActionIntent`s). Tolerant JSON extraction (bare / fenced / prose-wrapped /
+  **trailing-junk** — Qwen3.5 sometimes appends a stray `}` or sends `args` as a
+  bare list); one bounded **retry** feeding the exact validation error back;
+  degrades to pure speech on total parse failure. Never mutates the world.
+- `loom/engine.py` — the mind proposes, the engine disposes: it executes only
+  validated intents via the registry handler, writes the actor's memory, and
+  **broadcasts** narration to everyone in the room (`_broadcast_to_location`;
+  correct for multiplayer).
+- `tests/` — 32 offline tests (validation, parse-tolerance incl. the live
+  malformations, retry recovery, engine end-to-end emote). No GPU needed.
+- Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
+  emote ~0.6 s warm, and the emote broadcasts over the socket end-to-end.
+
+Remaining actions to build out on this seam (each ~a handler + schema + a world
+capability where needed): NPC-initiated **move** (departure/arrival narration to
+two rooms), **give_item** (needs an item/inventory world-model first — near
+Phase 4), **offer_quest**, **remember_fact**. Also: let *players* emote/act.
 
 ### Phase 3 — Game-master director  ○
 A world-observing "director" agent on a slow cadence (hangs off the game loop),
@@ -125,14 +157,20 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 Tests alongside each phase · schema/versioning for save data · cost & latency
 budgets for AI calls · keeping `loom/` free of game-specific content.
 
+Unscheduled improvements noticed during review live in `docs/BACKLOG.md`
+(richer command grammar · fused speech+action lines · rich text formatting ·
+NPC choice-to-react). Promote them into a phase with a real design when the
+moment is right.
+
 ## How to run (current)
 With the venv active (`source .venv/bin/activate`), `PYTHONPATH` is not needed:
 ```
 Server:     python game/main.py
 Client:     python client/terminal.py
+Unit tests: python -m unittest discover -s tests    (offline, no GPU)
 Smoke test: python scripts/smoke.py      (server must be running)
 Wire demo:  python scripts/wire_demo.py  (self-contained)
-Provider ping: python scripts/try_provider.py
+Provider ping: python scripts/try_provider.py   (shows speech + validated actions)
 ```
 
 ### Choosing the AI provider (env)

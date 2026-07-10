@@ -62,13 +62,26 @@ class FakeProvider:
                 break
         u = utterance.lower()
         if any(g in u for g in ("hello", "hi ", "hi.", "greet", "hey", "well met")):
-            return f'{who} inclines their head. "Well met. Few wander this far."'
-        if "?" in utterance:
-            return f'{who} considers the question. "That is not a thing I answer lightly."'
-        if any(b in u for b in ("bye", "farewell", "leave", "goodbye")):
-            return f'{who} raises a hand. "Go carefully, then."'
-        return (f'{who} listens, then answers slowly. '
-                f'"There is more to that than you know."')
+            speech = f'{who} inclines their head. "Well met. Few wander this far."'
+        elif "?" in utterance:
+            speech = f'{who} considers the question. "That is not a thing I answer lightly."'
+        elif any(b in u for b in ("bye", "farewell", "leave", "goodbye")):
+            speech = f'{who} raises a hand. "Go carefully, then."'
+        else:
+            speech = (f'{who} listens, then answers slowly. '
+                      f'"There is more to that than you know."')
+        # Plain-text mode: no action schema was requested, reply as prose.
+        if '"speech"' not in system:
+            return speech
+        # Structured mode: emit the JSON turn envelope. Attach a deterministic
+        # emote when the prompt offers one and the utterance invites action —
+        # enough to exercise the action seam offline and in tests.
+        actions: list[dict] = []
+        if "emote" in system and any(t in u for t in
+                                     ("dance", "bow", "nod", "gesture", "wave")):
+            actions.append({"name": "emote",
+                            "args": {"text": "regards you with a slow, deliberate air"}})
+        return json.dumps({"speech": speech, "actions": actions})
 
 
 class OpenAICompatibleProvider:

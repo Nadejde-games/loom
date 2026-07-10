@@ -10,6 +10,14 @@ from .session import Session
 from .server import GameServer
 from .loop import GameLoop
 from .engine import Engine
+from .action import (
+    ActionRegistry, ActionSpec, ActionIntent, ActionContext, ActionResult,
+    Param, ActionError, default_registry,
+)
 
-__all__ = ["Message", "Channel", "Session", "GameServer", "GameLoop", "Engine"]
+__all__ = [
+    "Message", "Channel", "Session", "GameServer", "GameLoop", "Engine",
+    "ActionRegistry", "ActionSpec", "ActionIntent", "ActionContext",
+    "ActionResult", "Param", "ActionError", "default_registry",
+]
 __version__ = "0.0.1"

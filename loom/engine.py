@@ -6,22 +6,26 @@ from __future__ import annotations
 import asyncio
 from .session import Session
 from .world import World, Player, Npc
+from .action import ActionRegistry, ActionContext, default_registry
 from .ai import NpcMind, LLMProvider, ProviderError
 
 
 class Engine:
-    def __init__(self, world: World, provider: LLMProvider, start_location: str):
+    def __init__(self, world: World, provider: LLMProvider, start_location: str,
+                 registry: ActionRegistry | None = None):
         self.world = world
         self.provider = provider
         self.start_location = start_location
+        self.actions = registry or default_registry()
         self.minds: dict[str, NpcMind] = {}
-        self.players: dict[str, Player] = {}   # session id -> player
+        self.players: dict[str, Player] = {}    # session id -> player
+        self.sessions: dict[str, Session] = {}  # session id -> session
         self._pcount = 0
         self._tasks: set[asyncio.Task] = set()  # in-flight async NPC replies
-        # Give every NPC in the world a mind.
+        # Give every NPC in the world a mind that can act through the registry.
         for ent in world.entities.values():
             if isinstance(ent, Npc):
-                self.minds[ent.id] = NpcMind(ent, provider)
+                self.minds[ent.id] = NpcMind(ent, provider, registry=self.actions)
 
     # ---- Handler protocol (called by GameServer) ----
     async def on_connect(self, session: Session) -> None:
@@ -31,12 +35,14 @@ class Engine:
                         location_id=self.start_location, session_id=session.id)
         self.world.add_entity(player)
         self.players[session.id] = player
+        self.sessions[session.id] = session
         session.player_id = pid
         await session.send_system(f"Connected as {player.name}.")
         await session.send_text(self._banner())
         await self._look(session)
 
     async def on_disconnect(self, session: Session) -> None:
+        self.sessions.pop(session.id, None)
         player = self.players.pop(session.id, None)
         if player:
             self.world.remove_entity(player.id)
@@ -90,31 +96,66 @@ class Engine:
         await session.send_text(f'You say: "{words}"')
         # Each NPC in the room hears and answers. The LLM call is dispatched as a
         # background task so a slow reply never blocks this player's input loop
-        # (nor anyone else's); the reply arrives as a follow-up message.
-        for ent in self.world.occupants(player.location_id, exclude=player.id):
+        # (nor anyone else's); speech and any actions arrive as follow-up messages.
+        loc_id = player.location_id
+        for ent in self.world.occupants(loc_id, exclude=player.id):
             if isinstance(ent, Npc):
                 mind = self.minds.get(ent.id)
                 if mind:
                     task = asyncio.create_task(
-                        self._deliver_npc_reply(session, ent, mind, player.name, words))
+                        self._deliver_npc_reply(loc_id, ent, mind, player.name, words))
                     self._tasks.add(task)
                     task.add_done_callback(self._tasks.discard)
 
-    async def _deliver_npc_reply(self, session: Session, npc: Npc, mind: NpcMind,
+    async def _deliver_npc_reply(self, location_id: str, npc: Npc, mind: NpcMind,
                                  speaker_name: str, words: str) -> None:
         # Out-of-band "thinking" beat covers the inference latency.
-        await self._safe_send(session.send_system, f"{npc.name} is considering your words…")
+        await self._broadcast(location_id, "system", f"{npc.name} is considering your words…")
         try:
-            reply = await mind.hear_and_respond(speaker_name, words)
+            turn = await mind.converse(speaker_name, words)
         except ProviderError as exc:
             print(f"[loom] NPC {npc.id} reply failed: {exc}")
-            await self._safe_send(session.send_text, f"{npc.name} frowns, at a loss for words.")
+            await self._broadcast(location_id, "text", f"{npc.name} frowns, at a loss for words.")
             return
         except Exception as exc:  # a broken reply must never kill the connection
             print(f"[loom] NPC {npc.id} unexpected error: {exc!r}")
-            await self._safe_send(session.send_text, f"{npc.name} frowns, at a loss for words.")
+            await self._broadcast(location_id, "text", f"{npc.name} frowns, at a loss for words.")
             return
-        await self._safe_send(session.send_text, f"{npc.name}: {reply}")
+        if turn.speech:
+            await self._broadcast(location_id, "text", f"{npc.name}: {turn.speech}")
+        # Validated intents only — the mind has already checked them against the
+        # registry; the engine executes and narrates the outcome to the room.
+        for intent in turn.actions:
+            await self._perform(location_id, npc, mind, intent)
+
+    async def _perform(self, location_id: str, actor, mind: NpcMind, intent) -> None:
+        spec = self.actions.get(intent.name)
+        if spec is None:      # defense in depth; the mind should never send this
+            print(f"[loom] dropped unknown action {intent.name!r} from {actor.id}")
+            return
+        try:
+            result = spec.handler(ActionContext(self.world, actor, intent.args))
+        except Exception as exc:  # a bad handler must not kill the connection
+            print(f"[loom] action {intent.name} by {actor.id} failed: {exc!r}")
+            return
+        if result.actor_memory:
+            mind.memory.add(result.actor_memory, kind="action")
+        if result.narration:
+            # Narrate where the actor now is — an action (e.g. move) may have
+            # relocated it; emote leaves it put.
+            where = getattr(actor, "location_id", None) or location_id
+            await self._broadcast(where, "text", result.narration)
+
+    async def _broadcast(self, location_id: str, kind: str, text: str) -> None:
+        """Send to every connected player currently in a location."""
+        for sid, player in list(self.players.items()):
+            if getattr(player, "location_id", None) != location_id:
+                continue
+            session = self.sessions.get(sid)
+            if session is None:
+                continue
+            send = session.send_system if kind == "system" else session.send_text
+            await self._safe_send(send, text)
 
     @staticmethod
     async def _safe_send(send, payload: str) -> None:
