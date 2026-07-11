@@ -29,6 +29,12 @@ class Turn:
     speech: str = ""
     actions: list = field(default_factory=list)   # list[ActionIntent]
 
+    @property
+    def is_silent(self) -> bool:
+        """The NPC chose not to react — no words, no actions. The engine renders
+        this as nothing (B4): silence is a first-class outcome, not a failure."""
+        return not self.speech and not self.actions
+
 
 @dataclass
 class Scene:
@@ -116,6 +122,10 @@ class NpcMind:
             parts.append("Goals: " + ", ".join(p["goals"]))
         if p.get("voice"):
             parts.append("Speak like this: " + str(p["voice"]))
+        if p.get("disposition"):
+            # How readily this character speaks at all — the silence prior. A
+            # reticent disposition should stay quiet far more than a gregarious one.
+            parts.append("Disposition: " + str(p["disposition"]))
         mems = self.memory.recent()
         if mems:
             parts.append("Recent memories:\n" + "\n".join(f"- {m.text}" for m in mems))
@@ -157,23 +167,41 @@ class NpcMind:
             'bare list). Keep "speech" to one short line. Add an action only when '
             'it truly fits the moment; otherwise use an empty list. Never invent '
             'actions or arguments beyond those listed.\n'
-            'Example: {"speech": "Careful, traveler.", "actions": [{"name": '
-            '"emote", "args": {"text": "narrows his eyes"}}]}\n'
+            'You are not obliged to respond. If the words do not concern you, or '
+            'your character would simply stay quiet, reply with exactly '
+            '{"speech": "", "actions": []}. A wary or indifferent character often '
+            'says nothing; an outgoing one is quicker to speak up. Silence is a '
+            'valid, in-character choice — do not force a reply.\n'
+            'Example (choosing to speak and act): {"speech": "Careful, traveler.", '
+            '"actions": [{"name": "emote", "args": {"text": "narrows his eyes"}}]}\n'
+            'Example (choosing silence, because the remark was not addressed to you '
+            'and does not concern your character): {"speech": "", "actions": []}\n'
             'Available actions:\n'
             + self.registry.describe()
         )
 
     # ---- turn ----
     async def converse(self, speaker_name: str, utterance: str,
-                       scene: Scene | None = None) -> Turn:
+                       scene: Scene | None = None, addressed: bool = True) -> Turn:
         """Hear an utterance; return a validated Turn (speech + safe actions).
 
         ``scene`` is the engine's read-only snapshot of the NPC's surroundings;
         when given, the NPC perceives its exits and company and can act on them.
+
+        ``addressed`` says whether the speaker named *this* NPC. When False the
+        utterance is framed as something merely overheard in the room, not a
+        question put to the NPC — which loosens the assistant-reflex pull to
+        answer everything and makes chosen silence more likely (B4).
         """
-        self.memory.add(f'{speaker_name} said to me: "{utterance}"', kind="speech")
+        if addressed:
+            heard = f'{speaker_name} says to you: "{utterance}"'
+            self.memory.add(f'{speaker_name} said to me: "{utterance}"', kind="speech")
+        else:
+            heard = f'You overhear {speaker_name} say to the room: "{utterance}"'
+            self.memory.add(f'{speaker_name} said to the room: "{utterance}"',
+                            kind="speech")
         system = self._system_prompt(scene)
-        messages = [{"role": "user", "content": f'{speaker_name} says: "{utterance}"'}]
+        messages = [{"role": "user", "content": heard}]
 
         raw = await self.provider.complete(system, messages)
         speech, actions, errors = self._parse_turn(raw)

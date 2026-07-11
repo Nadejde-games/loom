@@ -382,6 +382,7 @@ loom/                     the reusable, game-agnostic framework
   loop.py                 continuous tick loop (idle hook for ambient/GM)
   engine.py               commands, session↔player binding, NPC dispatch, action execution
   action.py               ActionRegistry: schema + validation + handlers (emote, move)
+  salience.py             SalienceGate: which NPC engages (default: directed address)
   content.py              load a World from editable JSON
   world/
     entity.py             Entity → Character → Npc / Player (dataclasses)

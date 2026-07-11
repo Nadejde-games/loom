@@ -54,6 +54,26 @@ def build_two_room_engine():
     return Engine(world, FakeProvider(), start_location="a")
 
 
+def build_two_npc_engine():
+    """One room, two NPCs — Odd the Hermit and Wren the Wayfinder — to exercise
+    the salience gate (who answers when) and chosen silence."""
+    world = World()
+    world.add_location(Location(id="room", name="Room", description="A bare room."))
+    world.add_entity(Npc(id="odd", name="Odd the Hermit", location_id="room",
+                         persona={"voice": "terse"}))
+    world.add_entity(Npc(id="wren", name="Wren the Wayfinder", location_id="room",
+                         persona={"voice": "warm"}))
+    return Engine(world, FakeProvider(), start_location="room")
+
+
+class SilentProvider:
+    """A provider whose NPC always chooses silence — an empty structured turn."""
+    name = "silent"
+
+    async def complete(self, system, messages):
+        return '{"speech":"","actions":[]}'
+
+
 class EngineActionTests(unittest.IsolatedAsyncioTestCase):
     async def _drain(self, engine):
         # Await the background NPC-reply tasks spawned by 'say'.
@@ -132,6 +152,49 @@ class EngineActionTests(unittest.IsolatedAsyncioTestCase):
         await self._drain(engine)
         self.assertEqual(engine.world.entities["odd"].location_id, "room")
         self.assertNotIn("leaves", s.texts())
+
+    async def test_directed_address_engages_only_the_named_npc(self):
+        # Naming Wren gates Odd out entirely: no beat, no line, no LLM call.
+        engine = build_two_npc_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()                              # drop the look/occupant listing
+        await engine.on_input(s, "say Wren, are you there?")
+        await self._drain(engine)
+
+        out = s.texts()
+        self.assertIn("Wren", out)                  # the named one answered
+        self.assertNotIn("Odd", out)                # the bystander stayed out
+        systems = [d for (c, d) in s.sent if c == Channel.SYSTEM]
+        self.assertTrue(any("Wren" in d for d in systems))   # Wren's beat present
+        self.assertFalse(any("Odd" in d for d in systems))   # no beat for Odd
+
+    async def test_undirected_remark_lets_every_npc_consider(self):
+        engine = build_two_npc_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "say hello, well met")
+        await self._drain(engine)
+        out = s.texts()
+        self.assertIn("Wren", out)                  # both were let through
+        self.assertIn("Odd", out)
+
+    async def test_chosen_silence_emits_no_line(self):
+        # Odd's mind returns an empty turn: the engine renders nothing for him,
+        # while Wren still answers. Silence is honored, not a stock line.
+        engine = build_two_npc_engine()
+        engine.minds["odd"].provider = SilentProvider()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "say hello, well met")
+        await self._drain(engine)
+        out = s.texts()
+        self.assertIn("Wren", out)
+        self.assertNotIn("Odd the Hermit:", out)    # Odd spoke no line
+        self.assertFalse(any(m.kind == "action"
+                             for m in engine.minds["odd"].memory.entries))
 
 
 if __name__ == "__main__":

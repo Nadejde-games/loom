@@ -95,8 +95,31 @@ danger, etc.).
 
 ---
 
-## B4 — NPCs choose whether to react
+## B4 — NPCs choose whether to react  — PROMOTED / LANDED 2026-07-11
 *Noticed 2026-07-10.*
+
+**Status (2026-07-11): shipped, with one half model-limited.**
+- **Silence is first-class (done).** `Turn.is_silent`; the mind is told it may
+  reply with `{"speech":"","actions":[]}`; the engine renders that as nothing (no
+  stock line — the exception fallback stays distinct). Proven offline.
+- **Salience gate (done, deterministic).** New `loom/salience.py` — a swappable
+  `SalienceGate` (default = directed address): if a present NPC is named, only the
+  named engage; bystanders are gated out **before** any thinking beat or LLM call.
+  Wired into `engine._say`; exported from `loom`. This is the primary win for the
+  two-NPC room ("Wren, …" → only Wren answers).
+- **Model self-silence (largely fixed via three prompt levers).** A first pass
+  had `qwen3.5:35b-a3b` respond **10/10** to undirected remarks — never the empty
+  turn, even for the wary hermit. Three changes to `mind.py` fixed it without a
+  second LLM call: (1) a *silent few-shot example* (`{"speech":"","actions":[]}`)
+  so the empty turn is modeled, not just permitted; (2) *ambient framing* — an
+  unaddressed line is presented as "You overhear … say to the room …" rather than
+  a question put to the NPC (`converse(addressed=…)`, set from `is_addressed`),
+  loosening the assistant reflex; (3) a persona *disposition* field (the silence
+  prior). Re-tested live: reticent Odd now stays silent on **3/5** idle remarks
+  and speaks only when a topic touches him; gregarious Wren still answers 5/5.
+  Character-appropriate, not random. It is a *tendency*, not a guarantee (sampling
+  varies) — a `should_engage` LLM override remains the lever if hard filtering is
+  ever needed. Skipped for now as overkill.
 
 **Want:** not every NPC should react to everything all the time. There needs to
 be **choice on the NPC's side** whether (and when) to respond.
@@ -159,5 +182,36 @@ B2 (fused rendering), Phase 3 (a director could also arbitrate/insist).
 
 ---
 
-*Add new observations below with an ID (`B6…`), a date, and the same
+## B6 — Degrade-to-speech leaks a broken JSON envelope to the player
+*Noticed 2026-07-11 (during B4 live testing).*
+
+**Want:** when the model emits a *malformed* turn envelope that the tolerant
+parser cannot recover, the player should never see raw JSON. Observed once in 10
+live turns: qwen3.5:35b-a3b produced an action array with a missing object-close
+(`…"}]}]` where `…"}}]}` was meant); `_extract_json` failed every recovery path
+and `_parse_turn` fell back to treating the *whole raw reply as speech* — so the
+literal `{"speech": "…", "actions": [ … ]}` was spoken to the room.
+
+**Where it lands:** `loom/ai/mind.py` — `_extract_json` (recovery) and
+`_parse_turn` (the degrade-to-speech branch).
+
+**Considerations for later:**
+- The degrade-to-speech fallback is correct for genuine prose (a model that
+  ignored the schema and just talked). The bug is only when the raw is *clearly a
+  failed envelope* — starts with `{` and contains `"speech"`. In that case:
+  prefer the **retry** path (feed "your JSON was malformed" back) over dumping it;
+  and if the retry also fails, emit the extracted `speech` string only, never the
+  braces. A cheap detector (`stripped.startswith("{") and '"speech"' in stripped`)
+  distinguishes the two cases.
+- Consider a slightly more forgiving recovery: balance-scan for an at-most-one
+  missing `}` before `]`/end. Keep it bounded — don't build a JSON repairer.
+- Related to **B5**: both are symptoms of the model's shaky structured-output
+  discipline; a lower-temperature action pass would reduce both.
+
+**Related:** the action seam (Phase 2), B4 (silence — a leaked envelope is the
+opposite of clean silence), B5 (action-selection reliability).
+
+---
+
+*Add new observations below with an ID (`B7…`), a date, and the same
 what / where-it-lands / considerations shape.*

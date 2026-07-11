@@ -7,16 +7,19 @@ import asyncio
 from .session import Session
 from .world import World, Player, Npc
 from .action import ActionRegistry, ActionContext, default_registry
+from .salience import SalienceGate, SalienceContext, default_gate, is_addressed
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
 
 
 class Engine:
     def __init__(self, world: World, provider: LLMProvider, start_location: str,
-                 registry: ActionRegistry | None = None):
+                 registry: ActionRegistry | None = None,
+                 gate: SalienceGate | None = None):
         self.world = world
         self.provider = provider
         self.start_location = start_location
         self.actions = registry or default_registry()
+        self.gate = gate or default_gate()
         self.minds: dict[str, NpcMind] = {}
         self.players: dict[str, Player] = {}    # session id -> player
         self.sessions: dict[str, Session] = {}  # session id -> session
@@ -94,26 +97,44 @@ class Engine:
             await session.send_text('Say what? (try: say hello)')
             return
         await session.send_text(f'You say: "{words}"')
-        # Each NPC in the room hears and answers. The LLM call is dispatched as a
-        # background task so a slow reply never blocks this player's input loop
-        # (nor anyone else's); speech and any actions arrive as follow-up messages.
+        # Each NPC in the room *may* hear and answer. A cheap salience gate runs
+        # first (B4): an NPC that isn't engaged — e.g. a bystander when someone
+        # else was addressed by name — stays silent, costing no thinking beat and
+        # no LLM call. Engaged NPCs reply on a background task so a slow reply
+        # never blocks this player's input loop (nor anyone else's); speech and
+        # any actions arrive as follow-up messages.
         loc_id = player.location_id
+        present = [e.name for e in self.world.occupants(loc_id, exclude=player.id)
+                   if isinstance(e, Npc)]
         for ent in self.world.occupants(loc_id, exclude=player.id):
-            if isinstance(ent, Npc):
-                mind = self.minds.get(ent.id)
-                if mind:
-                    task = asyncio.create_task(
-                        self._deliver_npc_reply(loc_id, ent, mind, player.name, words))
-                    self._tasks.add(task)
-                    task.add_done_callback(self._tasks.discard)
+            if not isinstance(ent, Npc):
+                continue
+            mind = self.minds.get(ent.id)
+            if not mind:
+                continue
+            ctx = SalienceContext(npc=ent, speaker_name=player.name,
+                                  utterance=words, present_npcs=present)
+            if not self.gate.should_engage(ctx):
+                continue
+            # Was this NPC named? The mind frames a directly-addressed line as a
+            # question to answer, and an unaddressed one as merely overheard —
+            # which makes chosen silence more likely on ambient chatter (B4).
+            addressed = is_addressed(ent.name, words)
+            task = asyncio.create_task(
+                self._deliver_npc_reply(loc_id, ent, mind, player.name, words,
+                                        addressed))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
 
     async def _deliver_npc_reply(self, location_id: str, npc: Npc, mind: NpcMind,
-                                 speaker_name: str, words: str) -> None:
+                                 speaker_name: str, words: str,
+                                 addressed: bool = True) -> None:
         # Out-of-band "thinking" beat covers the inference latency.
         await self._broadcast(location_id, "system", f"{npc.name} is considering your words…")
         scene = self._scene_for(npc, location_id)
         try:
-            turn = await mind.converse(speaker_name, words, scene=scene)
+            turn = await mind.converse(speaker_name, words, scene=scene,
+                                       addressed=addressed)
         except ProviderError as exc:
             print(f"[loom] NPC {npc.id} reply failed: {exc}")
             await self._broadcast(location_id, "text", f"{npc.name} frowns, at a loss for words.")

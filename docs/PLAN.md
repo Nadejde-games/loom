@@ -127,9 +127,20 @@ Built:
   against the actor's *actual* exits, mutates via `World.move`, reads the
   arrival direction back from the destination's own exits (asymmetric/one-way
   safe), and raises `ActionError` (silently dropped) on a bad direction.
-- `tests/` — 48 offline tests (validation, parse-tolerance incl. the live
+- `loom/salience.py` — a swappable **salience gate** (B4): the default filters
+  on *directed address* (name a present NPC → only they engage), run before any
+  thinking beat or LLM call so bystanders cost nothing. Silence is now a
+  first-class turn outcome (`Turn.is_silent`; the engine renders an empty turn as
+  nothing). And the NPC's *own* choice to stay silent was made real (not just
+  permitted) with three prompt levers in `mind.py`: a silent few-shot example,
+  ambient "overheard" framing for unaddressed lines (`converse(addressed=…)`), and
+  a persona `disposition` field. Live: reticent Odd stays silent on ~3/5 idle
+  remarks and speaks only when a topic touches him; gregarious Wren answers 5/5.
+  A game or the Phase 3 director can still install a smarter gate behind the seam.
+- `tests/` — 68 offline tests (validation, parse-tolerance incl. the live
   malformations, retry recovery, engine end-to-end emote **and** a two-room
-  move, perception rendering). No GPU needed.
+  move, perception rendering, the salience gate, chosen silence, the silence
+  levers). No GPU needed.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.

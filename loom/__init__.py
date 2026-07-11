@@ -14,10 +14,12 @@ from .action import (
     ActionRegistry, ActionSpec, ActionIntent, ActionContext, ActionResult,
     Param, ActionError, default_registry,
 )
+from .salience import SalienceGate, SalienceContext, default_gate
 
 __all__ = [
     "Message", "Channel", "Session", "GameServer", "GameLoop", "Engine",
     "ActionRegistry", "ActionSpec", "ActionIntent", "ActionContext",
     "ActionResult", "Param", "ActionError", "default_registry",
+    "SalienceGate", "SalienceContext", "default_gate",
 ]
 __version__ = "0.0.1"

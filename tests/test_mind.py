@@ -122,6 +122,53 @@ class FakeProviderTests(unittest.TestCase):
         self.assertEqual(turn.actions, [])
 
 
+class SilenceTests(unittest.TestCase):
+    def test_empty_envelope_is_silent(self):
+        turn = run(mind(ScriptedProvider(
+            ['{"speech":"","actions":[]}'])).converse("W", "hello"))
+        self.assertTrue(turn.is_silent)
+        self.assertEqual(turn.speech, "")
+        self.assertEqual(turn.actions, [])
+
+    def test_speech_is_not_silent(self):
+        turn = run(mind(ScriptedProvider(
+            ['{"speech":"Hm.","actions":[]}'])).converse("W", "hello"))
+        self.assertFalse(turn.is_silent)
+
+    def test_action_only_is_not_silent(self):
+        reply = '{"speech":"","actions":[{"name":"emote","args":{"text":"nods"}}]}'
+        turn = run(mind(ScriptedProvider([reply])).converse("W", "hello"))
+        self.assertFalse(turn.is_silent)
+
+    def test_prompt_offers_silence(self):
+        prompt = mind(FakeProvider())._system_prompt()
+        self.assertIn('"speech": "", "actions": []', prompt)
+
+    def test_prompt_has_a_silent_example(self):
+        # Lever 1: a modeled empty-turn example, not just prose permission.
+        prompt = mind(FakeProvider())._system_prompt()
+        self.assertIn("Example (choosing silence", prompt)
+
+    def test_disposition_renders(self):
+        # Lever 4: a persona disposition line (the silence prior).
+        npc = Npc(id="odd", name="Odd", persona={"disposition": "deeply reticent"})
+        prompt = NpcMind(npc, FakeProvider(),
+                         registry=default_registry())._system_prompt()
+        self.assertIn("Disposition: deeply reticent", prompt)
+
+    def test_addressed_vs_overheard_framing(self):
+        # Lever 2: addressed -> "says to you"; unaddressed -> "overhear ... room".
+        p1 = ScriptedProvider(['{"speech":"Hi.","actions":[]}'])
+        run(mind(p1).converse("W", "hello", addressed=True))
+        self.assertIn("says to you", p1.calls[0][1][0]["content"])
+
+        p2 = ScriptedProvider(['{"speech":"","actions":[]}'])
+        run(mind(p2).converse("W", "hello", addressed=False))
+        content = p2.calls[0][1][0]["content"]
+        self.assertIn("overhear", content)
+        self.assertIn("to the room", content)
+
+
 class SceneTests(unittest.TestCase):
     def test_scene_renders_into_prompt(self):
         m = mind(FakeProvider())
