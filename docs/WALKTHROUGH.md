@@ -207,9 +207,15 @@ its own `NpcMind`, all sharing one action vocabulary.
   banner, and runs `_look`. (That `self.sessions` registry is what room broadcast
   uses — see below.)
 - `on_disconnect` (`:44`) — removes the player and its session.
-- `on_input` (`:50`) — the command parser. Split first word as the command; the
-  rest is the argument. `look`, `say`, `go`/direction aliases, `who`, `help`,
-  `quit`. This is a plain dispatch — easy to extend.
+- `on_input` (`:50`) — routes player input through `command.parse` (B1): a verb
+  table (synonyms, multi-word verbs like `pick up`), a `verb + DO + prep + IO`
+  grammar, and articles/phrasing tolerance. It dispatches by verb *kind*:
+  free-text (`say`), read-only queries (`_query`: look, examine, go, inventory,
+  who, help, quit), and world-changing actions (`_player_action`). The last
+  resolves the object phrases against scope — for disambiguation and a
+  second-person acknowledgement — then routes `take`/`drop`/`give` through the
+  **same** `ActionRegistry` the NPCs use (the handler re-resolves as the
+  authoritative gate). The rich free-text LLM fallback is the planned B1b tier.
 
 ### The commands
 `_look` (`:78`) and `_go` (`:168`) are **pure engine code** — deterministic,
@@ -308,8 +314,11 @@ Game-agnostic and dependency-free.
   specs feed the model: `describe()` (the prose catalogue for the prompt) and
   `json_schema()` (the turn-envelope grammar for constrained decoding) — one
   source, so the shape the model is forced to emit and the shape the engine checks
-  cannot drift (a unit test asserts it).
-- `default_registry()` now ships three built-ins:
+  cannot drift (a unit test asserts it). Both `describe(names)` and
+  `json_schema(names)` accept an optional subset, so one actor can be *offered*
+  fewer actions than the registry holds (`NpcMind(offered=…)`) — the player takes
+  and drops where the demo's NPCs do not — without a second registry.
+- `default_registry()` now ships five built-ins:
   - `emote` (`_emote`) — a purely expressive action, zero world-state change: the
     tightest possible proof that the seam works (schema → validate → execute →
     narrate → remember).
@@ -321,6 +330,10 @@ Game-agnostic and dependency-free.
     actor holds and the recipient against who is present, refusing (a dropped
     `ActionError`) when either is unknown or ambiguous. Both ends are confirmed
     against the world before anything moves — the golden rule for inventory.
+  - `take_item` / `drop_item` — the taking side (from the floor, or from a named
+    source) and its inverse. Promoted onto the seam so the player's `take`/`drop`
+    run the same validated path as `give`; offered to the player but not (by
+    default) to NPCs, via the offered-subset above.
 
 Adding an action later (offer_quest, remember_fact) = a schema + a handler
 registered here. Nothing else in the pipeline changes. That's the point of the
@@ -348,7 +361,7 @@ You type:  say hello, old one
    │
 1. client/terminal.py  _writer → Message(INPUT,"say hello, old one").to_bytes() → socket
 2. loom/server.py      _on_connect loop: readline → parses the input envelope → handler.on_input(session,"say hello, old one")
-3. loom/engine.py      on_input: cmd="say", arg="hello, old one" → _say(session, player, arg)
+3. loom/engine.py      on_input: command.parse → say verb (free text) → _say(session, player, "hello, old one")
 4.                     _say echoes 'You say: "…"' to you, finds Odd in the room,
                        dispatches _deliver_npc_reply as a BACKGROUND task and returns immediately
                        (your prompt is free again — nothing blocks)
@@ -394,9 +407,10 @@ Do these in order; each is small and confirms you understand a layer.
 1. **Watch the wire.** Start the server, then `nc 127.0.0.1 4000` (raw mode).
    Type `look`. You'll see the JSON envelopes the client normally hides — the
    protocol laid bare.
-2. **Add a command.** In `engine.py on_input`, add an `emote <text>` command that
-   lets the *player* emote to the room (reuse `_broadcast`). ~5 lines. No AI
-   involved — proves you can read the engine's deterministic half.
+2. **Add a command.** Add an `emote` verb to `command.default_verbs()` and handle
+   it in the engine so the *player* can emote to the room (reuse `_broadcast`, or
+   route it through the registry's `emote`). Proves you can read both the parser
+   and the engine's deterministic half.
 3. **Trace an action's validation.** Run `python scripts/try_provider.py` with a
    prompt that invites a gesture; watch it print `speech` + a validated action.
    Then temporarily break the emote schema (rename its param) and watch the retry
@@ -418,8 +432,9 @@ loom/                     the reusable, game-agnostic framework
   session.py              one connected client; send_text/send_system
   server.py               async TCP server; drives any Handler
   loop.py                 continuous tick loop (idle hook for ambient/GM)
-  engine.py               commands (incl. take/drop/give/inventory), session↔player binding, NPC dispatch, action execution
-  action.py               ActionRegistry: schema + validation + handlers (emote, move, give_item)
+  engine.py               parses player input, resolves nouns, routes acts through the seam, NPC dispatch
+  action.py               ActionRegistry: schema + validation + json_schema + handlers (emote/move/give/take/drop)
+  command.py              player-command parser (B1): verb table + DO/prep/IO grammar → a Parse (pure syntax)
   salience.py             SalienceGate: which NPC engages (default: directed address)
   naming.py               resolve(phrase, scope) → Resolved / Ambiguous / NoMatch (noun-phrase resolution)
   content.py              load a World from editable JSON (locations, npcs, items)

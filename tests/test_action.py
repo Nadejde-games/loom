@@ -87,7 +87,10 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("emote", reg)
         self.assertIn("move", reg)
         self.assertIn("give_item", reg)
-        self.assertEqual(reg.names(), ["emote", "move", "give_item"])
+        self.assertIn("take_item", reg)
+        self.assertIn("drop_item", reg)
+        self.assertEqual(reg.names(),
+                         ["emote", "move", "give_item", "take_item", "drop_item"])
 
     def test_describe_lists_move(self):
         text = default_registry().describe()
@@ -253,6 +256,107 @@ class GiveItemHandlerTests(unittest.TestCase):
         # Neither key moved.
         self.assertEqual(world.entities["key"].holder, "odd")
         self.assertEqual(world.entities["key2"].holder, "odd")
+
+
+def _take_world():
+    """A room with a lantern on the floor, Odd present, and Wren holding a map."""
+    world = World()
+    world.add_location(Location(id="room", name="Room"))
+    world.add_entity(Npc(id="odd", name="Odd", location_id="room"))
+    world.add_entity(Npc(id="wren", name="Wren", location_id="room"))
+    world.add_entity(Item(id="lantern", name="a rusty lantern", holder="room",
+                          aliases=["lantern", "lamp"]))
+    world.add_entity(Item(id="map", name="a worn map", holder="wren",
+                          aliases=["map"]))
+    return world
+
+
+class TakeItemHandlerTests(unittest.TestCase):
+    def setUp(self):
+        self.spec = default_registry().get("take_item")
+
+    def _run(self, world, actor_id="odd", **args):
+        actor = world.entities[actor_id]
+        return self.spec.handler(ActionContext(world, actor, args))
+
+    def test_take_from_floor(self):
+        world = _take_world()
+        res = self._run(world, item="lantern")
+        self.assertEqual(world.entities["lantern"].holder, "odd")
+        self.assertEqual(res.narration, "Odd takes a rusty lantern.")
+        self.assertIn("a rusty lantern", res.actor_memory)
+
+    def test_take_from_a_source(self):
+        world = _take_world()
+        res = self._run(world, item="map", source="Wren")
+        self.assertEqual(world.entities["map"].holder, "odd")
+        self.assertEqual(res.narration, "Odd takes a worn map from Wren.")
+
+    def test_take_absent_item_raises(self):
+        world = _take_world()
+        with self.assertRaises(ActionError):
+            self._run(world, item="sword")
+        self.assertEqual(world.entities["lantern"].holder, "room")
+
+    def test_take_item_not_on_named_source_raises(self):
+        world = _take_world()
+        with self.assertRaises(ActionError):
+            self._run(world, item="lantern", source="Wren")   # Wren hasn't got it
+        self.assertEqual(world.entities["lantern"].holder, "room")
+
+    def test_take_unknown_source_raises(self):
+        world = _take_world()
+        with self.assertRaises(ActionError):
+            self._run(world, item="map", source="Gandalf")
+
+    def test_take_non_portable_raises(self):
+        world = _take_world()
+        world.add_entity(Item(id="statue", name="a stone statue", holder="room",
+                              aliases=["statue"], portable=False))
+        with self.assertRaises(ActionError):
+            self._run(world, item="statue")
+        self.assertEqual(world.entities["statue"].holder, "room")
+
+
+class DropItemHandlerTests(unittest.TestCase):
+    def setUp(self):
+        self.spec = default_registry().get("drop_item")
+
+    def _run(self, world, actor_id="odd", **args):
+        actor = world.entities[actor_id]
+        return self.spec.handler(ActionContext(world, actor, args))
+
+    def test_drop_held_item_to_floor(self):
+        world = _take_world()
+        world.place_item("map", "odd")             # Odd now holds the map
+        res = self._run(world, item="map")
+        self.assertEqual(world.entities["map"].holder, "room")
+        self.assertEqual(res.narration, "Odd drops a worn map.")
+
+    def test_drop_unheld_item_raises(self):
+        world = _take_world()
+        with self.assertRaises(ActionError):
+            self._run(world, item="lantern")       # on the floor, not held
+        self.assertEqual(world.entities["lantern"].holder, "room")
+
+
+class DescribeSubsetTests(unittest.TestCase):
+    def test_describe_narrows_to_named_actions(self):
+        text = default_registry().describe(["emote", "move"])
+        self.assertIn("emote(", text)
+        self.assertIn("move(", text)
+        self.assertNotIn("give_item(", text)
+        self.assertNotIn("take_item(", text)
+
+    def test_describe_none_lists_all(self):
+        text = default_registry().describe()
+        for name in ("emote(", "move(", "give_item(", "take_item(", "drop_item("):
+            self.assertIn(name, text)
+
+    def test_unknown_names_are_skipped(self):
+        text = default_registry().describe(["emote", "nonesuch"])
+        self.assertIn("emote(", text)
+        self.assertNotIn("nonesuch", text)
 
 
 if __name__ == "__main__":

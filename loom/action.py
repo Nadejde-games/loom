@@ -180,12 +180,25 @@ class ActionRegistry:
                 errors.append(f'action "{name}": unknown arg "{extra}"')
         return errors
 
-    def describe(self) -> str:
-        """A compact catalogue for the system prompt."""
-        if not self._specs:
+    def _selected(self, names: list | None) -> list:
+        """The specs to expose, optionally narrowed to a subset of names (in
+        registration order). A subset is how one actor is *offered* fewer actions
+        than the registry holds — the player sees `take`/`drop`, a given NPC need
+        not — without a second registry. Unknown names are skipped, not an error.
+        """
+        if names is None:
+            return list(self._specs.values())
+        wanted = set(names)
+        return [s for n, s in self._specs.items() if n in wanted]
+
+    def describe(self, names: list | None = None) -> str:
+        """A compact catalogue for the system prompt, optionally narrowed to a
+        subset of action names."""
+        specs = self._selected(names)
+        if not specs:
             return "(no actions available)"
         lines = []
-        for spec in self._specs.values():
+        for spec in specs:
             sig = ", ".join(_param_sig(n, p) for n, p in spec.params.items()) or "no args"
             lines.append(f"- {spec.name}({sig}): {spec.description}")
         return "\n".join(lines)
@@ -209,7 +222,7 @@ class ActionRegistry:
             "additionalProperties": False,
         }
 
-    def json_schema(self) -> dict:
+    def json_schema(self, names: list | None = None) -> dict:
         """The turn envelope as a JSON Schema, for grammar-constrained decoding.
 
         The token-level twin of ``describe()`` + ``validate()``: both are rendered
@@ -219,8 +232,12 @@ class ActionRegistry:
         each action's ``name`` is a const discriminator over a ``oneOf`` and its
         ``args`` are the typed, required parameters. Guarantees shape, never choice
         — which action fits, or whether to stay silent, is still the prompt's job.
+
+        ``names`` narrows the grammar to the same subset ``describe(names)`` shows
+        an actor, so the shape it is constrained to and the catalogue it is told
+        about stay one and the same.
         """
-        specs = list(self._specs.values())
+        specs = self._selected(names)
         if specs:
             actions_schema = {
                 "type": "array",
@@ -330,6 +347,71 @@ def _give_item(ctx: ActionContext) -> ActionResult:
     )
 
 
+def _take_item(ctx: ActionContext) -> ActionResult:
+    """Pick up an item — from the floor of the actor's room, or from a source
+    (a character or container present) when one is named.
+
+    The counterpart of ``give_item`` on the taking side, and the same seam
+    guarantee: the schema promises the phrases; this handler resolves them
+    against the real world — the source against what is present, the item
+    against what that source actually holds — and refuses (``ActionError``) when
+    either is unknown, ambiguous, or not portable. Backs the player's take verb,
+    and any world that chooses to offer it to NPCs.
+    """
+    world, actor = ctx.world, ctx.actor
+    aid = getattr(actor, "id", "actor")
+    loc_id = getattr(actor, "location_id", None)
+    item_phrase = str(ctx.args["item"]).strip()
+    source_phrase = str(ctx.args.get("source", "")).strip()
+
+    if source_phrase:
+        present = world.occupants(loc_id, exclude=aid) if loc_id else []
+        floor = world.contents(loc_id) if loc_id else []
+        r_src = resolve(source_phrase, list(present) + list(floor))
+        if not isinstance(r_src, Resolved):
+            raise ActionError(f'no single clear "{source_phrase}" here to take from')
+        source_id, src_name = r_src.entity.id, r_src.entity.name
+    else:
+        source_id, src_name = loc_id, None   # from the floor of the room
+
+    pool = world.contents(source_id) if source_id else []
+    r_item = resolve(item_phrase, pool)
+    if not isinstance(r_item, Resolved):
+        raise ActionError(f'no single clear "{item_phrase}" to take')
+    item = r_item.entity
+    if not world.place_item(item.id, aid):
+        raise ActionError(f'{aid} could not take {item.id!r} (not portable?)')
+
+    name = getattr(actor, "name", "Someone")
+    tail = f" from {src_name}" if src_name else ""
+    return ActionResult(narration=f"{name} takes {item.name}{tail}.",
+                        actor_memory=f"I took {item.name}{tail}.")
+
+
+def _drop_item(ctx: ActionContext) -> ActionResult:
+    """Set down an item the actor is holding onto the floor of its room.
+
+    Symmetric with ``take_item``: resolves the item against the actor's own
+    inventory and re-homes it to the room, refusing when the actor holds no such
+    single clear item.
+    """
+    world, actor = ctx.world, ctx.actor
+    aid = getattr(actor, "id", "actor")
+    loc_id = getattr(actor, "location_id", None)
+    item_phrase = str(ctx.args["item"]).strip()
+
+    r_item = resolve(item_phrase, world.contents(aid))
+    if not isinstance(r_item, Resolved):
+        raise ActionError(f'{aid} holds no single clear "{item_phrase}" to drop')
+    item = r_item.entity
+    if not loc_id or not world.place_item(item.id, loc_id):
+        raise ActionError(f'{aid} could not drop {item.id!r}')
+
+    name = getattr(actor, "name", "Someone")
+    return ActionResult(narration=f"{name} drops {item.name}.",
+                        actor_memory=f"I dropped {item.name}.")
+
+
 def default_registry() -> ActionRegistry:
     """A registry preloaded with the built-in actions every world gets."""
     reg = ActionRegistry()
@@ -368,5 +450,29 @@ def default_registry() -> ActionRegistry:
                                     "with you, by name"),
         },
         handler=_give_item,
+    ))
+    reg.register(ActionSpec(
+        name="take_item",
+        description=('pick up an item from the floor here, or from a source '
+                     'present with you; name the item, and optionally the source, '
+                     'e.g. item "brass key", or item "map", source "Wren". Only '
+                     'take something that is actually here.'),
+        params={
+            "item": Param("str", required=True,
+                          desc="the item to pick up, by name"),
+            "source": Param("str", required=False,
+                            desc="optional: who or what to take it from, by name; "
+                                 "omit to take from the floor"),
+        },
+        handler=_take_item,
+    ))
+    reg.register(ActionSpec(
+        name="drop_item",
+        description=('set down an item you are holding onto the floor here; name '
+                     'the item, e.g. item "lantern". Only drop something you '
+                     'actually hold.'),
+        params={"item": Param("str", required=True,
+                              desc="the item you are holding, by name")},
+        handler=_drop_item,
     ))
     return reg

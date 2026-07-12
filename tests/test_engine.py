@@ -246,7 +246,9 @@ class EngineInventoryTests(unittest.IsolatedAsyncioTestCase):
         await engine.on_input(s, "give lantern to Wren")
         # Re-homed to the NPC via the same give_item action an NPC would use.
         self.assertEqual(engine.world.entities["lantern"].holder, "wren")
-        self.assertIn("gives a rusty lantern to Wren", s.texts())
+        # The actor gets a second-person acknowledgement (the room hears the
+        # third-person narration, from which the actor's own session is excluded).
+        self.assertIn("You give a rusty lantern to Wren.", s.texts())
 
     async def test_give_without_holding_fails_gracefully(self):
         engine = build_item_engine()
@@ -254,7 +256,8 @@ class EngineInventoryTests(unittest.IsolatedAsyncioTestCase):
         await engine.on_connect(s)
         s.sent.clear()
         await engine.on_input(s, "give lantern to Wren")   # never picked it up
-        self.assertIn("can't give", s.texts().lower())
+        # Caught at resolution (the player isn't holding it) with a clear reason.
+        self.assertIn("not carrying", s.texts().lower())
         self.assertEqual(engine.world.entities["lantern"].holder, "room")
 
     async def test_give_bad_syntax_prompts(self):
@@ -274,6 +277,91 @@ class EngineInventoryTests(unittest.IsolatedAsyncioTestCase):
         await engine.on_input(s, "drop lantern")
         self.assertIn("You drop a rusty lantern.", s.texts())
         self.assertEqual(engine.world.entities["lantern"].holder, "room")
+
+
+class EngineB1Tests(unittest.IsolatedAsyncioTestCase):
+    """The richer parser (B1): phrasing tolerance, multi-object take-from,
+    examine, disambiguation, and unknown handling — all through on_input."""
+
+    async def _connect(self, engine):
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        return s
+
+    async def test_take_synonyms(self):
+        for verb in ("grab lantern", "get lantern", "pick up the lantern"):
+            with self.subTest(verb=verb):
+                engine = build_item_engine()
+                s = await self._connect(engine)
+                await engine.on_input(s, verb)
+                self.assertIn("You take a rusty lantern.", s.texts())
+                self.assertEqual(engine.world.entities["lantern"].holder,
+                                 s.player_id)
+
+    async def test_take_from_a_source(self):
+        engine = build_item_engine()
+        engine.world.add_entity(Item(id="map", name="a worn map", holder="wren",
+                                     aliases=["map"]))
+        s = await self._connect(engine)
+        await engine.on_input(s, "take map from Wren")
+        self.assertIn("You take a worn map from Wren.", s.texts())
+        self.assertEqual(engine.world.entities["map"].holder, s.player_id)
+
+    async def test_put_down_synonym(self):
+        engine = build_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "take lantern")
+        s.sent.clear()
+        await engine.on_input(s, "put down lantern")
+        self.assertIn("You drop a rusty lantern.", s.texts())
+        self.assertEqual(engine.world.entities["lantern"].holder, "room")
+
+    async def test_examine_a_described_thing(self):
+        engine = build_item_engine()
+        engine.world.add_entity(Item(id="orb", name="a glowing orb", holder="room",
+                                     description="It pulses with a faint light.",
+                                     aliases=["orb"]))
+        s = await self._connect(engine)
+        await engine.on_input(s, "look at orb")
+        self.assertIn("It pulses with a faint light.", s.texts())
+
+    async def test_examine_undescribed_thing(self):
+        engine = build_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "examine lantern")     # lantern has no description
+        self.assertIn("nothing special", s.texts().lower())
+
+    async def test_examine_absent_thing(self):
+        engine = build_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "look at dragon")
+        self.assertIn('no "dragon"', s.texts())
+
+    async def test_disambiguation_prompts_which(self):
+        engine = build_item_engine()
+        engine.world.add_entity(Item(id="lantern2", name="a brass lantern",
+                                     holder="room", aliases=["lantern"]))
+        s = await self._connect(engine)
+        await engine.on_input(s, "take lantern")        # two match "lantern"
+        self.assertIn("Which do you mean", s.texts())
+        # Nothing moved on an ambiguous request.
+        self.assertEqual(engine.world.entities["lantern"].holder, "room")
+        self.assertEqual(engine.world.entities["lantern2"].holder, "room")
+
+    async def test_unknown_command(self):
+        engine = build_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "frobnicate the widget")
+        self.assertIn("Unknown command", s.texts())
+
+    async def test_who_excludes_self(self):
+        engine = build_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "who")
+        out = s.texts()
+        self.assertIn("Wren", out)
+        self.assertNotIn("Wanderer", out)              # not the player themselves
 
 
 if __name__ == "__main__":

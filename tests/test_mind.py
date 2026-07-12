@@ -253,5 +253,26 @@ class ConstraintTests(unittest.TestCase):
         self.assertEqual(p.schemas[1], default_registry().json_schema())
 
 
+class OfferedSubsetTests(unittest.TestCase):
+    """A mind offered a subset of the registry is told about, and constrained to,
+    exactly that subset — the mechanism that keeps NPCs off the player-only verbs."""
+
+    def _mind(self, provider, offered):
+        npc = Npc(id="odd", name="Odd", persona={})
+        return NpcMind(npc, provider, registry=default_registry(), offered=offered)
+
+    def test_prompt_only_offers_the_subset(self):
+        prompt = self._mind(FakeProvider(), ["emote", "move"])._system_prompt()
+        self.assertIn("emote(", prompt)
+        self.assertIn("move(", prompt)
+        self.assertNotIn("give_item(", prompt)
+        self.assertNotIn("take_item(", prompt)
+
+    def test_forwarded_schema_is_the_subset(self):
+        p = ScriptedProvider(['{"speech":"Hi.","actions":[]}'])
+        run(self._mind(p, ["emote"]).converse("W", "hello"))
+        self.assertEqual(p.schemas[0], default_registry().json_schema(["emote"]))
+
+
 if __name__ == "__main__":
     unittest.main()

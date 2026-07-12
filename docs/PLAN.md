@@ -165,12 +165,25 @@ Built:
   - Player payoff: `take` / `drop` / `inventory` and `give <item> to <who>`; give
     routes through the *same* registry the NPCs use — the player-side mirror of
     the seam in miniature (a trivial parser now; the rich grammar is B1).
-- `tests/` — **129 offline tests** (the above + validation, parse-tolerance incl.
-  the live malformations, retry recovery, engine end-to-end emote/move/give,
-  perception rendering, the salience gate, chosen silence, the resolver, the
-  containment model, and the constrained-decoding schema emitter + drift
-  cross-check). No GPU needed. **Plus a live behavioral harness** — see
-  *Testing discipline* below — 8 scenarios green against `qwen3.5:35b-a3b`.
+- **The player command parser (B1a)** (2026-07-12) — `loom/command.py`, a
+  game-agnostic, world-free *syntactic* parser (verb table with synonyms and
+  multi-word verbs, `verb + DO + prep + IO` grammar, symbolic per-slot scopes the
+  engine maps to real candidates). Flexible player text now resolves against
+  scope (disambiguation inherited from `naming.resolve`) and world-changing verbs
+  run through the *same* registry the NPCs use. `take`/`drop` were promoted into
+  registry actions (`take_item`, `drop_item`) so every player world-change is one
+  path; a **per-mind offered-action subset** (`NpcMind(offered=…)`, narrowing both
+  the prompt catalogue and the constrained grammar) keeps NPCs off the player-only
+  verbs, so the NPC catalogue and the harness are unchanged. New reach: `look at
+  X`/`examine X`, `take X [from Y]`, articles and phrasing tolerance. The LLM
+  free-text fallback (B1b) is a deliberate follow-up. See `docs/BACKLOG.md` B1.
+- `tests/` — **172 offline tests** (the above + validation, parse-tolerance incl.
+  the live malformations, retry recovery, engine end-to-end emote/move/give/take/
+  drop, perception rendering, the salience gate, chosen silence, the resolver, the
+  containment model, the constrained-decoding schema emitter + drift cross-check,
+  and the command parser + per-mind offered subset). No GPU needed. **Plus a live
+  behavioral harness** — see *Testing discipline* below — 8 scenarios green
+  against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
@@ -185,10 +198,10 @@ Built:
   (persona wording can't fix it; it's a sampling/prompt-weight lever).
 
 Remaining actions to build out on this seam (each ~a handler + schema + a world
-capability where needed): **offer_quest**, **remember_fact** (`give_item` and the
-item/inventory world-model landed 2026-07-12). Player-side acting has its first
-slice (take/drop/give); the *rich, phrasing-tolerant* command grammar is B1, now
-unblocked by the inventory keel.
+capability where needed): **offer_quest**, **remember_fact** (`give_item`,
+`take_item`, `drop_item` and the item/inventory world-model landed 2026-07-12).
+Player-side acting now has its rich, phrasing-tolerant deterministic parser
+(B1a, 2026-07-12); the LLM free-text fallback (B1b) remains.
 
 ### Phase 2 hardening — constrained decoding (grammar-guaranteed envelopes)  ✓ (2026-07-12)
 Make design commitment #4 *structural*: constrain generation to the turn-envelope
@@ -290,7 +303,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (129 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (172 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*

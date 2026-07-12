@@ -106,11 +106,18 @@ def _extract_json(text: str) -> dict | None:
 class NpcMind:
     def __init__(self, npc: Npc, provider: LLMProvider,
                  memory: MemoryStream | None = None,
-                 registry: ActionRegistry | None = None):
+                 registry: ActionRegistry | None = None,
+                 offered: list | None = None):
         self.npc = npc
         self.provider = provider
         self.memory = memory or MemoryStream()
         self.registry = registry
+        # The subset of the registry this mind is offered — its action catalogue
+        # need not be the whole registry (the player may take/drop where a given
+        # NPC does not). None = every registered action. The prompt catalogue and
+        # the constrained-decoding grammar are both narrowed to this same set, so
+        # what the mind is told about and what it is constrained to stay one.
+        self.offered = offered
 
     # ---- prompt ----
     def _system_prompt(self, scene: Scene | None = None) -> str:
@@ -195,7 +202,7 @@ class NpcMind:
             'Example (choosing silence, because the remark was not addressed to you '
             'and does not concern your character): {"speech": "", "actions": []}\n'
             'Available actions:\n'
-            + self.registry.describe()
+            + self.registry.describe(self.offered)
         )
 
     # ---- turn ----
@@ -226,7 +233,8 @@ class NpcMind:
         # impossible at the token level rather than merely caught after. Providers
         # without constraint support (and the FakeProvider) ignore it, and the
         # tolerant parse + validate/retry below stays as defense-in-depth.
-        schema = self.registry.json_schema() if self.registry is not None else None
+        schema = (self.registry.json_schema(self.offered)
+                  if self.registry is not None else None)
 
         raw = await self.provider.complete(system, messages, schema=schema)
         speech, actions, errors = self._parse_turn(raw)

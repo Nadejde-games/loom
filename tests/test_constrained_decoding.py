@@ -126,6 +126,20 @@ class NoDriftTests(unittest.TestCase):
                 self.assertEqual(set(props), set(spec.params))
 
 
+class SchemaSubsetTests(unittest.TestCase):
+    """json_schema(names) narrows the grammar to the same subset describe(names)
+    shows — so an actor offered fewer actions is constrained to exactly those."""
+
+    def test_narrows_to_named_actions(self):
+        branches = _branches(default_registry().json_schema(["emote", "move"]))
+        self.assertEqual(set(branches), {"emote", "move"})
+
+    def test_none_lists_all(self):
+        branches = _branches(default_registry().json_schema())
+        self.assertEqual(set(branches),
+                         {"emote", "move", "give_item", "take_item", "drop_item"})
+
+
 class CapturingProvider(OpenAICompatibleProvider):
     """An OpenAI-compatible provider whose network POST is captured, not sent —
     so we can prove exactly what the constraint puts on the wire."""

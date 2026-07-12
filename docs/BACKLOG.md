@@ -9,8 +9,28 @@ Cross-references to the roadmap phases in `docs/PLAN.md` are noted per item.
 
 ---
 
-## B1 — Richer, more flexible command vocabulary
+## B1 — Richer, more flexible command vocabulary  — B1a LANDED 2026-07-12
 *Noticed 2026-07-10.*
+
+**Status (2026-07-12): the deterministic tier (B1a) shipped; the LLM free-text
+fallback (B1b) is the remaining follow-up.** `loom/command.py` is a game-agnostic,
+world-free *syntactic* parser: a verb table with synonyms (`take/get/grab`,
+`pick up`, `put down`, `hand`) and multi-word verbs, a `verb + DO + prep + IO`
+grammar, and symbolic per-slot scopes the engine maps to real candidate sets.
+The engine resolves the object phrases against scope (reusing `naming.resolve`,
+so disambiguation — "Which do you mean: brass key, iron key?" — is inherited) and
+routes world-changing verbs through the *same* `ActionRegistry` the NPCs use.
+New player reach: `look at X` / `examine X`, `take X [from Y]`, phrasing tolerance
+and articles (`take the lantern`), plus the existing `give X to Y` / `drop X`.
+`take`/`drop` were promoted into registry actions (`take_item`, `drop_item`) so
+every player world-change runs one path; a **per-mind offered-action subset**
+(`NpcMind(offered=…)`, narrowing both `describe()` and `json_schema()`) keeps the
+NPC catalogue — and the behavioral harness — unchanged by the new player-only
+verbs. 43 new offline tests (172 total). **B1b remaining:** a tolerant LLM
+intent parser as a fallback for phrasing the verb table can't handle — free text
+→ a schema-constrained action (reusing the constrained-decoding grammar), behind
+the same seam. Deferred deliberately (the deterministic tier covers the common
+case with no model).
 
 **Want:** a much richer and more flexible player command set — complex,
 multi-object commands like `say something to X`, `look at X`, `take X from

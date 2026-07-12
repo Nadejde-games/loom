@@ -10,6 +10,14 @@ from .action import ActionRegistry, ActionContext, ActionIntent, default_registr
 from .salience import SalienceGate, SalienceContext, default_gate, is_addressed
 from .naming import resolve, Resolved, Ambiguous
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
+from . import command
+
+# Actions the default game offers the *player* but not its NPCs — the NPCs in
+# this world don't scavenge the floor. Purely a content choice (not a seam rule):
+# a game can widen any NPC's catalogue by giving its NpcMind a different offered
+# set. Keeps the NPC action catalogue (and the behavioral harness) unchanged as
+# player-only verbs are added to the shared registry.
+PLAYER_ONLY_ACTIONS = ("take_item", "drop_item")
 
 
 class Engine:
@@ -21,15 +29,23 @@ class Engine:
         self.start_location = start_location
         self.actions = registry or default_registry()
         self.gate = gate or default_gate()
+        self.verbs = command.default_verbs()   # the player-command vocabulary
         self.minds: dict[str, NpcMind] = {}
         self.players: dict[str, Player] = {}    # session id -> player
         self.sessions: dict[str, Session] = {}  # session id -> session
         self._pcount = 0
         self._tasks: set[asyncio.Task] = set()  # in-flight async NPC replies
+        # The action catalogue offered to NPCs — the shared registry minus the
+        # player-only verbs (see PLAYER_ONLY_ACTIONS). Both the prompt and the
+        # constrained-decoding grammar are narrowed to this, so NPC behavior is
+        # unchanged as player-only actions join the registry.
+        self.npc_actions = [n for n in self.actions.names()
+                            if n not in PLAYER_ONLY_ACTIONS]
         # Give every NPC in the world a mind that can act through the registry.
         for ent in world.entities.values():
             if isinstance(ent, Npc):
-                self.minds[ent.id] = NpcMind(ent, provider, registry=self.actions)
+                self.minds[ent.id] = NpcMind(ent, provider, registry=self.actions,
+                                             offered=self.npc_actions)
 
     # ---- Handler protocol (called by GameServer) ----
     async def on_connect(self, session: Session) -> None:
@@ -55,36 +71,42 @@ class Engine:
         player = self.players.get(session.id)
         if not player:
             return
-        cmd, _, arg = text.strip().partition(" ")
-        cmd = cmd.lower()
-        arg = arg.strip()
-        if cmd in ("look", "l"):
+        # Parse first (B1): flexible player text -> a canonical verb + object
+        # phrases. World-changing verbs go through the same registry seam the
+        # NPCs use; queries are handled directly; free-text verbs (say) keep
+        # their words. Noun resolution against scope happens here in the engine.
+        p = command.parse(text, self.verbs)
+        if p.verb is None:
+            if p.unknown:
+                await session.send_text(f'Unknown command: "{p.unknown}". Type help.')
+            return
+        if p.verb.kind == "text":               # say
+            await self._say(session, player, p.words)
+        elif p.verb.kind == "action":           # take / drop / give — the seam
+            await self._player_action(session, player, p)
+        else:                                   # a read-only query
+            await self._query(session, player, p)
+
+    async def _query(self, session: Session, player, p: command.Parse) -> None:
+        """Dispatch a read-only command (no world mutation, no seam needed)."""
+        t = p.verb.target
+        if t == "look":
             await self._look(session)
-        elif cmd == "say":
-            await self._say(session, player, arg)
-        elif cmd in ("go", "move"):
-            await self._go(session, player, arg)
-        elif cmd in ("north", "south", "east", "west", "up", "down",
-                     "n", "s", "e", "w", "u", "d"):
-            await self._go(session, player, cmd)
-        elif cmd in ("take", "get"):
-            await self._take(session, player, arg)
-        elif cmd == "drop":
-            await self._drop(session, player, arg)
-        elif cmd == "give":
-            await self._give(session, player, arg)
-        elif cmd in ("inventory", "inv", "i"):
+        elif t == "examine":
+            await self._examine(session, player, p.dobj)
+        elif t == "go":
+            await self._go(session, player, p.dobj)
+        elif t == "inventory":
             await self._inventory(session, player)
-        elif cmd in ("who",):
-            here = ", ".join(e.name for e in self.world.occupants(player.location_id))
+        elif t == "who":
+            here = ", ".join(e.name for e in
+                             self.world.occupants(player.location_id, exclude=player.id))
             await session.send_text("Here: " + (here or "no one but you"))
-        elif cmd in ("help", "?"):
+        elif t == "help":
             await session.send_text(self._help())
-        elif cmd in ("quit", "exit"):
+        elif t == "quit":
             await session.send_system("Goodbye.")
             await session.close()
-        else:
-            await session.send_text(f'Unknown command: "{cmd}". Type help.')
 
     # ---- commands ----
     async def _look(self, session: Session) -> None:
@@ -175,12 +197,18 @@ class Engine:
                      exits=list(loc.exits.keys()), others=others, items=items,
                      inventory=inventory)
 
-    async def _perform(self, location_id: str, actor, mind, intent):
+    async def _perform(self, location_id: str, actor, mind, intent,
+                       exclude_session: str | None = None):
         """Execute one validated intent and narrate its outcome. Returns the
         ActionResult, or None if the action was unknown or its handler failed
         (e.g. a give whose item/recipient didn't resolve) — the player-side
-        give path uses that None to report failure. ``mind`` may be None when
-        the actor is a player rather than an NPC (no memory to write)."""
+        action path uses that None to report failure. ``mind`` may be None when
+        the actor is a player rather than an NPC (no memory to write).
+
+        ``exclude_session`` skips one session in the room broadcasts — used for a
+        player actor, who has already received a tailored second-person line and
+        should not also hear the room's third-person narration of their own act.
+        """
         spec = self.actions.get(intent.name)
         if spec is None:      # defense in depth; the mind should never send this
             print(f"[loom] dropped unknown action {intent.name!r} from {actor.id}")
@@ -196,13 +224,14 @@ class Engine:
             # Narrate where the actor now is — an action (e.g. move) may have
             # relocated it; emote leaves it put.
             where = getattr(actor, "location_id", None) or location_id
-            await self._broadcast(where, "text", result.narration)
+            await self._broadcast(where, "text", result.narration,
+                                  exclude=exclude_session)
         # Room-targeted lines: an action that touches more than one room (move's
         # departure + arrival) names each room explicitly. Correct for multiplayer
         # — each room hears only its own line.
         for target, line in result.broadcasts:
             if target and line:
-                await self._broadcast(target, "text", line)
+                await self._broadcast(target, "text", line, exclude=exclude_session)
         return result
 
     async def _broadcast(self, location_id: str, kind: str, text: str,
@@ -240,64 +269,123 @@ class Engine:
         self.world.move(player.id, loc.exits[direction])
         await self._look(session)
 
-    # ---- inventory commands ----
-    # take/drop are single-object player conveniences that touch only the
-    # player's own room and inventory, so — like _go — they call the world
-    # model directly. give is different: it is world-mutating and shared with
-    # NPCs, so it routes through the action registry (the seam) below.
-    async def _take(self, session: Session, player, arg: str) -> None:
-        if not arg:
-            await session.send_text("Take what?")
+    async def _examine(self, session: Session, player, phrase: str) -> None:
+        """look at / examine a specific thing in scope — a read-only description."""
+        if not phrase:
+            await self._look(session)          # "look" with no object = the room
             return
-        match = resolve(arg, self.world.contents(player.location_id))
+        match = resolve(phrase, self.world.scope(player.id))
         if isinstance(match, Resolved):
-            item = match.entity
-            if not getattr(item, "portable", True):
-                await session.send_text(f"You can't take {item.name}.")
+            desc = getattr(match.entity, "description", "")
+            await session.send_text(
+                desc or f"You see nothing special about {match.entity.name}.")
+        elif isinstance(match, Ambiguous):
+            await session.send_text(self._which(match))
+        else:
+            await session.send_text(f'You see no "{phrase}" here.')
+
+    # ---- the player action path (the seam, player side) ----
+    # take / drop / give are world-mutating and shared with NPCs, so they route
+    # through the same ActionRegistry the NPCs use — one execution path, whoever
+    # acts. The engine resolves the object phrases against scope first, purely to
+    # disambiguate ("which key?") and to acknowledge in the second person; the
+    # action *handler* re-resolves the same phrases as the authoritative gate.
+    async def _player_action(self, session: Session, player,
+                             p: command.Parse) -> None:
+        v = p.verb
+        resolved: dict = {}
+        # Indirect object first, so a dependent direct object (take X from Y:
+        # the item lives in Y's contents) has its source resolved in hand.
+        if v.iobj is not None and p.iobj:
+            cands = self._candidates(player, v.iobj.scope, resolved)
+            match = resolve(p.iobj, cands)
+            if isinstance(match, Ambiguous):
+                await session.send_text(self._which(match))
                 return
-            self.world.place_item(item.id, player.id)
-            # Item names carry their own article, so we never prepend another.
-            await session.send_text(f"You take {item.name}.")
-            await self._broadcast(player.location_id, "text",
-                                  f"{player.name} takes {item.name}.",
-                                  exclude=session.id)
-        elif isinstance(match, Ambiguous):
-            await session.send_text(self._which(match))
-        else:
-            await session.send_text(f'There is no "{arg}" here to take.')
-
-    async def _drop(self, session: Session, player, arg: str) -> None:
-        if not arg:
-            await session.send_text("Drop what?")
+            if not isinstance(match, Resolved):
+                await session.send_text(f'There is no "{p.iobj}" here.')
+                return
+            resolved[v.iobj.arg] = match.entity
+        elif v.iobj is not None and not v.dobj_from_iobj:
+            # A required indirect object is missing (give needs a recipient).
+            await session.send_text(self._usage(v))
             return
-        match = resolve(arg, self.world.contents(player.id))
-        if isinstance(match, Resolved):
-            item = match.entity
-            self.world.place_item(item.id, player.location_id)
-            await session.send_text(f"You drop {item.name}.")
-            await self._broadcast(player.location_id, "text",
-                                  f"{player.name} drops {item.name}.",
-                                  exclude=session.id)
-        elif isinstance(match, Ambiguous):
-            await session.send_text(self._which(match))
-        else:
-            await session.send_text(f'You are not carrying a "{arg}".')
 
-    async def _give(self, session: Session, player, arg: str) -> None:
-        # A deliberately tiny parser — "<item> to <recipient>". The point is
-        # not the grammar (that is B1) but the seam: player input becomes a
-        # proposed action run through the very same registry + validation +
-        # handler the NPCs use. One execution path for "give", whoever acts.
-        item_phrase, sep, who_phrase = arg.partition(" to ")
-        item_phrase, who_phrase = item_phrase.strip(), who_phrase.strip()
-        if not sep or not item_phrase or not who_phrase:
-            await session.send_text('Give what to whom? (try: give lantern to Wren)')
+        if not p.dobj:
+            await session.send_text(self._usage(v))
             return
-        intent = ActionIntent(name="give_item",
-                              args={"item": item_phrase, "recipient": who_phrase})
-        result = await self._perform(player.location_id, player, None, intent)
+        dscope = (command.IOBJ_CONTENTS
+                  if (v.dobj_from_iobj and v.iobj is not None
+                      and v.iobj.arg in resolved)
+                  else v.dobj.scope)
+        cands = self._candidates(player, dscope, resolved)
+        match = resolve(p.dobj, cands)
+        if isinstance(match, Ambiguous):
+            await session.send_text(self._which(match))
+            return
+        if not isinstance(match, Resolved):
+            await session.send_text(self._no_such(v, p.dobj, resolved))
+            return
+        item = match.entity
+        resolved[v.dobj.arg] = item
+        if not getattr(item, "portable", True):
+            await session.send_text(f"You can't take {item.name}; it is fixed here."
+                                    if v.target == "take_item"
+                                    else f"You can't move {item.name}.")
+            return
+
+        # Build the intent from the raw phrases; the handler re-resolves them —
+        # the seam's guarantee holds whether an NPC or a player proposed the act.
+        args = {v.dobj.arg: p.dobj}
+        if v.iobj is not None and p.iobj:
+            args[v.iobj.arg] = p.iobj
+        intent = ActionIntent(name=v.target, args=args)
+        result = await self._perform(player.location_id, player, None, intent,
+                                     exclude_session=session.id)
         if result is None:
-            await session.send_text("You can't give that here.")
+            await session.send_text("You can't do that here.")
+            return
+        # The source-form ack ("… from Wren") when an optional source resolved.
+        ack = (v.ack_source if v.ack_source and v.iobj is not None
+               and v.iobj.arg in resolved else v.ack)
+        await session.send_text(ack.format(**{k: e.name for k, e in resolved.items()}))
+
+    def _candidates(self, player, scope: str, resolved: dict) -> list:
+        """Map a symbolic scope (from the verb table) to real candidate entities."""
+        w, loc = self.world, player.location_id
+        if scope == command.FLOOR:
+            return w.contents(loc)
+        if scope == command.INVENTORY:
+            return w.contents(player.id)
+        if scope == command.OCCUPANTS:
+            return w.occupants(loc, exclude=player.id)
+        if scope == command.PRESENT:
+            return list(w.occupants(loc, exclude=player.id)) + list(w.contents(loc))
+        if scope == command.SCOPE:
+            return w.scope(player.id)
+        if scope == command.IOBJ_CONTENTS:
+            # Only the indirect object is resolved at this point (take X from Y).
+            src = next(iter(resolved.values()), None)
+            return w.contents(src.id) if src is not None else []
+        return []
+
+    @staticmethod
+    def _usage(v: command.Verb) -> str:
+        return {
+            "take_item": "Take what? (try: take lantern, or take map from Wren)",
+            "drop_item": "Drop what? (try: drop lantern)",
+            "give_item": "Give what to whom? (try: give lantern to Wren)",
+        }.get(v.target, f"{v.canonical.capitalize()} what?")
+
+    @staticmethod
+    def _no_such(v: command.Verb, phrase: str, resolved: dict) -> str:
+        if v.target == "take_item":
+            src = resolved.get("source")
+            return (f'{src.name} has no "{phrase}".' if src is not None
+                    else f'There is no "{phrase}" here to take.')
+        if v.target in ("drop_item", "give_item"):
+            return f'You are not carrying a "{phrase}".'
+        return f'There is no "{phrase}" here.'
 
     async def _inventory(self, session: Session, player) -> None:
         held = self.world.contents(player.id)
@@ -318,6 +406,10 @@ class Engine:
                 "(Type help for commands.)")
 
     def _help(self) -> str:
-        return ("Commands: look | say <words> | go <dir> (or n/s/e/w/u/d) | "
-                "take <item> | drop <item> | give <item> to <who> | "
-                "inventory (i) | who | help | quit")
+        return ("Commands:\n"
+                "  look (l) · look at <thing> · examine <thing>\n"
+                "  go <dir> — or just n/s/e/w/u/d\n"
+                "  take <item> [from <who>] (get/grab/pick up) · drop <item> (put down)\n"
+                "  give <item> to <who> (hand) · inventory (i)\n"
+                "  say <words> · who · help · quit\n"
+                "Phrasing is flexible, and \"the\"/\"a\" are fine.")

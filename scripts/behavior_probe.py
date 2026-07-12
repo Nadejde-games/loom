@@ -178,8 +178,11 @@ async def run_scenario(provider, sc: Scenario):
     for _ in range(sc.n):
         scene = engine._scene_for(npc, npc.location_id)
         # Fresh mind (fresh memory) per trial so trials are independent and the
-        # result is a clean characterisation, not a drifting conversation.
-        mind = NpcMind(npc, provider, registry=engine.actions)
+        # result is a clean characterisation, not a drifting conversation. Offer
+        # the same action subset the engine gives its NPCs, so the harness tests
+        # the real catalogue (not the player-only take/drop).
+        mind = NpcMind(npc, provider, registry=engine.actions,
+                       offered=engine.npc_actions)
         try:
             turn = await mind.converse("Wanderer", sc.utterance,
                                        scene=scene, addressed=sc.addressed)
