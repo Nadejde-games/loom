@@ -180,6 +180,19 @@ class SceneTests(unittest.TestCase):
         self.assertIn("Exits you can take: north, down", prompt)
         self.assertIn("Also here with you: Wanderer-1", prompt)
 
+    def test_scene_renders_items_it_can_see(self):
+        m = mind(FakeProvider())
+        prompt = m._system_prompt(Scene(location="Room A",
+                                        items=["a rusty lantern", "a brass key"]))
+        self.assertIn("a rusty lantern, a brass key", prompt)
+        self.assertIn("On the ground here", prompt)
+
+    def test_scene_renders_own_inventory(self):
+        m = mind(FakeProvider())
+        prompt = m._system_prompt(Scene(location="Room A",
+                                        inventory=["a worn hill-map"]))
+        self.assertIn("You are carrying: a worn hill-map", prompt)
+
     def test_no_exits_is_stated(self):
         m = mind(FakeProvider())
         prompt = m._system_prompt(Scene(location="Cell", exits=[]))

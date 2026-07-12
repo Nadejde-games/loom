@@ -1,7 +1,7 @@
 # Project plan — Loom engine & the forever game
 
 Living document. The reference for where we are and where we're going.
-Last updated: 2026-07-10.
+Last updated: 2026-07-12.
 
 ## Vision
 
@@ -26,7 +26,10 @@ Loom must remain packageable and independent of any one game's content.
 3. **AI behind one interface.** Everything depends on `LLMProvider`; the engine
    can't tell fake from real. Provider is swappable and lazy.
 4. **Never execute raw model text.** Dialogue may be shown; every *state change*
-   goes through a schema-validated tool-call. This seam is load-bearing.
+   goes through a schema-validated tool-call. This seam is load-bearing. Its
+   strongest form is **grammar-constrained decoding** — preventing a malformed
+   envelope at the token level rather than correcting one after the fact (see
+   *Phase 2 hardening*); validate-and-retry remains behind it as defense-in-depth.
 5. **AI calls run off the game loop** (async), so latency never stalls the world.
 6. **Memory is one substrate** shared by NPCs and players (Generative-Agents
    memory stream; recency now, importance/embeddings/reflection later).
@@ -88,7 +91,7 @@ Remaining in this phase:
   instead of JSON envelopes (graceful degradation, GMCP-style).
 - Deferred to when it pays: Anthropic path stays available for comparison.
 
-### Phase 2 — The action seam  ▶ in progress (emote + move slices landed 2026-07-10)
+### Phase 2 — The action seam  ▶ in progress (emote + move 2026-07-10; inventory keel + give_item 2026-07-12)
 Give NPCs (and later the GM) the ability to *act*, not just speak, via
 schema-validated actions. A validation + retry layer turns model output into
 safe game actions. This is the interface the game-master and loot engine both
@@ -137,10 +140,36 @@ Built:
   a persona `disposition` field. Live: reticent Odd stays silent on ~3/5 idle
   remarks and speaks only when a topic touches him; gregarious Wren answers 5/5.
   A game or the Phase 3 director can still install a smarter gate behind the seam.
-- `tests/` — 68 offline tests (validation, parse-tolerance incl. the live
-  malformations, retry recovery, engine end-to-end emote **and** a two-room
-  move, perception rendering, the salience gate, chosen silence, the silence
-  levers). No GPU needed.
+- **The inventory keel + `give_item`** (2026-07-12) — brought forward from "near
+  Phase 4" because it is the shared prerequisite for B1 (player commands) *and*
+  the loot forge. Built game-agnostic in `loom/`:
+  - `world/entity.py` gains `Item` (a sibling of `Character`, located by a single
+    `holder` — a location = floor, a character = inventory, later an item =
+    container). `World` keeps a reverse index (`_contents`) mirroring `holder`,
+    exactly as `Location.occupants` mirrors `Character.location_id`. One mutator,
+    `place_item`, backs take/drop/give (each is just a change of holder);
+    `contents()` and `scope()` (room occupants + floor items + own inventory) are
+    the query surface. Items load from a `"items":[…]` array in `world.json`.
+  - `loom/naming.py` — `resolve(phrase, scope)` turns a noun phrase into the entity
+    meant, returning `Resolved` / `Ambiguous` / `NoMatch` (exact ▸ whole-word ▸
+    prefix, honest about ambiguity). The IF/MUD scope-resolution model in
+    miniature; the generalisation of `salience.is_addressed`. Prior-art survey
+    recorded on B1.
+  - `give_item` — the first *multi-object* action: the schema guarantees two
+    strings; the handler resolves the item against what the actor holds and the
+    recipient against who is present, refusing (dropped `ActionError`) when either
+    is unknown or ambiguous. Shared by NPCs and the player path.
+  - Perception: `Scene` gains `items` (on the ground) and `inventory` (what the
+    NPC carries) — the latter added after the behavioral harness caught an NPC
+    denying it held an item it was carrying. NPCs still never read `World`.
+  - Player payoff: `take` / `drop` / `inventory` and `give <item> to <who>`; give
+    routes through the *same* registry the NPCs use — the player-side mirror of
+    the seam in miniature (a trivial parser now; the rich grammar is B1).
+- `tests/` — **114 offline tests** (the above + validation, parse-tolerance incl.
+  the live malformations, retry recovery, engine end-to-end emote/move/give,
+  perception rendering, the salience gate, chosen silence, the resolver, the
+  containment model). No GPU needed. **Plus a live behavioral harness** — see
+  *Testing discipline* below — 7 scenarios green against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
@@ -155,9 +184,55 @@ Built:
   (persona wording can't fix it; it's a sampling/prompt-weight lever).
 
 Remaining actions to build out on this seam (each ~a handler + schema + a world
-capability where needed): **give_item** (needs an item/inventory world-model
-first — near Phase 4), **offer_quest**, **remember_fact**. Also: let *players*
-emote/act (the player-side mirror of the seam — see B1).
+capability where needed): **offer_quest**, **remember_fact** (`give_item` and the
+item/inventory world-model landed 2026-07-12). Player-side acting has its first
+slice (take/drop/give); the *rich, phrasing-tolerant* command grammar is B1, now
+unblocked by the inventory keel.
+
+### Phase 2 hardening — constrained decoding (grammar-guaranteed envelopes)  ▶ next
+Make design commitment #4 *structural*: constrain generation to the turn-envelope
+grammar so the model **cannot** emit a malformed `{"speech","actions":[…]}` object
+in the first place — the shape is guaranteed at the token level, not validated and
+repaired after. The prior-art survey (2026-07-11) confirmed this is the standard
+approach and strictly dominates generate-then-validate: Gigax drives local NPC
+actions through Outlines constrained decoding, and vLLM (`guided_json` /
+`response_format`), llama.cpp (GBNF grammars) and recent Ollama (`format` /
+`response_format: json_schema`) all expose it over the same OpenAI-compatible waist
+we already speak. This **retires B6** (the tolerant parser's degrade-to-speech
+branch could leak a raw broken envelope to the room) by construction, and hardens
+every action still to come — give_item, offer_quest, the Phase 3 director and the
+Phase 4 loot forge all inherit the guarantee for free. Do it *before* building more
+actions, so nothing new is written against the weaker guarantee.
+
+The seam's durable half is unchanged — only *how the model is asked* gets stronger,
+exactly as the Phase 2 design anticipated ("native tools can graduate later behind
+the same registry"):
+- **One source of truth.** `ActionRegistry` grows a schema emitter (a
+  `json_schema()` beside the existing `describe()`) that renders the same `Param`
+  specs it already validates against into a JSON Schema for the whole turn:
+  `speech: str` + an `actions` array whose items are a `oneOf` over the registered
+  actions (each action's `name` as a const + its typed `args`). Schema and prompt
+  catalogue derive from one place, so they can never drift.
+- **Provider gains an optional constraint.** `LLMProvider.complete()` takes an
+  optional `response_format`/`schema` (default `None` → today's behaviour verbatim;
+  `FakeProvider` ignores it, so the offline test suite stays green with no live
+  backend). `OpenAICompatibleProvider` forwards it as
+  `response_format: {"type":"json_schema", …}`; per-backend field differences
+  (Ollama `format`, vLLM `guided_json`) are translated *inside* the provider — the
+  same place the `reasoning_effort` / `num_ctx` quirks already live — with the JSON
+  Schema as the portable form.
+- **Belt *and* suspenders.** The validate → retry → degrade-to-speech layer stays
+  as defense-in-depth for backends without constraint support and for the
+  `FakeProvider` / offline path. Constrained decoding is an *additional*, stronger
+  guarantee, never a replacement for the seam.
+- **Shape, not judgement.** The grammar guarantees a well-formed envelope; it does
+  **not** decide *which* action fits or whether to stay silent. The prompt catalogue
+  and the silence levers (B4) still do that — so **B5** (the model under-selecting
+  `move`) is untouched by this and remains a sampling/prompt lever, not something a
+  grammar can fix.
+
+Verify: schema-emitter unit tests offline; a live run on the real Ollama/vLLM path
+proving a constrained turn cannot reproduce the B6 malformation.
 
 ### Phase 3 — Game-master director  ○
 A world-observing "director" agent on a slow cadence (hangs off the game loop),
@@ -187,9 +262,41 @@ WebSocket transport implementing the same `Handler` contract; emit `map` /
 AI-assisted world creation and editing over the world schema — descriptions,
 regions, NPCs, story — with validation. The GM/creator toolkit.
 
+## Testing discipline — two gates, run BOTH after every implementation phase
+
+There are two layers to every feature, and they need two different gates.
+
+1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
+   (114 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   given a valid action, the world changes correctly. Fast; run constantly.
+2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
+   model. Proves the **mind**: does the model *choose* the right action and *use*
+   what it perceives. The offline suite structurally **cannot** see this
+   (`FakeProvider` is scripted), and real faults live here — a guide that spoke of
+   leading but never moved (0/5), an NPC blind to the item at its feet, an NPC
+   denying it held what it carried. Each scenario runs N live trials and passes on
+   a threshold (behavior is stochastic). One scenario per behavior we have
+   verified working; once a behavior is in the harness it is tested **every time**.
+
+**The rule: after each implementation phase — and specifically after ANY change
+that touches a prompt, the action catalogue, or perception — run BOTH gates.** Not
+only the thing you changed: the action catalogue is a shared, competitive surface,
+so adding one action can regress the *selection* of another (adding `give_item`
+measurably diluted `move`). Probe the neighbours too. If a verified behavior
+regressed, the harness fails and names it; fix it before moving on. When a new
+behavior lands and is confirmed live, add a scenario so it is guarded from then on.
+
+Honest limit: this is measurement, not proof. Behavior is a distribution — some
+actions have a real ceiling on the current local model (move-when-asked is ~70%
+single-pass on `qwen3.5:35b-a3b`; see B5). Thresholds are set to catch a *collapse*
+or a *regression*, not to force the model past its ceiling. Label claims as
+*mechanical* (guaranteed by the offline suite) or *behavioral* (characterised, with
+a rate) — never conflate them.
+
 ## Cross-cutting (ongoing)
-Tests alongside each phase · schema/versioning for save data · cost & latency
-budgets for AI calls · keeping `loom/` free of game-specific content.
+Tests alongside each phase (BOTH gates — see *Testing discipline*) · schema/
+versioning for save data · cost & latency budgets for AI calls · keeping `loom/`
+free of game-specific content.
 
 Unscheduled improvements noticed during review live in `docs/BACKLOG.md`
 (richer command grammar · fused speech+action lines · rich text formatting ·
@@ -201,7 +308,9 @@ With the venv active (`source .venv/bin/activate`), `PYTHONPATH` is not needed:
 ```
 Server:     python game/main.py
 Client:     python client/terminal.py
-Unit tests: python -m unittest discover -s tests    (offline, no GPU)
+Unit tests: python -m unittest discover -s tests    (offline, no GPU — the engine gate)
+Behavioral: LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b \
+              python scripts/behavior_probe.py       (live — the mind gate; add a tag/name to filter)
 Smoke test: python scripts/smoke.py      (server must be running)
 Wire demo:  python scripts/wire_demo.py  (self-contained)
 Provider ping: python scripts/try_provider.py   (shows speech + validated actions)

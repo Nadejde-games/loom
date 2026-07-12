@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .naming import resolve, Resolved
+
 
 class ActionError(RuntimeError):
     """A proposed action failed validation or execution."""
@@ -220,14 +222,54 @@ def _move(ctx: ActionContext) -> ActionResult:
     )
 
 
+def _give_item(ctx: ActionContext) -> ActionResult:
+    """Hand an item the actor is holding to another character present with it.
+
+    The seam in miniature for inventory, and the first *multi-object* action:
+    the schema only guaranteed two strings; this handler resolves them against
+    the real world — the item against what the actor actually holds, the
+    recipient against who is actually present — and refuses (``ActionError``,
+    which the engine drops) when either is unknown or ambiguous. Nothing moves
+    on the model's say-so; both ends are confirmed against the world first.
+    """
+    world, actor = ctx.world, ctx.actor
+    aid = getattr(actor, "id", "actor")
+    item_phrase = str(ctx.args["item"]).strip()
+    who_phrase = str(ctx.args["recipient"]).strip()
+
+    r_item = resolve(item_phrase, world.contents(aid))
+    if not isinstance(r_item, Resolved):
+        raise ActionError(f'{aid} holds no single clear "{item_phrase}" to give')
+
+    loc_id = getattr(actor, "location_id", None)
+    present = world.occupants(loc_id, exclude=aid) if loc_id else []
+    r_who = resolve(who_phrase, present)
+    if not isinstance(r_who, Resolved):
+        raise ActionError(f'no single clear "{who_phrase}" here to receive it')
+
+    item, recipient = r_item.entity, r_who.entity
+    if not world.place_item(item.id, recipient.id):
+        raise ActionError(f'{aid} could not give {item.id!r} to {recipient.id!r}')
+
+    aname = getattr(actor, "name", "Someone")
+    # Item names carry their own article ("a brass key"), so we never prepend
+    # another — "gives a brass key to", not "gives the a brass key to".
+    return ActionResult(
+        narration=f"{aname} gives {item.name} to {recipient.name}.",
+        actor_memory=f"I gave {item.name} to {recipient.name}.",
+    )
+
+
 def default_registry() -> ActionRegistry:
     """A registry preloaded with the built-in actions every world gets."""
     reg = ActionRegistry()
     reg.register(ActionSpec(
         name="emote",
-        description=('perform a brief, visible physical action or gesture; give '
-                     'the action text only, as a third-person verb phrase without '
-                     'your own name, e.g. "nods slowly" or "gestures at the path"'),
+        description=('perform a brief, visible physical action or gesture that '
+                     'does not move you or change the world; give the action '
+                     'text only, as a third-person verb phrase without your own '
+                     'name, e.g. "nods slowly" or "narrows her eyes". To go '
+                     'somewhere, use move, not this.'),
         params={"text": Param("str", required=True,
                               desc="the gesture as a verb phrase, no name")},
         handler=_emote,
@@ -241,5 +283,20 @@ def default_registry() -> ActionRegistry:
                                    desc="a single exit direction from your "
                                         "current location, e.g. north")},
         handler=_move,
+    ))
+    reg.register(ActionSpec(
+        name="give_item",
+        description=('hand over an item you are holding to another character '
+                     'here with you; name the item and the recipient, e.g. '
+                     'item "brass key", recipient "Odd". Only give something you '
+                     'actually hold, to someone actually present.'),
+        params={
+            "item": Param("str", required=True,
+                          desc="the item you are holding, by name"),
+            "recipient": Param("str", required=True,
+                               desc="who receives it — a character present "
+                                    "with you, by name"),
+        },
+        handler=_give_item,
     ))
     return reg

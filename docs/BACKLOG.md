@@ -29,6 +29,18 @@ fixed first-word verb + rest, exact-match dispatch).
   (`action.py`). Player input could become "proposed actions" run through the
   same schema-validation + retry machinery. Worth unifying rather than building
   a second parser.
+- **RESEARCH FIRST (before choosing grammar vs. LLM):** survey how existing
+  text-game / MUD / interactive-fiction engines parse player commands, as a third
+  option beside "hand-build a deterministic grammar" and "LLM intent parser".
+  Look at: Inform 7 / TADS (IF parsers with world-model scope resolution and
+  disambiguation — decades of prior art on exactly the `verb + DO + prep + IO`,
+  "which key do you mean?" problem), Evennia's command system (`Command` classes,
+  `CmdSet`, and its `MuxCommand` arg/switch parsing), classic DikuMUD/LPMud verb
+  tables, and any small tokenizer libs. Decide whether to adopt/adapt a proven
+  parsing model, borrow its disambiguation approach, or build our own — informed,
+  not from scratch. This follows the standing "research prior art before laying
+  foundations" preference. Output: a short comparison + a recommendation before
+  any parser code.
 - Prereq: an item/inventory world-model (shared with `give_item`, Phase 4) and
   a name-resolution helper ("X" → the entity meant, with disambiguation).
 
@@ -147,6 +159,30 @@ be **choice on the NPC's side** whether (and when) to respond.
 ## B5 — The model under-selects world-mutating actions (move) vs. emote
 *Noticed 2026-07-10.*
 
+**Status (2026-07-12): partly landed — prompt levers applied, honest ceiling
+measured, and now GUARDED by the behavioral harness.**
+- Two prompt levers in `mind.py`, no second LLM call: (1) a `move` few-shot
+  example beside the emote one (the sole prior example was an emote, which primed
+  gesture-over-move); (2) the `emote` action description no longer offers
+  "gestures at the path" as its example — that was the exact phrase the model
+  substituted for a move — and now says "to go somewhere, use move". A third
+  change conditions move on the *player's* intent to travel, so a willing guide
+  moves when asked to lead but not on idle chatter.
+- A gap that *looked* like B5 was really a data gap: an NPC asked to hand over an
+  item it held refused ("I don't have a map") because `Scene` carried only floor
+  items, never the NPC's own inventory. Fixed (`Scene.inventory`) — `give_item`
+  selection went 2/5 → 5/5. Not a sampling issue at all.
+- **Measured ceiling:** move-when-asked is ~70% single-pass on `qwen3.5:35b-a3b`
+  (6/8, 8/8, 6/8 across runs), up from ~0/5. The behavioral harness
+  (`scripts/behavior_probe.py`, `move.*`) now guards it — the threshold catches a
+  *collapse* or a regression, not to force the model higher. In real play the
+  effective rate runs higher (accumulating memory makes an NPC repeat its move).
+- **Still open (the real B5 lever):** raising the ceiling above ~70% needs a
+  structural change, not another prompt tweak — a two-pass turn (a cheap, low-temp
+  "act? and how?" decision, then the speech) or a more capable model. Deferred.
+  Note lowering temperature alone would entrench the *emote* mode on some
+  phrasings, so it is not the lever.
+
 **Want:** when an NPC's *intent* is to act on the world (e.g. a guide asked to
 lead should **walk**), it should reliably emit that action — not settle for a
 cosmetic `emote` ("gestures toward the trail") that changes nothing.
@@ -185,6 +221,13 @@ B2 (fused rendering), Phase 3 (a director could also arbitrate/insist).
 ## B6 — Degrade-to-speech leaks a broken JSON envelope to the player
 *Noticed 2026-07-11 (during B4 live testing).*
 
+**Status (2026-07-11): scheduled for structural fix.** Promoted into `docs/PLAN.md`
+as *Phase 2 hardening — constrained decoding*: grammar-constrained generation makes
+a malformed envelope impossible at the token level, so this leak cannot occur on any
+backend that supports the constraint. The considerations below remain the fallback
+design for backends without constraint support and the offline `FakeProvider` path,
+where validate-and-retry stays the last line of defense.
+
 **Want:** when the model emits a *malformed* turn envelope that the tolerant
 parser cannot recover, the player should never see raw JSON. Observed once in 10
 live turns: qwen3.5:35b-a3b produced an action array with a missing object-close
@@ -213,5 +256,40 @@ opposite of clean silence), B5 (action-selection reliability).
 
 ---
 
-*Add new observations below with an ID (`B7…`), a date, and the same
+## B7 — World atlas / explorer (render a world.json into a readable overview)
+*Noticed 2026-07-12. Lands in **Phase 7 (authoring tools)**.*
+
+**Want:** a way to *see* a whole world at a glance without playing through it — a
+map (rooms + exits), a character sheet per NPC (the persona: backstory, traits,
+goals, voice, disposition, and what they hold), and item locations. Answers the
+creator's question "how do I explore the world, characters, and story?" from the
+data side, and doubles as a validator for a world an AI author generates.
+
+**Where it lands:** authoring/tooling (Phase 7) — the *read* side of the authoring
+loop (authoring writes the schema; the atlas reads it back). Game-agnostic: it
+consumes the `world.json` schema, so it works on any world and grows with it.
+Start as a standalone script, no engine or GPU needed.
+
+**Considerations for later:**
+- **Start small and text-only:** a `scripts/atlas.py` over `content.load_world`
+  (or the raw JSON) that prints, per room, its description + exits + occupants +
+  floor items, then a character sheet per NPC and an item table. Read-only; zero
+  new deps. This alone is immediately useful for the dev.
+- **The map is the hard part.** A real 2D/graph layout from the `exits` adjacency
+  is non-trivial; begin with a simple adjacency listing (room → direction → room)
+  and a per-room detail block, and defer a drawn map. When a drawn map is wanted,
+  it is the same data the Phase 6 `map`/`entities` channels will carry — share it.
+- **Item holders** resolve via the containment model (`World.contents`): show
+  floor items under their room and inventory items under their holder.
+- **Two surfaces, one renderer:** a terminal text view now; later a richer visual
+  view (a shareable atlas page, or the rich client's map). Keep the data-gathering
+  separate from the rendering so both can sit on it.
+
+**Related:** Phase 7 (authoring), Phase 6 (map/entities channels), the inventory
+world-model (2026-07-12, gives item locations), design commitment #2 (editable
+data). Deferred here at the user's request (2026-07-12) rather than built now.
+
+---
+
+*Add new observations below with an ID (`B8…`), a date, and the same
 what / where-it-lands / considerations shape.*

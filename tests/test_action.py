@@ -7,7 +7,7 @@ from loom.action import (
     ActionRegistry, ActionSpec, ActionContext, ActionError, Param,
     default_registry,
 )
-from loom.world import World, Location, Npc
+from loom.world import World, Location, Npc, Item
 
 
 class _Actor:
@@ -86,12 +86,19 @@ class RegistryTests(unittest.TestCase):
         reg = default_registry()
         self.assertIn("emote", reg)
         self.assertIn("move", reg)
-        self.assertEqual(reg.names(), ["emote", "move"])
+        self.assertIn("give_item", reg)
+        self.assertEqual(reg.names(), ["emote", "move", "give_item"])
 
     def test_describe_lists_move(self):
         text = default_registry().describe()
         self.assertIn("move(", text)
         self.assertIn("direction: str", text)
+
+    def test_describe_lists_give_item(self):
+        text = default_registry().describe()
+        self.assertIn("give_item(", text)
+        self.assertIn("item: str", text)
+        self.assertIn("recipient: str", text)
 
 
 class EmoteHandlerTests(unittest.TestCase):
@@ -162,6 +169,90 @@ class MoveHandlerTests(unittest.TestCase):
         world = _two_room_world()
         self._run(world, "  NORTH ")
         self.assertEqual(world.entities["odd"].location_id, "b")
+
+
+def _give_world():
+    """A room with Odd holding a brass key, and Wren present to receive it."""
+    world = World()
+    world.add_location(Location(id="room", name="Room"))
+    world.add_entity(Npc(id="odd", name="Odd", location_id="room"))
+    world.add_entity(Npc(id="wren", name="Wren", location_id="room"))
+    world.add_entity(Item(id="key", name="a brass key", holder="odd",
+                          aliases=["key", "brass"]))
+    return world
+
+
+class GiveItemValidateTests(unittest.TestCase):
+    def setUp(self):
+        self.reg = default_registry()
+
+    def test_valid(self):
+        self.assertEqual(
+            self.reg.validate("give_item", {"item": "key", "recipient": "Wren"}), [])
+
+    def test_missing_item(self):
+        errs = self.reg.validate("give_item", {"recipient": "Wren"})
+        self.assertTrue(any("missing required" in e for e in errs))
+
+    def test_missing_recipient(self):
+        errs = self.reg.validate("give_item", {"item": "key"})
+        self.assertTrue(any("missing required" in e for e in errs))
+
+    def test_item_wrong_type(self):
+        errs = self.reg.validate("give_item", {"item": 3, "recipient": "Wren"})
+        self.assertTrue(any("must be str" in e for e in errs))
+
+    def test_unknown_arg(self):
+        errs = self.reg.validate(
+            "give_item", {"item": "key", "recipient": "Wren", "gently": True})
+        self.assertTrue(any('unknown arg "gently"' in e for e in errs))
+
+
+class GiveItemHandlerTests(unittest.TestCase):
+    def setUp(self):
+        self.spec = default_registry().get("give_item")
+
+    def _run(self, world, item, recipient, actor_id="odd"):
+        actor = world.entities[actor_id]
+        return self.spec.handler(
+            ActionContext(world, actor, {"item": item, "recipient": recipient}))
+
+    def test_transfers_narrates_and_remembers(self):
+        world = _give_world()
+        res = self._run(world, "key", "Wren")
+        self.assertEqual(world.entities["key"].holder, "wren")
+        self.assertIn("key", [i.id for i in world.contents("wren")])
+        self.assertNotIn("key", [i.id for i in world.contents("odd")])
+        self.assertEqual(res.narration, "Odd gives a brass key to Wren.")
+        self.assertIn("a brass key", res.actor_memory)
+
+    def test_resolves_recipient_by_partial_name(self):
+        # Resolution is by scope, not exact string: "Wr" finds Wren.
+        world = _give_world()
+        self._run(world, "brass", "Wr")
+        self.assertEqual(world.entities["key"].holder, "wren")
+
+    def test_item_not_held_raises_and_leaves_world_untouched(self):
+        world = _give_world()
+        with self.assertRaises(ActionError):
+            self._run(world, "lantern", "Wren")     # Odd holds no lantern
+        self.assertEqual(world.entities["key"].holder, "odd")
+
+    def test_recipient_absent_raises(self):
+        world = _give_world()
+        with self.assertRaises(ActionError):
+            self._run(world, "key", "Gandalf")      # no such character here
+        self.assertEqual(world.entities["key"].holder, "odd")
+
+    def test_ambiguous_item_raises(self):
+        world = _give_world()
+        world.add_entity(Item(id="key2", name="an iron key", holder="odd",
+                              aliases=["key"]))
+        with self.assertRaises(ActionError):
+            self._run(world, "key", "Wren")         # two keys held → ambiguous
+        # Neither key moved.
+        self.assertEqual(world.entities["key"].holder, "odd")
+        self.assertEqual(world.entities["key2"].holder, "odd")
 
 
 if __name__ == "__main__":

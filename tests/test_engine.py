@@ -5,7 +5,7 @@ Uses a fake in-memory session; no server socket, no provider network, no GPU.
 import asyncio
 import unittest
 
-from loom.world import World, Location, Npc
+from loom.world import World, Location, Npc, Item
 from loom.engine import Engine
 from loom.ai import FakeProvider
 from loom.protocol import Channel
@@ -63,6 +63,18 @@ def build_two_npc_engine():
                          persona={"voice": "terse"}))
     world.add_entity(Npc(id="wren", name="Wren the Wayfinder", location_id="room",
                          persona={"voice": "warm"}))
+    return Engine(world, FakeProvider(), start_location="room")
+
+
+def build_item_engine():
+    """One room, NPC Wren present, a lantern on the floor — for the player's
+    take -> inventory -> give loop, give routed through the action seam."""
+    world = World()
+    world.add_location(Location(id="room", name="Room", description="A bare room."))
+    world.add_entity(Npc(id="wren", name="Wren", location_id="room",
+                         persona={"voice": "warm"}))
+    world.add_entity(Item(id="lantern", name="a rusty lantern", holder="room",
+                          aliases=["lantern", "lamp"]))
     return Engine(world, FakeProvider(), start_location="room")
 
 
@@ -195,6 +207,73 @@ class EngineActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Odd the Hermit:", out)    # Odd spoke no line
         self.assertFalse(any(m.kind == "action"
                              for m in engine.minds["odd"].memory.entries))
+
+
+class EngineInventoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_look_lists_floor_items(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)                  # on_connect calls _look
+        self.assertIn("a rusty lantern", s.texts())
+
+    async def test_take_then_inventory(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "take lantern")
+        self.assertIn("You take a rusty lantern.", s.texts())
+        self.assertEqual(engine.world.entities["lantern"].holder, s.player_id)
+        s.sent.clear()
+        await engine.on_input(s, "inventory")
+        self.assertIn("a rusty lantern", s.texts())
+
+    async def test_take_unknown_item_is_safe(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "take dragon")
+        self.assertIn("no", s.texts().lower())
+        self.assertEqual(engine.world.entities["lantern"].holder, "room")
+
+    async def test_give_routes_through_seam_and_rehomes(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        await engine.on_input(s, "take lantern")
+        s.sent.clear()
+        await engine.on_input(s, "give lantern to Wren")
+        # Re-homed to the NPC via the same give_item action an NPC would use.
+        self.assertEqual(engine.world.entities["lantern"].holder, "wren")
+        self.assertIn("gives a rusty lantern to Wren", s.texts())
+
+    async def test_give_without_holding_fails_gracefully(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "give lantern to Wren")   # never picked it up
+        self.assertIn("can't give", s.texts().lower())
+        self.assertEqual(engine.world.entities["lantern"].holder, "room")
+
+    async def test_give_bad_syntax_prompts(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "give lantern")           # no "to <who>"
+        self.assertIn("Give what to whom", s.texts())
+
+    async def test_drop_returns_item_to_the_floor(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        await engine.on_input(s, "take lantern")
+        s.sent.clear()
+        await engine.on_input(s, "drop lantern")
+        self.assertIn("You drop a rusty lantern.", s.texts())
+        self.assertEqual(engine.world.entities["lantern"].holder, "room")
 
 
 if __name__ == "__main__":

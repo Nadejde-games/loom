@@ -1,0 +1,213 @@
+"""Behavioral regression harness — E2E mind tests against the LIVE model.
+
+Why this exists (and why the offline unittest suite is not enough): the offline
+tests drive a scripted ``FakeProvider``. They can prove the *engine* is correct
+— given a valid action, the world changes right — but they structurally CANNOT
+prove the real model *chooses* the right action or *uses* what it perceives. Both
+of the faults found in play (a willing guide that spoke of leading but never
+moved; an NPC blind to an item lying at its feet) lived entirely in that blind
+spot. This harness is the gate for it.
+
+The contract: one scenario per behavior we have verified working. Run it after
+ANY change that touches a prompt, the action catalogue, or perception — and not
+only for the thing you changed: the action catalogue is a shared, competitive
+surface, so adding one action can regress the selection of another. Once a
+behavior passes here it STAYS here; if a later change breaks it, this run fails
+and names it, and the rule is: fix it before moving on.
+
+Behavior is stochastic, so each scenario runs N trials and passes iff the number
+of successes meets a threshold. Thresholds are set from measured rates, generous
+enough to tolerate sampling noise but tight enough to catch a real collapse (the
+original move bug was 0/5, the original silence bug 0/10 — either would fail a
+threshold of 2).
+
+Usage (needs the live model up):
+    LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b \\
+        python scripts/behavior_probe.py                 # every scenario
+    ... python scripts/behavior_probe.py move            # only name/tag 'move'
+
+Exit code 0 iff every selected scenario met its threshold.
+"""
+from __future__ import annotations
+import asyncio
+import os
+import sys
+from dataclasses import dataclass, field
+from typing import Callable
+
+from loom.content import load_world
+from loom.engine import Engine
+from loom.ai import get_default_provider, NpcMind
+
+WORLD = os.path.join(os.path.dirname(__file__), "..", "game", "world", "world.json")
+
+
+# --- predicates over a returned Turn ---------------------------------------
+def emits(name: str, **args) -> Callable:
+    """The turn includes an action of ``name`` (optionally with given args)."""
+    def check(turn):
+        for a in turn.actions:
+            if a.name != name:
+                continue
+            if all(str(a.args.get(k)).lower() == str(v).lower()
+                   for k, v in args.items()):
+                return True
+        return False
+    return check
+
+
+def is_silent(turn) -> bool:
+    return turn.is_silent
+
+
+def speaks(turn) -> bool:
+    return bool(turn.speech)
+
+
+def mentions(*words) -> Callable:
+    """The spoken line references any of these words (case-insensitive)."""
+    def check(turn):
+        s = turn.speech.lower()
+        return any(w.lower() in s for w in words)
+    return check
+
+
+def NOT(pred: Callable) -> Callable:
+    return lambda turn: not pred(turn)
+
+
+# --- world setup hooks (optional, per scenario) ----------------------------
+def hold(item_id: str, holder_id: str) -> Callable:
+    """Put an item into a holder's inventory before the scenario runs."""
+    return lambda world: world.place_item(item_id, holder_id)
+
+
+# --- scenario definition ----------------------------------------------------
+@dataclass
+class Scenario:
+    name: str                       # dotted id, e.g. "move.guide-leads"
+    npc_id: str                     # who is answering
+    utterance: str                  # what the player says
+    check: Callable                 # Turn -> bool: the behavior we require
+    desc: str                       # human-readable expectation
+    addressed: bool = True          # was the NPC named (directed vs overheard)
+    n: int = 5                      # trials
+    threshold: int = 4              # pass iff successes >= threshold
+    setup: Callable | None = None   # optional (world) -> None world prep
+    tags: tuple = ()
+
+
+# The suite. Every entry is a behavior confirmed working at least once; the
+# whole set is the regression contract. Add to it whenever a new behavior lands.
+SCENARIOS = [
+    Scenario(
+        # ~70% single-pass on qwen3.5:35b-a3b (the model's honest ceiling, see
+        # BACKLOG B5). A wide sample keeps the estimate stable; the threshold is
+        # set to catch a COLLAPSE (the original bug was 0/5) or a regression, not
+        # to force the model past its ceiling. Raising the ceiling needs a
+        # stronger lever (a two-pass action decision, or a better model).
+        name="move.guide-leads", npc_id="guide", tags=("move",),
+        utterance="Wren, will you lead me north to show me the way?",
+        check=emits("move"), n=8, threshold=5,
+        desc="a willing guide emits `move` when asked to lead (~70% ceiling)"),
+    Scenario(
+        name="move.guide-no-idle-move", npc_id="guide", tags=("move",),
+        utterance="Wren, lovely weather today isn't it?",
+        check=NOT(emits("move")), n=4, threshold=3,
+        desc="the guide does NOT move on idle chatter (no over-eager move)"),
+    Scenario(
+        name="move.hermit-stays-put", npc_id="hermit", tags=("move",),
+        utterance="please leave, old man.", addressed=True,
+        check=NOT(emits("move")), n=4, threshold=3,
+        desc="a rooted hermit does NOT walk off when told to leave"),
+    Scenario(
+        name="silence.hermit-idle", npc_id="hermit", tags=("silence",),
+        utterance="what a grey sky today.", addressed=False,
+        check=is_silent, n=5, threshold=2,
+        desc="a reticent hermit often stays silent on an overheard idle remark"),
+    Scenario(
+        name="speech.guide-answers", npc_id="guide", tags=("speech",),
+        utterance="Wren, are you there?",
+        check=speaks, n=3, threshold=3,
+        desc="a directly-addressed, gregarious guide answers"),
+    Scenario(
+        name="perception.ground-items", npc_id="guide", tags=("perception",),
+        utterance="Wren, what do you see on the ground here?",
+        check=mentions("key", "lantern", "map"), n=3, threshold=2,
+        desc="an NPC grounds its reply on items it can perceive on the floor"),
+    Scenario(
+        name="give.guide-hands-over", npc_id="guide", tags=("give",),
+        utterance="Wren, please hand your map to Odd for me.",
+        check=emits("give_item"), n=5, threshold=3,
+        desc="a willing NPC emits `give_item` when asked to hand something over"),
+]
+
+
+async def run_scenario(provider, sc: Scenario):
+    world, start = load_world(WORLD)
+    if sc.setup:
+        sc.setup(world)
+    engine = Engine(world, provider, start_location=start)
+    npc = world.entities[sc.npc_id]
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        scene = engine._scene_for(npc, npc.location_id)
+        # Fresh mind (fresh memory) per trial so trials are independent and the
+        # result is a clean characterisation, not a drifting conversation.
+        mind = NpcMind(npc, provider, registry=engine.actions)
+        try:
+            turn = await mind.converse("Wanderer", sc.utterance,
+                                       scene=scene, addressed=sc.addressed)
+            ok = bool(sc.check(turn))
+        except Exception as exc:              # a crash is a failed trial, not a stop
+            turn, ok = None, False
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        acts = ",".join(f"{a.name}{a.args}" for a in turn.actions) or "-"
+        tag = "SILENT" if turn.is_silent else f'"{turn.speech}" [{acts}]'
+        samples.append((ok, tag))
+    return successes, samples
+
+
+async def main():
+    provider = get_default_provider()
+    pname = getattr(provider, "name", type(provider).__name__)
+    selector = sys.argv[1] if len(sys.argv) > 1 else None
+    chosen = [s for s in SCENARIOS
+              if selector is None or selector == s.name or selector in s.tags]
+    if not chosen:
+        print(f"No scenarios match {selector!r}. "
+              f"Known tags: {sorted({t for s in SCENARIOS for t in s.tags})}")
+        return 2
+
+    print(f"=== Loom behavioral regression — provider {pname} ===")
+    if pname.startswith("fake"):
+        print("WARNING: FakeProvider is scripted — this harness only means "
+              "anything against the LIVE model. Set LOOM_PROVIDER=ollama.\n")
+    print(f"{len(chosen)} scenario(s); each is N live trials against a "
+          f"stochastic model.\n")
+
+    failed = []
+    for sc in chosen:
+        successes, samples = await run_scenario(provider, sc)
+        ok = successes >= sc.threshold
+        verdict = "PASS" if ok else "FAIL"
+        print(f"[{verdict}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        if not ok:
+            failed.append(sc.name)
+            for hit, detail in samples:              # show the evidence on failure
+                print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    print()
+    if failed:
+        print(f"FAILED ({len(failed)}): {', '.join(failed)}")
+        print("A verified behavior regressed. Fix it before moving on.")
+        return 1
+    print(f"OK — all {len(chosen)} behavioral scenarios met their thresholds.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))

@@ -158,20 +158,35 @@ Plain data, no AI, no networking. These are the nouns an author edits.
   `Entity`(id, name, description) → `Character`(+location_id) →
   `Npc`(+persona dict) and `Player`(+session_id). Persona is **free-form**
   (`:20`): backstory/traits/goals/voice by convention, but the schema doesn't
-  force it — the AI layer turns whatever's there into a prompt.
+  force it — the AI layer turns whatever's there into a prompt. `Item` is a
+  *sibling* of `Character`, **not** a Character: it has no `location_id`; instead
+  it is located by a single `holder` (a location = on the floor, a character = in
+  inventory, later an item = a container), plus `aliases` and `portable`.
 - `world/location.py` — a `Location` is an `Entity` plus `exits`
   (direction→location-id) and `occupants` (a set of entity ids).
-- `world/world.py` — `World` is two dicts (`locations`, `entities`) and the
-  spatial operations over them: `add_entity` (`:16`, also files the entity into
-  its room's occupants), `move` (`:28`, the canonical "leave here, arrive
-  there"), and the queries `occupants` (`:39`) and `location_of` (`:46`).
+- `world/world.py` — `World` is two dicts (`locations`, `entities`) plus a
+  containment reverse-index (`_contents`), and the spatial operations over them:
+  `add_entity` (files the entity into its room's occupants *and* indexes an
+  item under its holder), `move` (the canonical "leave here, arrive there" for
+  characters), and — for items — `place_item` (the one mutator behind take/drop/
+  give: each is just a change of holder), `contents(holder)`, and `scope(actor)`
+  (room occupants + floor items + own inventory: the candidate set a parser
+  resolves a noun against). Note the symmetry: `holder`⇄`_contents` for items is
+  the exact pattern as `location_id`⇄`occupants` for characters.
+- `naming.py` — `resolve(phrase, scope)` turns a typed noun phrase into the entity
+  meant, returning `Resolved` / `Ambiguous` / `NoMatch` (matching exact ▸
+  whole-word ▸ prefix, honest about ambiguity). Game-agnostic, duck-typed, no
+  `World` import. It is the generalisation of `salience.is_addressed` (which only
+  asks "was this name mentioned?"); both the NPC give-handler and the player's
+  take/drop/give use it. Prior-art survey behind it is recorded on B1.
 - `content.py` — `load_world` (`loom/content.py:23`) reads `world.json` into a
   `World`. **This is design commitment #2 made real:** the world is editable
   data, not code. Open `game/world/world.json` alongside it and match the fields
-  to the parser — the cave, the exits, and its two NPCs: "Odd the Hermit"
-  (wary, command-averse — he refuses to be led) and "Wren the Wayfinder" (a
-  cheerful guide who gladly walks you around). They share the start room so one
-  `say` shows the contrast, and Wren is what exercises the `move` action live.
+  to the parser — the cave, the exits, its two NPCs ("Odd the Hermit", wary and
+  command-averse; "Wren the Wayfinder", a cheerful guide who walks you around),
+  and now an `"items"` array (a lantern and a key on the cave floor; a hill-map in
+  Wren's hand). They share the start room so one `say` shows the contrast, Wren
+  exercises `move`, and the items exercise take/drop/`give_item`.
 
 ---
 
@@ -268,6 +283,11 @@ This is where a model becomes a character.
   JSON, and **trailing junk** (the live model sometimes appends a stray `}` or
   sends `args` as a bare list). Total parse failure degrades to pure speech. It
   never raises; it never lets unvalidated text become an action.
+- `Scene` — a read-only perception snapshot the engine composes (`_scene_for`)
+  and hands in: place, description, `exits`, `others` present, `items` on the
+  ground, and the NPC's own `inventory`. The mind renders it into the prompt so
+  it can choose real exits and reason about real objects — but it reads the
+  `Scene`, never the `World`.
 
 The golden rule lives in the split: **`NpcMind` never imports or touches
 `World`.** It only returns proposals.
@@ -280,11 +300,20 @@ Game-agnostic and dependency-free.
   *mind* to check its own proposals, no world access) and the handlers (used by
   the *engine* to actually mutate the world). `describe()` renders the catalogue
   for the prompt.
-- `default_registry()` ships one built-in: `emote` (`_emote`) — a purely
-  expressive action, zero world-state change: the tightest possible proof that
-  the seam works (schema → validate → execute → narrate → remember).
+- `default_registry()` now ships three built-ins:
+  - `emote` (`_emote`) — a purely expressive action, zero world-state change: the
+    tightest possible proof that the seam works (schema → validate → execute →
+    narrate → remember).
+  - `move` (`_move`) — the first world-mutating action; schema is `direction: str`
+    (exit vocabulary is world-data), the handler resolves it against the actor's
+    real exits and speaks to two rooms via `ActionResult.broadcasts`.
+  - `give_item` (`_give_item`) — the first *multi-object* action. The schema
+    guarantees two strings; the handler `resolve()`s the item against what the
+    actor holds and the recipient against who is present, refusing (a dropped
+    `ActionError`) when either is unknown or ambiguous. Both ends are confirmed
+    against the world before anything moves — the golden rule for inventory.
 
-Adding an action later (move, give_item, offer_quest) = a schema + a handler
+Adding an action later (offer_quest, remember_fact) = a schema + a handler
 registered here. Nothing else in the pipeline changes. That's the point of the
 seam.
 
@@ -380,29 +409,35 @@ loom/                     the reusable, game-agnostic framework
   session.py              one connected client; send_text/send_system
   server.py               async TCP server; drives any Handler
   loop.py                 continuous tick loop (idle hook for ambient/GM)
-  engine.py               commands, session↔player binding, NPC dispatch, action execution
-  action.py               ActionRegistry: schema + validation + handlers (emote, move)
+  engine.py               commands (incl. take/drop/give/inventory), session↔player binding, NPC dispatch, action execution
+  action.py               ActionRegistry: schema + validation + handlers (emote, move, give_item)
   salience.py             SalienceGate: which NPC engages (default: directed address)
-  content.py              load a World from editable JSON
+  naming.py               resolve(phrase, scope) → Resolved / Ambiguous / NoMatch (noun-phrase resolution)
+  content.py              load a World from editable JSON (locations, npcs, items)
   world/
-    entity.py             Entity → Character → Npc / Player (dataclasses)
+    entity.py             Entity → Character → Npc / Player, and Item (held by a `holder`)
     location.py           Location: exits + occupants
-    world.py              World state + spatial queries (move, occupants, …)
+    world.py              World state + queries: move/occupants + place_item/contents/scope
   ai/
     provider.py           LLMProvider + Fake / OpenAI-compat / Ollama / Anthropic
     memory.py             MemoryStream (append + recency; the substrate)
-    mind.py               NpcMind: persona + memory + turn pipeline + Scene (perception)
+    mind.py               NpcMind: persona + memory + turn pipeline + Scene (perception: exits/others/items/inventory)
 
 game/                     the first world built on Loom (content only)
   main.py                 entry point: assemble + run server & loop
-  world/world.json        the cave + its NPCs (Odd the Hermit, Wren the Wayfinder)
+  world/world.json        the cave, its NPCs (Odd, Wren), and its items (lantern, key, map)
 
 client/
   terminal.py             minimal reference client; knows only the protocol
 
 scripts/                  smoke.py (e2e) · wire_demo.py (self-contained) · try_provider.py (provider ping)
-tests/                    offline unit + integration tests (no GPU)
-docs/                     PLAN.md (roadmap) · WALKTHROUGH.md (this file)
+                          · behavior_probe.py (LIVE behavioral regression harness — the mind gate)
+tests/                    offline unit + integration tests (no GPU) — the engine gate
+docs/                     PLAN.md (roadmap) · WALKTHROUGH.md (this file) · BACKLOG.md (noticed improvements)
+
+Two test gates (see PLAN.md → Testing discipline): the offline suite proves the
+engine; scripts/behavior_probe.py proves the mind against the live model. Run BOTH
+after any change to a prompt, the action catalogue, or perception.
 ```
 
 ---

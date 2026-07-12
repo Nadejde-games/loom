@@ -50,6 +50,8 @@ class Scene:
     description: str = ""
     exits: list = field(default_factory=list)     # exit directions it can take
     others: list = field(default_factory=list)    # names of other entities here
+    items: list = field(default_factory=list)     # names of items on the ground here
+    inventory: list = field(default_factory=list) # names of items the NPC holds
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?[ \t]*\r?\n?|\r?\n?```$",
@@ -151,6 +153,11 @@ class NpcMind:
             lines.append("- Exits you can take: " + ", ".join(scene.exits))
         else:
             lines.append("- There are no exits you can take from here.")
+        if scene.items:
+            lines.append("- On the ground here, in plain sight: "
+                         + ", ".join(scene.items))
+        if scene.inventory:
+            lines.append("- You are carrying: " + ", ".join(scene.inventory))
         if scene.others:
             lines.append("- Also here with you: " + ", ".join(scene.others))
         else:
@@ -172,8 +179,19 @@ class NpcMind:
             '{"speech": "", "actions": []}. A wary or indifferent character often '
             'says nothing; an outgoing one is quicker to speak up. Silence is a '
             'valid, in-character choice — do not force a reply.\n'
+            'When the moment truly calls for changing the world — someone asks '
+            'you to lead or to go, or you decide to hand something over — include '
+            'the matching action, because speaking of it does not make it happen. '
+            'If you are asked to lead the way or to go somewhere, include a "move" '
+            'action with a direction from your surroundings: the words are the '
+            'invitation, the "move" is the step that actually takes you there. '
+            'Ordinary talk, greetings, and passing remarks call for words alone, '
+            'not an action.\n'
             'Example (choosing to speak and act): {"speech": "Careful, traveler.", '
             '"actions": [{"name": "emote", "args": {"text": "narrows his eyes"}}]}\n'
+            'Example (going somewhere or leading the way): {"speech": "This way — '
+            'follow me.", "actions": [{"name": "move", "args": {"direction": '
+            '"north"}}]}\n'
             'Example (choosing silence, because the remark was not addressed to you '
             'and does not concern your character): {"speech": "", "actions": []}\n'
             'Available actions:\n'

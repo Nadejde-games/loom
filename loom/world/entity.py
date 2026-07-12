@@ -26,3 +26,19 @@ class Npc(Character):
 @dataclass
 class Player(Character):
     session_id: str | None = None
+
+
+@dataclass
+class Item(Entity):
+    # What holds this item: the id of a location (lying on the floor), a
+    # character (in their inventory), or later another item (a container).
+    # This is the source of truth for where the item is; ``World`` keeps a
+    # reverse index for fast lookup — exactly as ``Character.location_id`` is
+    # the truth mirrored by ``Location.occupants``.
+    holder: str | None = None
+    # Extra nouns the item answers to, beyond its name — e.g. ["key", "brass"]
+    # for "the ornate brass key". Used by name-resolution (loom/naming.py).
+    aliases: list = field(default_factory=list)
+    # Whether it can be picked up, dropped, or given. A fixed feature of the
+    # scene (a wall carving, a fountain) is not portable.
+    portable: bool = True

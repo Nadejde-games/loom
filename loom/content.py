@@ -12,12 +12,19 @@ surface an authoring agent edits. Format::
       "npcs": [
         {"id": "...", "name": "...", "description": "...", "location": "...",
          "persona": {"backstory": "...", "traits": [], "goals": [], "voice": "..."}}
+      ],
+      "items": [
+        {"id": "...", "name": "...", "description": "...", "holder": "...",
+         "aliases": [], "portable": true}
       ]
     }
+
+An item's ``holder`` is the id of whatever holds it — a location (on the
+floor), a character (in inventory), or another item (a container).
 """
 from __future__ import annotations
 import json
-from .world import World, Location, Npc
+from .world import World, Location, Npc, Item
 
 
 def load_world(path: str) -> tuple[World, str]:
@@ -39,6 +46,15 @@ def load_world(path: str) -> tuple[World, str]:
             description=n.get("description", ""),
             location_id=n.get("location"),
             persona=n.get("persona", {}),
+        ))
+    for it in data.get("items", []):
+        world.add_entity(Item(
+            id=it["id"],
+            name=it.get("name", it["id"]),
+            description=it.get("description", ""),
+            holder=it.get("holder"),
+            aliases=list(it.get("aliases", [])),
+            portable=bool(it.get("portable", True)),
         ))
     start = data.get("start_location")
     if not start and data.get("locations"):

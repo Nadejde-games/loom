@@ -47,5 +47,28 @@
         "disposition": "gregarious and forthcoming. You greet newcomers readily, chime in on almost anything said nearby, and are quick to offer help or a friendly word — you would rather speak up than let a silence sit."
       }
     }
+  ],
+  "items": [
+    {
+      "id": "lantern",
+      "name": "a rusty lantern",
+      "description": "A dented tin lantern, its glass smoked but its wick still good. It would light the way into the dark.",
+      "holder": "cave_mouth",
+      "aliases": ["lantern", "lamp", "light"]
+    },
+    {
+      "id": "brass_key",
+      "name": "an ornate brass key",
+      "description": "A heavy key of tarnished brass, its bow worked into the shape of a coiled serpent. It fits no lock you can see.",
+      "holder": "cave_mouth",
+      "aliases": ["key", "brass key", "brass"]
+    },
+    {
+      "id": "wren_map",
+      "name": "a worn hill-map",
+      "description": "A much-folded map of the hills in Wren's hand, the ink soft at the creases, every path she knows marked in a careful hand.",
+      "holder": "guide",
+      "aliases": ["map", "hill-map", "hill map"]
+    }
   ]
 }
