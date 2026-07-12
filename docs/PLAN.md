@@ -175,15 +175,25 @@ Built:
   path; a **per-mind offered-action subset** (`NpcMind(offered=…)`, narrowing both
   the prompt catalogue and the constrained grammar) keeps NPCs off the player-only
   verbs, so the NPC catalogue and the harness are unchanged. New reach: `look at
-  X`/`examine X`, `take X [from Y]`, articles and phrasing tolerance. The LLM
-  free-text fallback (B1b) is a deliberate follow-up. See `docs/BACKLOG.md` B1.
-- `tests/` — **172 offline tests** (the above + validation, parse-tolerance incl.
+  X`/`examine X`, `take X [from Y]`, articles and phrasing tolerance.
+- **The free-text intent fallback (B1b)** (2026-07-12) — when the deterministic
+  parser doesn't recognise the verb, the engine hands the free text to the model
+  constrained by a *command grammar* (`command.command_schema`, the verb-side
+  counterpart of the action registry's `json_schema`) and gets back a canonical
+  `{verb, dobj, iobj}` (`loom/ai/intent.py`, world-free). That is rebuilt into the
+  *same* `Parse` the deterministic parser produces and flows through the identical
+  dispatch — one path. Trigger is an unknown verb only; toggleable
+  (`Engine(intent_fallback=…)`); degrades to "unknown command". Live: phrasings the
+  table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
+  map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
+  constrained-decoding waist so the model *cannot* emit a non-command.
+- `tests/` — **191 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,
-  and the command parser + per-mind offered subset). No GPU needed. **Plus a live
-  behavioral harness** — see *Testing discipline* below — 8 scenarios green
-  against `qwen3.5:35b-a3b`.
+  the command parser + per-mind offered subset, and the command grammar + intent
+  parser). No GPU needed. **Plus a live behavioral harness** — see *Testing
+  discipline* below — 12 scenarios green against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
@@ -201,7 +211,7 @@ Remaining actions to build out on this seam (each ~a handler + schema + a world
 capability where needed): **offer_quest**, **remember_fact** (`give_item`,
 `take_item`, `drop_item` and the item/inventory world-model landed 2026-07-12).
 Player-side acting now has its rich, phrasing-tolerant deterministic parser
-(B1a, 2026-07-12); the LLM free-text fallback (B1b) remains.
+(B1a) and its LLM free-text fallback (B1b) — both landed 2026-07-12.
 
 ### Phase 2 hardening — constrained decoding (grammar-guaranteed envelopes)  ✓ (2026-07-12)
 Make design commitment #4 *structural*: constrain generation to the turn-envelope
@@ -303,7 +313,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (172 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (191 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*

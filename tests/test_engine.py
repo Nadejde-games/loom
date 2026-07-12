@@ -364,5 +364,87 @@ class EngineB1Tests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Wanderer", out)              # not the player themselves
 
 
+class CannedProvider:
+    """Returns a fixed reply to every complete() — a stand-in for the model in
+    the B1b free-text fallback path. Counts calls so a test can assert the model
+    was (or was not) consulted."""
+    name = "canned"
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.calls = 0
+
+    async def complete(self, system, messages, schema=None):
+        self.calls += 1
+        return self.reply
+
+
+class EngineFallbackTests(unittest.IsolatedAsyncioTestCase):
+    """The free-text intent fallback (B1b): an unrecognised verb gets one LLM
+    interpretation against the command grammar, mapped back onto the same Parse
+    dispatch. No NPCs in these worlds, so the only provider call is the fallback."""
+
+    def _item_world(self):
+        world = World()
+        world.add_location(Location(id="room", name="Room", description="A bare room."))
+        world.add_entity(Item(id="lantern", name="a rusty lantern", holder="room",
+                              aliases=["lantern", "lamp"]))
+        return world
+
+    async def _connect(self, engine):
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        return s
+
+    async def test_fallback_maps_unknown_verb_to_action(self):
+        provider = CannedProvider('{"command":{"verb":"take","dobj":"lantern"}}')
+        engine = Engine(self._item_world(), provider, start_location="room")
+        s = await self._connect(engine)
+        await engine.on_input(s, "snatch the lantern")   # 'snatch' unknown to the table
+        self.assertIn("You take a rusty lantern.", s.texts())
+        self.assertEqual(engine.world.entities["lantern"].holder, s.player_id)
+        self.assertGreaterEqual(provider.calls, 1)
+
+    async def test_fallback_reaches_a_query_verb(self):
+        # Full command vocabulary: the fallback maps onto go, not just actions.
+        world = World()
+        world.add_location(Location(id="a", name="Room A", description="A.",
+                                    exits={"north": "b"}))
+        world.add_location(Location(id="b", name="Room B", description="B.",
+                                    exits={"south": "a"}))
+        provider = CannedProvider('{"command":{"verb":"go","dobj":"north"}}')
+        engine = Engine(world, provider, start_location="a")
+        s = await self._connect(engine)
+        await engine.on_input(s, "wander onward")
+        self.assertEqual(engine.players[s.id].location_id, "b")
+
+    async def test_unmappable_falls_back_to_unknown(self):
+        provider = CannedProvider("I really cannot tell what you want.")
+        engine = Engine(self._item_world(), provider, start_location="room")
+        s = await self._connect(engine)
+        await engine.on_input(s, "xyzzy plugh")
+        self.assertIn("Unknown command", s.texts())
+
+    async def test_fallback_can_be_disabled(self):
+        provider = CannedProvider('{"command":{"verb":"take","dobj":"lantern"}}')
+        engine = Engine(self._item_world(), provider, start_location="room",
+                        intent_fallback=False)
+        s = await self._connect(engine)
+        await engine.on_input(s, "snatch the lantern")
+        self.assertIn("Unknown command", s.texts())
+        self.assertEqual(provider.calls, 0)              # the model was never asked
+        self.assertEqual(engine.world.entities["lantern"].holder, "room")
+
+    async def test_recognised_verb_never_triggers_fallback(self):
+        # A known verb whose object doesn't resolve is deterministic, not LLM'd.
+        provider = CannedProvider('{"command":{"verb":"take","dobj":"lantern"}}')
+        engine = Engine(self._item_world(), provider, start_location="room")
+        s = await self._connect(engine)
+        await engine.on_input(s, "take sword")           # 'take' known; there is no sword
+        self.assertIn('no "sword"', s.texts())
+        self.assertEqual(provider.calls, 0)              # model not consulted
+
+
 if __name__ == "__main__":
     unittest.main()

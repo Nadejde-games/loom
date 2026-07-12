@@ -38,6 +38,8 @@ from typing import Callable
 from loom.content import load_world
 from loom.engine import Engine
 from loom.ai import get_default_provider, NpcMind
+from loom.ai.intent import interpret
+from loom.command import command_schema, describe_verbs, default_verbs
 
 WORLD = os.path.join(os.path.dirname(__file__), "..", "game", "world", "world.json")
 
@@ -168,6 +170,48 @@ SCENARIOS = [
 ]
 
 
+# --- B1b: the free-text intent fallback (a player-command gate) --------------
+# Behavioral because it is the *model* mapping unfamiliar phrasing onto a verb;
+# the deterministic parser (offline-tested) covers the phrasings it knows. Every
+# `text` below uses a verb the verb table does NOT have, so it can only pass by
+# the LLM fallback interpreting it correctly.
+@dataclass
+class CommandScenario:
+    name: str
+    text: str                       # free-text player input (unknown verb)
+    expect_verb: str                # the canonical verb it must map to
+    n: int = 4
+    threshold: int = 3
+    tags: tuple = ("command",)
+
+
+COMMAND_CONTEXT = ("Here with you: Wren\n"
+                   "On the ground: a brass key\n"
+                   "You are carrying: a rusty lantern\n"
+                   "Exits: north, down")
+
+COMMAND_SCENARIOS = [
+    CommandScenario("command.offer-is-give", "offer the lantern to Wren", "give"),
+    CommandScenario("command.scoop-is-take", "scoop up the brass key", "take"),
+    CommandScenario("command.head-is-go", "head north", "go"),
+    CommandScenario("command.peer-is-examine", "peer at the brass key", "examine"),
+]
+
+
+async def run_command_scenario(provider, sc: CommandScenario, schema, catalogue):
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        try:
+            res = await interpret(provider, schema, catalogue, COMMAND_CONTEXT, sc.text)
+            ok = res is not None and res[0] == sc.expect_verb
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        samples.append((ok, str(res)))
+    return successes, samples
+
+
 async def run_scenario(provider, sc: Scenario):
     world, start = load_world(WORLD)
     if sc.setup:
@@ -202,19 +246,23 @@ async def main():
     provider = get_default_provider()
     pname = getattr(provider, "name", type(provider).__name__)
     selector = sys.argv[1] if len(sys.argv) > 1 else None
-    chosen = [s for s in SCENARIOS
-              if selector is None or selector == s.name or selector in s.tags]
-    if not chosen:
-        print(f"No scenarios match {selector!r}. "
-              f"Known tags: {sorted({t for s in SCENARIOS for t in s.tags})}")
+
+    def picks(s):
+        return selector is None or selector == s.name or selector in s.tags
+    chosen = [s for s in SCENARIOS if picks(s)]
+    chosen_cmds = [s for s in COMMAND_SCENARIOS if picks(s)]
+    if not chosen and not chosen_cmds:
+        tags = sorted({t for s in SCENARIOS for t in s.tags}
+                      | {t for s in COMMAND_SCENARIOS for t in s.tags})
+        print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
               "anything against the LIVE model. Set LOOM_PROVIDER=ollama.\n")
-    print(f"{len(chosen)} scenario(s); each is N live trials against a "
-          f"stochastic model.\n")
+    print(f"{len(chosen) + len(chosen_cmds)} scenario(s); each is N live trials "
+          f"against a stochastic model.\n")
 
     failed = []
     for sc in chosen:
@@ -228,12 +276,32 @@ async def main():
             for hit, detail in samples:              # show the evidence on failure
                 print(f"          {'ok ' if hit else 'MISS'} {detail}")
 
+    if chosen_cmds:
+        # B1b: the free-text intent fallback — the model maps unfamiliar phrasing
+        # onto the right command verb (see run_command_scenario).
+        allowed = [c for c in {v.canonical for v in default_verbs().values()}
+                   if c not in ("quit", "help")]
+        schema = command_schema(default_verbs(), allowed)
+        catalogue = describe_verbs(default_verbs(), allowed)
+        for sc in chosen_cmds:
+            successes, samples = await run_command_scenario(
+                provider, sc, schema, catalogue)
+            ok = successes >= sc.threshold
+            verdict = "PASS" if ok else "FAIL"
+            print(f"[{verdict}] {sc.name:<28} {successes}/{sc.n} "
+                  f"(need >={sc.threshold})  — free text → `{sc.expect_verb}`")
+            if not ok:
+                failed.append(sc.name)
+                for hit, detail in samples:
+                    print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
     print()
     if failed:
         print(f"FAILED ({len(failed)}): {', '.join(failed)}")
         print("A verified behavior regressed. Fix it before moving on.")
         return 1
-    print(f"OK — all {len(chosen)} behavioral scenarios met their thresholds.")
+    print(f"OK — all {len(chosen) + len(chosen_cmds)} behavioral scenarios met "
+          f"their thresholds.")
     return 0
 
 

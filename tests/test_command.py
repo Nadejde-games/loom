@@ -116,5 +116,59 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(self.p("TAKE lantern").verb.target, "take_item")
 
 
+def _cmd_branches(schema):
+    return {b["properties"]["verb"]["const"]: b
+            for b in schema["properties"]["command"]["oneOf"]}
+
+
+class CommandSchemaTests(unittest.TestCase):
+    """The command grammar (B1b): the LLM-fallback counterpart of the action
+    registry's json_schema — a constrained shape over the verb table."""
+
+    def setUp(self):
+        self.branches = _cmd_branches(command.command_schema(default_verbs()))
+
+    def test_top_level_wraps_a_oneof(self):
+        schema = command.command_schema(default_verbs())
+        self.assertEqual(schema["required"], ["command"])
+        self.assertIn("oneOf", schema["properties"]["command"])
+
+    def test_give_requires_both_objects(self):
+        b = self.branches["give"]
+        self.assertEqual(set(b["required"]), {"verb", "dobj", "iobj"})
+
+    def test_take_source_is_optional(self):
+        b = self.branches["take"]
+        self.assertEqual(set(b["required"]), {"verb", "dobj"})   # not iobj
+        self.assertIn("iobj", b["properties"])                    # but offered
+
+    def test_objectless_verb_requires_only_verb(self):
+        self.assertEqual(self.branches["look"]["required"], ["verb"])
+        self.assertNotIn("dobj", self.branches["look"]["properties"])
+
+    def test_go_and_say_take_a_dobj(self):
+        self.assertIn("dobj", self.branches["go"]["required"])
+        self.assertIn("dobj", self.branches["say"]["required"])
+
+    def test_allowed_narrows_the_verbs(self):
+        branches = _cmd_branches(
+            command.command_schema(default_verbs(), ["take", "give"]))
+        self.assertEqual(set(branches), {"take", "give"})
+
+
+class DescribeVerbsTests(unittest.TestCase):
+    def test_usage_lines_reflect_arity(self):
+        text = command.describe_verbs(default_verbs())
+        self.assertIn("give <item> to <recipient>", text)
+        self.assertIn("take <item> [from <source>]", text)
+        self.assertIn("go <direction>", text)
+        self.assertIn("say <words>", text)
+
+    def test_allowed_narrows_the_catalogue(self):
+        text = command.describe_verbs(default_verbs(), ["take"])
+        self.assertIn("take <item>", text)
+        self.assertNotIn("give", text)
+
+
 if __name__ == "__main__":
     unittest.main()

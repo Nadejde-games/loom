@@ -10,6 +10,7 @@ from .action import ActionRegistry, ActionContext, ActionIntent, default_registr
 from .salience import SalienceGate, SalienceContext, default_gate, is_addressed
 from .naming import resolve, Resolved, Ambiguous
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
+from .ai import intent
 from . import command
 
 # Actions the default game offers the *player* but not its NPCs — the NPCs in
@@ -23,13 +24,23 @@ PLAYER_ONLY_ACTIONS = ("take_item", "drop_item")
 class Engine:
     def __init__(self, world: World, provider: LLMProvider, start_location: str,
                  registry: ActionRegistry | None = None,
-                 gate: SalienceGate | None = None):
+                 gate: SalienceGate | None = None,
+                 intent_fallback: bool = True):
         self.world = world
         self.provider = provider
         self.start_location = start_location
         self.actions = registry or default_registry()
         self.gate = gate or default_gate()
         self.verbs = command.default_verbs()   # the player-command vocabulary
+        # B1b: when the deterministic parser fails, an LLM maps the free text onto
+        # one command (off = pure deterministic parsing). Index canonical -> Verb
+        # for reconstructing a Parse from the model's answer, and the verbs it may
+        # map onto — never the meta verbs (a fuzzy read must not quit the player).
+        self.intent_fallback = intent_fallback
+        self._by_canonical = {v.canonical: v
+                              for v in command._distinct_verbs(self.verbs)}
+        self._fallback_verbs = [c for c in self._by_canonical
+                                if c not in ("quit", "help")]
         self.minds: dict[str, NpcMind] = {}
         self.players: dict[str, Player] = {}    # session id -> player
         self.sessions: dict[str, Session] = {}  # session id -> session
@@ -71,11 +82,24 @@ class Engine:
         player = self.players.get(session.id)
         if not player:
             return
-        # Parse first (B1): flexible player text -> a canonical verb + object
+        # Parse first (B1a): flexible player text -> a canonical verb + object
         # phrases. World-changing verbs go through the same registry seam the
         # NPCs use; queries are handled directly; free-text verbs (say) keep
         # their words. Noun resolution against scope happens here in the engine.
         p = command.parse(text, self.verbs)
+        # B1b: an *unrecognised verb* gets one LLM interpretation against the
+        # command grammar before we give up. A recognised verb whose object
+        # doesn't resolve is NOT sent to the model — that is a legitimate "no
+        # such thing" / disambiguation, handled deterministically below.
+        if p.verb is None and p.unknown and self.intent_fallback:
+            interpreted = await self._interpret(player, text)
+            if interpreted is not None:
+                p = interpreted
+        await self._dispatch(session, player, p)
+
+    async def _dispatch(self, session: Session, player, p: command.Parse) -> None:
+        """Route a parsed command — whether it came from the deterministic parser
+        or the LLM fallback — by verb kind. One path for both."""
         if p.verb is None:
             if p.unknown:
                 await session.send_text(f'Unknown command: "{p.unknown}". Type help.')
@@ -86,6 +110,41 @@ class Engine:
             await self._player_action(session, player, p)
         else:                                   # a read-only query
             await self._query(session, player, p)
+
+    async def _interpret(self, player, text: str) -> command.Parse | None:
+        """Free-text fallback (B1b): map unrecognised input onto a Parse via the
+        command grammar. Returns None if the model can't map it — the caller then
+        renders the plain "unknown command" message."""
+        catalogue = command.describe_verbs(self.verbs, self._fallback_verbs)
+        schema = command.command_schema(self.verbs, self._fallback_verbs)
+        res = await intent.interpret(self.provider, schema, catalogue,
+                                     self._scope_context(player), text)
+        if res is None:
+            return None
+        verb_name, dobj, iobj = res
+        verb = self._by_canonical.get(verb_name)
+        if verb is None:                        # model named a verb we don't allow
+            return None
+        if verb.kind == "text":
+            return command.Parse(verb=verb, surface=verb_name, words=dobj)
+        return command.Parse(verb=verb, surface=verb_name, dobj=dobj, iobj=iobj)
+
+    def _scope_context(self, player) -> str:
+        """A compact description of what the player can see and hold — the context
+        the intent parser grounds its target choices on."""
+        w, loc_id = self.world, player.location_id
+        loc = w.locations.get(loc_id)
+        others = [e.name for e in w.occupants(loc_id, exclude=player.id)]
+        lines = ["Here with you: " + (", ".join(others) if others else "no one")]
+        floor = [i.name for i in w.contents(loc_id)]
+        if floor:
+            lines.append("On the ground: " + ", ".join(floor))
+        held = [i.name for i in w.contents(player.id)]
+        if held:
+            lines.append("You are carrying: " + ", ".join(held))
+        if loc and loc.exits:
+            lines.append("Exits: " + ", ".join(loc.exits.keys()))
+        return "\n".join(lines)
 
     async def _query(self, session: Session, player, p: command.Parse) -> None:
         """Dispatch a read-only command (no world mutation, no seam needed)."""

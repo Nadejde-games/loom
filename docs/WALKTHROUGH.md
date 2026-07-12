@@ -215,7 +215,11 @@ its own `NpcMind`, all sharing one action vocabulary.
   resolves the object phrases against scope — for disambiguation and a
   second-person acknowledgement — then routes `take`/`drop`/`give` through the
   **same** `ActionRegistry` the NPCs use (the handler re-resolves as the
-  authoritative gate). The rich free-text LLM fallback is the planned B1b tier.
+  authoritative gate). When the verb is *unrecognised* (B1b), `_interpret` hands
+  the free text to the model via `ai/intent.py`, constrained by
+  `command.command_schema` (the verb-side grammar), and rebuilds the answer into
+  the same `Parse` — so an LLM-interpreted command flows through the identical
+  dispatch. Toggle with `Engine(intent_fallback=…)`; degrades to "unknown command".
 
 ### The commands
 `_look` (`:78`) and `_go` (`:168`) are **pure engine code** — deterministic,
@@ -434,7 +438,7 @@ loom/                     the reusable, game-agnostic framework
   loop.py                 continuous tick loop (idle hook for ambient/GM)
   engine.py               parses player input, resolves nouns, routes acts through the seam, NPC dispatch
   action.py               ActionRegistry: schema + validation + json_schema + handlers (emote/move/give/take/drop)
-  command.py              player-command parser (B1): verb table + DO/prep/IO grammar → a Parse (pure syntax)
+  command.py              player-command parser (B1): verb table + DO/prep/IO grammar → a Parse; command_schema for B1b
   salience.py             SalienceGate: which NPC engages (default: directed address)
   naming.py               resolve(phrase, scope) → Resolved / Ambiguous / NoMatch (noun-phrase resolution)
   content.py              load a World from editable JSON (locations, npcs, items)
@@ -446,6 +450,7 @@ loom/                     the reusable, game-agnostic framework
     provider.py           LLMProvider + Fake / OpenAI-compat / Ollama / Anthropic
     memory.py             MemoryStream (append + recency; the substrate)
     mind.py               NpcMind: persona + memory + turn pipeline + Scene (perception: exits/others/items/inventory)
+    intent.py             free-text → one command via the command grammar (B1b fallback; world-free)
 
 game/                     the first world built on Loom (content only)
   main.py                 entry point: assemble + run server & loop

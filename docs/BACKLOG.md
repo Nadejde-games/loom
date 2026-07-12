@@ -9,11 +9,26 @@ Cross-references to the roadmap phases in `docs/PLAN.md` are noted per item.
 
 ---
 
-## B1 — Richer, more flexible command vocabulary  — B1a LANDED 2026-07-12
+## B1 — Richer, more flexible command vocabulary  — DONE 2026-07-12 (B1a + B1b)
 *Noticed 2026-07-10.*
 
-**Status (2026-07-12): the deterministic tier (B1a) shipped; the LLM free-text
-fallback (B1b) is the remaining follow-up.** `loom/command.py` is a game-agnostic,
+**Status (2026-07-12): both tiers shipped.** B1b (the LLM free-text fallback) —
+when the deterministic parser doesn't recognise the verb, the engine hands the
+free text to the model constrained by a *command grammar* (`command.command_schema`
+over the whole verb table — the verb-side counterpart of the action registry's
+`json_schema`) and gets back a canonical `{verb, dobj, iobj}` (`loom/ai/intent.py`,
+world-free). That is rebuilt into the *same* `Parse` the deterministic parser
+produces, so it flows through the identical dispatch — one path. Trigger is an
+*unknown verb* only; a recognised verb with an unresolvable object stays
+deterministic (a legitimate "no such thing" / disambiguation). Toggleable
+(`Engine(intent_fallback=…)`); degrades to "unknown command" when the model can't
+map it. Live on `qwen3.5:35b-a3b`: free-text phrasings the table misses ("offer …
+to Wren" → give, "scoop up …" → take, "head north" → go, "peer at …" → examine)
+map correctly — 4 new harness `command.*` scenarios, 4/4. Offline now 191 total
+(19 new for B1b). Movement/look/say are reachable by the fallback too, since it
+targets the full verb vocabulary, not only the registry actions.
+
+**B1a (the deterministic tier, same day):** `loom/command.py` is a game-agnostic,
 world-free *syntactic* parser: a verb table with synonyms (`take/get/grab`,
 `pick up`, `put down`, `hand`) and multi-word verbs, a `verb + DO + prep + IO`
 grammar, and symbolic per-slot scopes the engine maps to real candidate sets.
@@ -26,11 +41,8 @@ and articles (`take the lantern`), plus the existing `give X to Y` / `drop X`.
 every player world-change runs one path; a **per-mind offered-action subset**
 (`NpcMind(offered=…)`, narrowing both `describe()` and `json_schema()`) keeps the
 NPC catalogue — and the behavioral harness — unchanged by the new player-only
-verbs. 43 new offline tests (172 total). **B1b remaining:** a tolerant LLM
-intent parser as a fallback for phrasing the verb table can't handle — free text
-→ a schema-constrained action (reusing the constrained-decoding grammar), behind
-the same seam. Deferred deliberately (the deterministic tier covers the common
-case with no model).
+verbs. 43 new offline tests. The deterministic tier covers the common case with
+no model at all; the B1b fallback above catches the rest.
 
 **Want:** a much richer and more flexible player command set — complex,
 multi-object commands like `say something to X`, `look at X`, `take X from

@@ -145,6 +145,83 @@ def default_verbs() -> dict:
     return table
 
 
+def _distinct_verbs(verbs: dict, allowed=None) -> list:
+    """The distinct Verbs behind a surface->Verb table, first-seen order, optionally
+    narrowed to an allowed set of canonical names."""
+    seen, out = set(), []
+    for v in verbs.values():
+        if v.canonical in seen:
+            continue
+        if allowed is not None and v.canonical not in allowed:
+            continue
+        seen.add(v.canonical)
+        out.append(v)
+    return out
+
+
+def _wants_dobj(v: Verb) -> bool:
+    """Whether a verb takes a direct object (or, for say/go, a text argument)."""
+    return v.kind == "text" or v.target == "go" or v.dobj is not None
+
+
+def _usage_line(v: Verb) -> str:
+    """A single human-readable usage hint, derived from the verb's own shape."""
+    parts = [v.canonical]
+    if v.kind == "text":
+        parts.append("<words>")
+    elif v.target == "go":
+        parts.append("<direction>")
+    else:
+        if v.dobj is not None:
+            parts.append(f"<{v.dobj.arg}>")
+        if v.iobj is not None:
+            prep = v.preps[0] if v.preps else "with"
+            core = f"{prep} <{v.iobj.arg}>"
+            parts.append(f"[{core}]" if v.dobj_from_iobj else core)
+    return " ".join(parts)
+
+
+def describe_verbs(verbs: dict, allowed=None) -> str:
+    """A compact catalogue of commands for the intent-parser prompt — the verb
+    counterpart of ``ActionRegistry.describe()``."""
+    return "\n".join(f"- {_usage_line(v)}" for v in _distinct_verbs(verbs, allowed))
+
+
+def command_schema(verbs: dict, allowed=None) -> dict:
+    """A JSON Schema constraining a free-text command to one canonical verb and
+    its object phrases — the verb-table counterpart of ``ActionRegistry.json_schema``.
+
+    The LLM fallback (B1b) is constrained to this so it can only emit a real
+    command: an object ``{"command": {...}}`` whose value is a ``oneOf`` over the
+    (allowed) verbs, each branch pinning ``verb`` to a const and declaring the
+    string object phrases that verb takes (``dobj`` always for a verb that wants
+    one; ``iobj`` required for a two-object verb like give, optional for take's
+    source). Same shape the deterministic parser produces, so the model's output
+    flows through the identical dispatch.
+    """
+    branches = []
+    for v in _distinct_verbs(verbs, allowed):
+        props = {"verb": {"const": v.canonical}}
+        required = ["verb"]
+        if _wants_dobj(v):
+            props["dobj"] = {"type": "string"}
+            required.append("dobj")
+        if v.iobj is not None:
+            props["iobj"] = {"type": "string"}
+            if not v.dobj_from_iobj:      # give needs a recipient; take's source is optional
+                required.append("iobj")
+        branches.append({
+            "type": "object", "properties": props,
+            "required": required, "additionalProperties": False,
+        })
+    return {
+        "type": "object",
+        "properties": {"command": {"oneOf": branches}},
+        "required": ["command"],
+        "additionalProperties": False,
+    }
+
+
 def parse(text: str, verbs: dict) -> Parse:
     """Parse one line of player input against a verb table.
 
