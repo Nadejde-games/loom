@@ -245,7 +245,11 @@ of it here. The engine is the only thing that touches the `World`.
 
 ### `ai/provider.py` — the swappable brain
 - `LLMProvider` (`loom/ai/provider.py:27`) is a one-method Protocol:
-  `complete(system, messages) -> str`. **The entire engine depends only on this.**
+  `complete(system, messages, schema=None) -> str`. **The entire engine depends
+  only on this.** The optional `schema` is the constrained-decoding grammar
+  (default `None` = unconstrained); `OpenAICompatibleProvider` forwards it as a
+  `response_format` json_schema via its `_schema_payload` hook, `FakeProvider`
+  and `AnthropicProvider` ignore it.
 - `FakeProvider` (`:43`) — deterministic, offline, no key. It fabricates
   persona-flavoured replies and (in structured mode) emits the JSON turn
   envelope. This is why the whole test suite runs with no GPU: nothing else in
@@ -273,9 +277,11 @@ This is where a model becomes a character.
   action catalogue); if not, it stays a pure conversationalist.
 - `converse` (the main method) — the pipeline you should trace closely:
   1. record what was heard into memory,
-  2. `provider.complete(...)` → raw string,
+  2. `provider.complete(..., schema=registry.json_schema())` → raw string — with a
+     registry present the model is **grammar-constrained** to the turn envelope
+     (Phase 2 hardening), so a malformed shape is impossible at the token level,
   3. `_parse_turn` → tolerant JSON extraction + **validate each proposed action
-     against the registry**,
+     against the registry** (kept as defense-in-depth for unconstrained backends),
   4. if anything was invalid **and** actions are possible, do **one bounded
      retry**, feeding the exact validation error back to the model,
   5. return a `Turn(speech, actions)` of *validated* intents.
@@ -298,8 +304,11 @@ Game-agnostic and dependency-free.
   a tiny param schema (`str|int|float|bool|enum`, required/optional) + a handler.
 - `ActionRegistry` — holds two halves: `validate(name, args)` (pure — used by the
   *mind* to check its own proposals, no world access) and the handlers (used by
-  the *engine* to actually mutate the world). `describe()` renders the catalogue
-  for the prompt.
+  the *engine* to actually mutate the world). Two renderings of the *same* `Param`
+  specs feed the model: `describe()` (the prose catalogue for the prompt) and
+  `json_schema()` (the turn-envelope grammar for constrained decoding) — one
+  source, so the shape the model is forced to emit and the shape the engine checks
+  cannot drift (a unit test asserts it).
 - `default_registry()` now ships three built-ins:
   - `emote` (`_emote`) — a purely expressive action, zero world-state change: the
     tightest possible proof that the seam works (schema → validate → execute →

@@ -218,15 +218,18 @@ B2 (fused rendering), Phase 3 (a director could also arbitrate/insist).
 
 ---
 
-## B6 — Degrade-to-speech leaks a broken JSON envelope to the player
+## B6 — Degrade-to-speech leaks a broken JSON envelope to the player  — RESOLVED 2026-07-12
 *Noticed 2026-07-11 (during B4 live testing).*
 
-**Status (2026-07-11): scheduled for structural fix.** Promoted into `docs/PLAN.md`
-as *Phase 2 hardening — constrained decoding*: grammar-constrained generation makes
-a malformed envelope impossible at the token level, so this leak cannot occur on any
-backend that supports the constraint. The considerations below remain the fallback
-design for backends without constraint support and the offline `FakeProvider` path,
-where validate-and-retry stays the last line of defense.
+**Status (2026-07-12): retired by construction.** Shipped as *Phase 2 hardening —
+constrained decoding* (see `docs/PLAN.md`): `ActionRegistry.json_schema()` emits the
+turn-envelope grammar and `NpcMind` hands it to the provider, so on any backend that
+supports the constraint (verified live on Ollama `/v1` with `qwen3.5:35b-a3b`) a
+malformed envelope is impossible at the token level — the leak cannot occur. Guarded
+by the `envelope.well-formed` behavioral scenario (5/5). The considerations below
+remain the fallback design for backends *without* constraint support and the offline
+`FakeProvider` path, where the validate → retry → degrade-to-speech layer stays the
+last line of defense (kept deliberately as defense-in-depth, not removed).
 
 **Want:** when the model emits a *malformed* turn envelope that the tolerant
 parser cannot recover, the player should never see raw JSON. Observed once in 10

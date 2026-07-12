@@ -25,7 +25,8 @@ from typing import Protocol, runtime_checkable
 
 @runtime_checkable
 class LLMProvider(Protocol):
-    async def complete(self, system: str, messages: list[dict]) -> str: ...
+    async def complete(self, system: str, messages: list[dict],
+                       schema: dict | None = None) -> str: ...
 
 
 class ProviderError(RuntimeError):
@@ -64,7 +65,11 @@ class FakeProvider:
     """
     name = "fake"
 
-    async def complete(self, system: str, messages: list[dict]) -> str:
+    async def complete(self, system: str, messages: list[dict],
+                       schema: dict | None = None) -> str:
+        # ``schema`` (the constrained-decoding grammar) is ignored: the fake has
+        # no model to constrain, and the offline suite must behave identically
+        # with or without it. Structured mode is still keyed off the prompt.
         utterance = ""
         for m in messages:
             if m.get("role") == "user":
@@ -132,7 +137,23 @@ class OpenAICompatibleProvider:
         self.retries = max(1, retries)
         self.name = f"openai-compat:{model}"
 
-    async def complete(self, system: str, messages: list[dict]) -> str:
+    def _schema_payload(self, schema: dict) -> dict:
+        """Payload fields that constrain generation to ``schema``, in the OpenAI
+        standard form (``response_format`` / ``json_schema``, ``strict``).
+
+        The one place per-backend constraint dialects are translated — the same
+        role ``extra_body`` plays for ``reasoning_effort`` / ``num_ctx``. A vLLM
+        that wants ``guided_json`` or an Ollama that needs the native ``format``
+        field overrides only this method; ``complete`` and the registry are
+        untouched, and the JSON Schema stays the portable form between them.
+        """
+        return {"response_format": {
+            "type": "json_schema",
+            "json_schema": {"name": "turn", "schema": schema, "strict": True},
+        }}
+
+    async def complete(self, system: str, messages: list[dict],
+                       schema: dict | None = None) -> str:
         if self.system_suffix:
             system = f"{system}\n\n{self.system_suffix}"
         payload = {
@@ -143,6 +164,8 @@ class OpenAICompatibleProvider:
             "stream": False,
             **self.extra_body,
         }
+        if schema is not None:
+            payload.update(self._schema_payload(schema))
         loop = asyncio.get_event_loop()
         data = await loop.run_in_executor(None, self._post, payload)
         try:
@@ -222,7 +245,12 @@ class AnthropicProvider:
         self.max_tokens = max_tokens
         self.name = f"anthropic:{model}"
 
-    async def complete(self, system: str, messages: list[dict]) -> str:
+    async def complete(self, system: str, messages: list[dict],
+                       schema: dict | None = None) -> str:
+        # ``schema`` is accepted for interface parity but not applied here:
+        # Claude's structured-output path is tool-use, not ``response_format``.
+        # Until that graduates, the mind's validate-and-retry stays this
+        # provider's shape guarantee — defense-in-depth, never dropped silently.
         resp = await self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,

@@ -82,7 +82,7 @@ class SilentProvider:
     """A provider whose NPC always chooses silence — an empty structured turn."""
     name = "silent"
 
-    async def complete(self, system, messages):
+    async def complete(self, system, messages, schema=None):
         return '{"speech":"","actions":[]}'
 
 

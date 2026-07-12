@@ -76,6 +76,20 @@ def NOT(pred: Callable) -> Callable:
     return lambda turn: not pred(turn)
 
 
+def well_formed_envelope(turn) -> bool:
+    """The turn never leaked a raw JSON envelope as spoken text (B6).
+
+    The degrade-to-speech fallback treats an unparseable reply as the whole
+    spoken line — so a malformed envelope surfaces as ``speech`` that is itself
+    raw JSON (starts with ``{`` and carries a ``"speech"`` key). Under
+    constrained decoding that malformation is impossible at the token level;
+    this predicate is the standing guard that it stays impossible. Clean prose
+    and honest silence both pass.
+    """
+    s = turn.speech.strip()
+    return not (s.startswith("{") and '"speech"' in s)
+
+
 # --- world setup hooks (optional, per scenario) ----------------------------
 def hold(item_id: str, holder_id: str) -> Callable:
     """Put an item into a holder's inventory before the scenario runs."""
@@ -140,6 +154,17 @@ SCENARIOS = [
         utterance="Wren, please hand your map to Odd for me.",
         check=emits("give_item"), n=5, threshold=3,
         desc="a willing NPC emits `give_item` when asked to hand something over"),
+    Scenario(
+        # Phase 2 hardening: constrained decoding guarantees a well-formed
+        # envelope at the token level. The utterance provokes an actions array
+        # (emote/move) — exactly where the original B6 malformation occurred (a
+        # missing object-close inside the array). A structural guarantee, so the
+        # threshold is perfect: any leak here is a real regression of the
+        # constraint, not sampling noise.
+        name="envelope.well-formed", npc_id="guide", tags=("envelope",),
+        utterance="Wren, will you lead me north to show me the way?",
+        check=well_formed_envelope, n=5, threshold=5,
+        desc="constrained decoding never leaks a raw JSON envelope as speech (B6)"),
 ]
 
 

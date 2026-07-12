@@ -165,11 +165,12 @@ Built:
   - Player payoff: `take` / `drop` / `inventory` and `give <item> to <who>`; give
     routes through the *same* registry the NPCs use — the player-side mirror of
     the seam in miniature (a trivial parser now; the rich grammar is B1).
-- `tests/` — **114 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **129 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give,
   perception rendering, the salience gate, chosen silence, the resolver, the
-  containment model). No GPU needed. **Plus a live behavioral harness** — see
-  *Testing discipline* below — 7 scenarios green against `qwen3.5:35b-a3b`.
+  containment model, and the constrained-decoding schema emitter + drift
+  cross-check). No GPU needed. **Plus a live behavioral harness** — see
+  *Testing discipline* below — 8 scenarios green against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
@@ -189,11 +190,31 @@ item/inventory world-model landed 2026-07-12). Player-side acting has its first
 slice (take/drop/give); the *rich, phrasing-tolerant* command grammar is B1, now
 unblocked by the inventory keel.
 
-### Phase 2 hardening — constrained decoding (grammar-guaranteed envelopes)  ▶ next
+### Phase 2 hardening — constrained decoding (grammar-guaranteed envelopes)  ✓ (2026-07-12)
 Make design commitment #4 *structural*: constrain generation to the turn-envelope
 grammar so the model **cannot** emit a malformed `{"speech","actions":[…]}` object
 in the first place — the shape is guaranteed at the token level, not validated and
-repaired after. The prior-art survey (2026-07-11) confirmed this is the standard
+repaired after.
+
+**Landed (2026-07-12), exactly to the design below.** `ActionRegistry.json_schema()`
+renders the turn envelope from the same `Param` specs `describe()`/`validate()`
+read — `speech:string` + an `actions` array of a `oneOf` over each action (its
+`name` a `const`, its typed `args` an object with `additionalProperties:false`).
+`LLMProvider.complete()` gained an optional `schema=None` (default = today's
+behaviour verbatim); `OpenAICompatibleProvider` forwards it via a `_schema_payload`
+hook as `response_format:{type:json_schema, …, strict:true}` — the single place a
+backend that wants `guided_json` / native `format` gets translated. `NpcMind`
+passes the grammar on both the initial call and the retry when a registry is
+present; `FakeProvider` and the offline path ignore it, and the validate → retry →
+degrade-to-speech layer stays underneath as defense-in-depth. Verified on GPU:
+`qwen3.5:35b-a3b` over Ollama `/v1` compiles the `oneOf`+`strict` grammar and
+returns a conformant envelope; the behavioral harness gained an `envelope.well-formed`
+scenario (5/5) — **B6 is retired by construction**, and all prior behavior held
+(B5 untouched, as predicted — the grammar guarantees shape, not choice). Offline
+grew to 129 tests, including a *drift* cross-check (the schema's required args equal
+what `validate()` demands, so the forced shape and the checked shape cannot diverge).
+
+The prior-art survey (2026-07-11) confirmed this is the standard
 approach and strictly dominates generate-then-validate: Gigax drives local NPC
 actions through Outlines constrained decoding, and vLLM (`guided_json` /
 `response_format`), llama.cpp (GBNF grammars) and recent Ollama (`format` /
@@ -231,8 +252,10 @@ the same registry"):
   `move`) is untouched by this and remains a sampling/prompt lever, not something a
   grammar can fix.
 
-Verify: schema-emitter unit tests offline; a live run on the real Ollama/vLLM path
-proving a constrained turn cannot reproduce the B6 malformation.
+Verified (2026-07-12): schema-emitter + drift unit tests offline (129 green); a live
+run on the real Ollama `/v1` path — the constrained turn envelope compiles and
+returns conformant, and the `envelope.well-formed` harness scenario (5/5) confirms
+a constrained turn cannot reproduce the B6 malformation.
 
 ### Phase 3 — Game-master director  ○
 A world-observing "director" agent on a slow cadence (hangs off the game loop),
@@ -267,7 +290,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (114 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (129 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*

@@ -19,9 +19,11 @@ class ScriptedProvider:
     def __init__(self, replies):
         self.replies = list(replies)
         self.calls = []
+        self.schemas = []   # the constraint schema passed on each call (or None)
 
-    async def complete(self, system, messages):
+    async def complete(self, system, messages, schema=None):
         self.calls.append((system, messages))
+        self.schemas.append(schema)
         return self.replies.pop(0)
 
 
@@ -224,6 +226,31 @@ class NoRegistryTests(unittest.TestCase):
         reply = run(mind(FakeProvider()).hear_and_respond("W", "hello there"))
         self.assertIsInstance(reply, str)
         self.assertTrue(reply)
+
+
+class ConstraintTests(unittest.TestCase):
+    """Constrained decoding wiring: the mind hands the provider the turn-envelope
+    grammar when actions are in play, and withholds it when there is no registry.
+    The grammar's *content* is proven in test_constrained_decoding."""
+
+    def test_schema_forwarded_when_registry_present(self):
+        p = ScriptedProvider(['{"speech":"Hi.","actions":[]}'])
+        run(mind(p).converse("W", "hello"))
+        self.assertEqual(p.schemas[0], default_registry().json_schema())
+
+    def test_no_schema_without_registry(self):
+        npc = Npc(id="odd", name="Odd", persona={})
+        p = ScriptedProvider(["Just a plain spoken line."])
+        run(NpcMind(npc, p).converse("W", "hello"))   # registry=None -> prose mode
+        self.assertIsNone(p.schemas[0])
+
+    def test_retry_also_carries_the_schema(self):
+        bad = '{"speech":"Hm.","actions":[{"name":"teleport","args":{}}]}'
+        good = '{"speech":"Hm.","actions":[]}'
+        p = ScriptedProvider([bad, good])
+        run(mind(p).converse("W", "hello"))
+        self.assertEqual(len(p.schemas), 2)                 # it retried
+        self.assertEqual(p.schemas[1], default_registry().json_schema())
 
 
 if __name__ == "__main__":

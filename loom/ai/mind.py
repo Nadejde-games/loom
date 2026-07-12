@@ -221,7 +221,14 @@ class NpcMind:
         system = self._system_prompt(scene)
         messages = [{"role": "user", "content": heard}]
 
-        raw = await self.provider.complete(system, messages)
+        # Constrained decoding (Phase 2 hardening): when actions are in play, hand
+        # the provider the turn-envelope grammar so a malformed envelope is
+        # impossible at the token level rather than merely caught after. Providers
+        # without constraint support (and the FakeProvider) ignore it, and the
+        # tolerant parse + validate/retry below stays as defense-in-depth.
+        schema = self.registry.json_schema() if self.registry is not None else None
+
+        raw = await self.provider.complete(system, messages, schema=schema)
         speech, actions, errors = self._parse_turn(raw)
 
         # One bounded retry, only when the model proposed something invalid and
@@ -235,7 +242,7 @@ class NpcMind:
                 {"role": "assistant", "content": raw},
                 {"role": "user", "content": correction},
             ]
-            raw2 = await self.provider.complete(system, retry)
+            raw2 = await self.provider.complete(system, retry, schema=schema)
             speech2, actions2, _ = self._parse_turn(raw2)
             speech = speech2 or speech      # prefer the retry's line if it has one
             actions = actions2              # invalid actions already dropped here

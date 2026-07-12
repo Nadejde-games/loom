@@ -111,6 +111,27 @@ def _param_sig(name: str, p: Param) -> str:
     return f'{name}{"" if p.required else "?"}: {t}'
 
 
+# Declared type name -> the JSON Schema fragment that constrains an argument.
+# The mirror of ``_TYPES`` (which validates *after* the fact) for the token-level
+# constraint: same Param specs, one for checking, one for the grammar.
+_JSON_TYPES: dict[str, dict] = {
+    "str": {"type": "string"},
+    "int": {"type": "integer"},
+    "float": {"type": "number"},
+    "bool": {"type": "boolean"},
+}
+
+
+def _param_json_schema(p: Param) -> dict:
+    """One argument's JSON Schema fragment, from the same ``Param`` ``validate``
+    reads. Shape only — no descriptions; the prompt catalogue carries semantics,
+    the grammar carries structure, so it stays lean."""
+    if p.type == "enum":
+        return {"enum": list(p.choices)} if p.choices else {"type": "string"}
+    # Unknown declared types don't constrain (mirrors _check_type not blocking).
+    return dict(_JSON_TYPES.get(p.type, {}))
+
+
 class ActionRegistry:
     """The set of actions the world will accept, keyed by name.
 
@@ -168,6 +189,55 @@ class ActionRegistry:
             sig = ", ".join(_param_sig(n, p) for n, p in spec.params.items()) or "no args"
             lines.append(f"- {spec.name}({sig}): {spec.description}")
         return "\n".join(lines)
+
+    def _action_json_schema(self, spec: ActionSpec) -> dict:
+        """One action as a JSON Schema branch: its ``name`` pinned to a const and
+        its ``args`` an object of the exact typed params ``validate`` enforces."""
+        props = {pname: _param_json_schema(p) for pname, p in spec.params.items()}
+        required = [pname for pname, p in spec.params.items() if p.required]
+        args_schema: dict = {
+            "type": "object",
+            "properties": props,
+            "additionalProperties": False,
+        }
+        if required:
+            args_schema["required"] = required
+        return {
+            "type": "object",
+            "properties": {"name": {"const": spec.name}, "args": args_schema},
+            "required": ["name", "args"],
+            "additionalProperties": False,
+        }
+
+    def json_schema(self) -> dict:
+        """The turn envelope as a JSON Schema, for grammar-constrained decoding.
+
+        The token-level twin of ``describe()`` + ``validate()``: both are rendered
+        from the same registered ``Param`` specs, so the shape the model is *forced*
+        to emit and the shape the engine *checks* can never drift. A turn is
+        ``{"speech": <string>, "actions": [<one of the registered actions>...]}``;
+        each action's ``name`` is a const discriminator over a ``oneOf`` and its
+        ``args`` are the typed, required parameters. Guarantees shape, never choice
+        — which action fits, or whether to stay silent, is still the prompt's job.
+        """
+        specs = list(self._specs.values())
+        if specs:
+            actions_schema = {
+                "type": "array",
+                "items": {"oneOf": [self._action_json_schema(s) for s in specs]},
+            }
+        else:
+            # No actions registered: the only valid ``actions`` value is empty.
+            actions_schema = {"type": "array", "maxItems": 0}
+        return {
+            "type": "object",
+            "properties": {
+                "speech": {"type": "string"},
+                "actions": actions_schema,
+            },
+            "required": ["speech", "actions"],
+            "additionalProperties": False,
+        }
 
 
 # --- built-in, game-agnostic actions ---------------------------------------
