@@ -3,6 +3,34 @@
 Living document. The reference for where we are and where we're going.
 Last updated: 2026-07-12.
 
+## Status snapshot — line drawn 2026-07-12
+
+Committed through `557b6e0`. **Phases 0–2 and the Phase 2 hardening are complete;
+the Phase 3 game-master director has its first working slice.** In one sentence:
+NPCs with persona + memory converse and *act* through a grammar-hardened action
+seam; players issue rich, phrasing-tolerant commands through that *same* seam; and
+an unseen director shapes ambient scene on a slow, restrained cadence — all on
+local GPU inference, all editable as world data. **229 offline tests + 13 live
+behavioral scenarios, both gates green.**
+
+The clean milestone: the director exists on the seam and is *usable* — restrained,
+grounded, persona-as-data. Open threads from here (detailed in the phase notes and
+`docs/BACKLOG.md`):
+- **Director reach** — the director shapes the *world*, not minds: environmental
+  events (a storm) and `spawn_item`, plus quests (`offer_quest` + tracking). NPCs
+  stay autonomous and react on their own; `nudge_npc` is a framework option
+  disabled for our game (see the Phase 3 design decision).
+- **Director judgment** — the model-side two-pass "should I act?" (B8), the same
+  lever as the NPC `move` ceiling (B5).
+- **Autonomy** — director side: ambient life in a still world is unbuilt (B9); NPC
+  side: NPCs should react to world events of their own volition, not only to being
+  spoken to. The `loom-gm` wide-context variant is wired but never exercised (B10).
+- **Presentation debt** — fused speech+action rendering (B2), rich text (B3).
+- **Later phases** — loot forge (4), deeper memory + persistence (5; note: world,
+  NPC/director memory, and the chronicle are all in-memory today and reset on
+  restart), rich transport + multiplayer (6), authoring tools incl. the world
+  atlas (7 / B7).
+
 ## Vision
 
 An LLM-driven, text-first, server–client game world that runs forever, populated
@@ -48,7 +76,7 @@ loaded from editable JSON, default engine with a command set, AI layer
 end-to-end smoke test. One NPC ("Odd the Hermit") converses in character and
 remembers. Runs fully offline via `FakeProvider`.
 
-### Phase 1 — Local minds (Ollama) + provider portability  ▶ in progress
+### Phase 1 — Local minds (Ollama) + provider portability  ✓ (2026-07-09; only the optional plain-text mode deferred)
 Drive NPCs with **local inference on the 2× RTX 6000 Ada (96 GB)** instead of a
 paid API. Built and proven (2026-07-09): `OpenAICompatibleProvider` + a thin
 `OllamaProvider` subclass, talking the OpenAI `/v1/chat/completions` schema so
@@ -91,7 +119,7 @@ Remaining in this phase:
   instead of JSON envelopes (graceful degradation, GMCP-style).
 - Deferred to when it pays: Anthropic path stays available for comparison.
 
-### Phase 2 — The action seam  ▶ in progress (emote + move 2026-07-10; inventory keel + give_item 2026-07-12)
+### Phase 2 — The action seam  ✓ seam complete (2026-07-12: emote · move · give/take/drop · stage_event; hardened by constrained decoding)
 Give NPCs (and later the GM) the ability to *act*, not just speak, via
 schema-validated actions. A validation + retry layer turns model output into
 safe game actions. This is the interface the game-master and loot engine both
@@ -209,11 +237,13 @@ Built:
   — the model under-selects the world-mutating `move` in favour of `emote`
   (persona wording can't fix it; it's a sampling/prompt-weight lever).
 
-Remaining actions to build out on this seam (each ~a handler + schema + a world
-capability where needed): **offer_quest**, **remember_fact** (`give_item`,
-`take_item`, `drop_item` and the item/inventory world-model landed 2026-07-12).
-Player-side acting now has its rich, phrasing-tolerant deterministic parser
-(B1a) and its LLM free-text fallback (B1b) — both landed 2026-07-12.
+The seam itself is complete and hardened; the player and NPC and director paths
+all run through it. Further actions are now scheduled into the phase that owns
+them, rather than left loose here: **offer_quest** is a *subsystem* (quest state +
+completion tracking + a per-player log), not just an action — it belongs to Phase 3
+(the director); **remember_fact** belongs to Phase 5 (when memory gains importance
+and retrieval). Player-side acting has its rich, phrasing-tolerant deterministic
+parser (B1a) and its LLM free-text fallback (B1b) — both landed 2026-07-12.
 
 ### Phase 2 hardening — constrained decoding (grammar-guaranteed envelopes)  ✓ (2026-07-12)
 Make design commitment #4 *structural*: constrain generation to the turn-envelope
@@ -343,10 +373,36 @@ the catalogue out on it.
   pulse — restraint ("intervene sparingly") is under-weighted, a ceiling like B5,
   held down deterministically in the orchestrator (min-events + cooldown, **BACKLOG
   B8**), the honest first lever; the model-side "should I act?" pass remains open.
-- **Next on this seam:** world-mutating director actions (`spawn_item`, toward the
-  Phase 4 loot forge), NPC-directing (`nudge_npc` — shape a character's goals/
-  memory without puppeting its words), and `offer_quest` with real tracking. B8's
-  restraint lever (a two-pass "should I act?" decision, the same shape B5 wants).
+- **The line, drawn here:** the director MVP is complete — bodiless actor on the
+  seam, constrained, restrained (B8), grounded, persona authored as world data.
+  What remains is *reach*, *judgment*, and *autonomy*, tracked explicitly:
+  - **Reach** — the director shapes the *world*, not minds (see the design
+    decision below): environmental / world-state events (a storm rolls in, night
+    falls) and `spawn_item` — world changes that NPCs and players *perceive and
+    react to* — plus `offer_quest` as a real subsystem (state + tracking +
+    per-player log). `nudge_npc` (writing a goal/memory into a character) stays a
+    framework option, **disabled for this game**.
+  - **Judgment** — B8's model-side lever: a two-pass "should I act?" decision, the
+    same shape B5 wants for the NPC `move` ceiling. A shared act-gate could serve
+    both.
+  - **Autonomy** — two halves. Director side (B9): today it only reacts to
+    player-driven activity; a lull trigger and/or a world-clock event source would
+    let the world stir on its own. NPC side: NPCs should react to what happens
+    around them (a storm, an arrival) of their own volition, not only to being
+    spoken to. And B10: run the director on the wired-but-unexercised `loom-gm`
+    wide-context variant and verify it live.
+
+**Design decision (2026-07-12): the director shapes the *world*, not minds.** NPCs
+are autonomous agents — they perceive what happens around them and react of their
+own volition; the director never puppets them. So the director's reach is
+*environmental*: it changes the world (a storm rolls in, a thing appears, night
+falls), and NPCs — and players — respond to that change independently. The
+mind-writing action (`nudge_npc`: set a goal/memory on a character) is still worth
+having in the **framework** as an optional capability another game may want — the
+per-mind offered-subset already makes it opt-in — but it is **disabled for this
+game**. Our director speaks to the world; our characters answer for themselves.
+The counterpart work is NPC *autonomy*: minds that react to world/ambient events
+unprompted, not only to a player's `say` (overlaps B9 and Phase 5).
 
 ### Phase 4 — Loot forge  ○
 Dynamic, context-aware item generation: the LLM authors name/lore/tags as
@@ -357,6 +413,10 @@ history, quests, location, and what the world is currently doing.
 Importance scoring, embedding retrieval (start SQLite + brute-force cosine),
 and reflection on the memory stream. Persist world + memories across restarts.
 Player personality/history accretion on the same substrate as NPCs.
+**Loose end this closes:** today the world, all NPC *and* director memory, and the
+chronicle are in-memory only — everything resets on restart. For a world that is
+meant to run *forever*, this is the phase where that stops being true. (`remember_fact`,
+the deferred Phase 2 action, lands here too, once memory has importance/retrieval.)
 
 ### Phase 6 — Rich transport & multiplayer  ○
 WebSocket transport implementing the same `Handler` contract; emit `map` /
@@ -403,10 +463,13 @@ Tests alongside each phase (BOTH gates — see *Testing discipline*) · schema/
 versioning for save data · cost & latency budgets for AI calls · keeping `loom/`
 free of game-specific content.
 
-Unscheduled improvements noticed during review live in `docs/BACKLOG.md`
-(richer command grammar · fused speech+action lines · rich text formatting ·
-NPC choice-to-react). Promote them into a phase with a real design when the
-moment is right.
+Unscheduled improvements noticed during review live in `docs/BACKLOG.md`. Open as
+of 2026-07-12: fused speech+action rendering (B2) · rich text formatting (B3) · the
+two-pass act-gate for the NPC `move` ceiling and director restraint (B5 / B8) ·
+world atlas (B7) · director autonomy / ambient life (B9) · exercising the `loom-gm`
+variant (B10). Done and folded in: B1 (command grammar), B4 (choice-to-react), B6
+(envelope leak, retired by constrained decoding). Promote an item into a phase with
+a real design when the moment is right.
 
 ## How to run (current)
 With the venv active (`source .venv/bin/activate`), `PYTHONPATH` is not needed:

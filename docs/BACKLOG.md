@@ -83,6 +83,12 @@ fixed first-word verb + rest, exact-match dispatch).
 ## B2 — Fuse an NPC's speech and action into a single line
 *Noticed 2026-07-10.*
 
+**Status (2026-07-12): still open, and now more pressing.** The Phase 3 director
+adds a *third* rendered form — an unattributed ambient line — beside the NPC's
+separate speech and emote lines. As the rendered surfaces multiply (and before
+Phase 6's rich transport), a single composition layer that turns a `Turn` into the
+right line(s) — and knows the director's bodiless voice — is worth doing.
+
 **Want:** an NPC currently emits two separate lines — the spoken line, then the
 emote. Combine them into one:
 
@@ -320,9 +326,15 @@ Start as a standalone script, no engine or GPU needed.
   view (a shareable atlas page, or the rich client's map). Keep the data-gathering
   separate from the rendering so both can sit on it.
 
+Also surface **world-level config** now that `world.json` carries it: the loader
+captures any non-structural top-level key into `world.meta` (the `"director"`
+persona today), so the atlas should render that block too — the GM persona is part
+of "explore the world, characters, and story."
+
 **Related:** Phase 7 (authoring), Phase 6 (map/entities channels), the inventory
-world-model (2026-07-12, gives item locations), design commitment #2 (editable
-data). Deferred here at the user's request (2026-07-12) rather than built now.
+world-model (2026-07-12, gives item locations), `world.meta` / the director block
+(2026-07-12), design commitment #2 (editable data). Deferred here at the user's
+request (2026-07-12) rather than built now.
 
 ---
 
@@ -387,5 +399,81 @@ lever), B4 (salience gate — choosing whether to engage).
 
 ---
 
-*Add new observations below with an ID (`B9…`), a date, and the same
+## B9 — The director is reactive, not autonomous (no ambient life on its own)
+*Noticed 2026-07-12 (playing the Phase 3 director).*
+
+**Frames the settled design decision (PLAN, Phase 3): the director shapes the
+*world*, not minds; NPCs react on their own.** This item is that principle's
+to-do list — the director needs an autonomous way to change the world (a
+world-clock / environmental events), and NPCs need to *react* to those changes of
+their own volition (the NPC-autonomy half). Neither is built yet.
+
+**Want:** the world should feel alive even when the player is idle — the director
+able to set a beat on a *lull*, and ambient / world-clock events (weather turning,
+night falling, something stirring off-screen) that arise without a player action.
+Today the director is purely **reactive**: the chronicle only fills from
+player-driven activity (arrivals, the player's speech, NPC replies to it,
+player/NPC moves), so a still room produces no new events, the B8 restraint floor
+never clears, and the director never speaks. Correct *as restraint* — but it means
+the world goes inert the moment you stop typing.
+
+**Two sub-gaps:**
+- **No autonomous event source.** Nothing advances the world without player
+  input — no world clock, no idle NPC activity, no scheduled beats. The chronicle
+  is the only trigger and it is entirely player-fed.
+- **The director can only stage into occupied rooms.** `world_snapshot()` shows
+  only rooms with someone present, so the director cannot foreshadow into a room
+  the player is about to enter, nor let a distant place stir off-screen.
+
+**Where it lands:** `loom/ai/director.py` (`Director` — a time/lull trigger beside
+the activity trigger; a snapshot that can include chosen empty rooms) and likely a
+small **world-clock** system on the game loop (`loop.py`) as an autonomous event
+source that writes to the chronicle.
+
+**Considerations for later:**
+- A **lull trigger**: if N pulses pass with players present but too few events to
+  clear the B8 floor, allow one *low-key* ambient beat anyway (a gentler budget
+  than the reactive one), so restraint doesn't tip into deadness. Note the direct
+  tension with B8 — the two must be balanced, not fought.
+- A **world clock**: scheduled or probabilistic environmental beats (time of day,
+  weather) recorded to the chronicle — turning "reactive" into "reactive to a
+  living world," which is the cleaner framing than the director inventing time.
+- **Idle NPC autonomy** (a larger step, overlaps Phase 5 minds): NPCs that act or
+  speak unprompted, which the director then perceives and shapes around.
+
+**Related:** Phase 3 (director), B8 (restraint — the counter-force to balance),
+Phase 5 (deeper minds / autonomy).
+
+---
+
+## B10 — The `loom-gm` wide-context model variant is wired but never exercised
+*Noticed 2026-07-12 (Phase 3 director follow-up).*
+
+**Want:** run the director on its own large-context model variant
+(`ops/modelfiles/loom-gm.Modelfile` — `qwen3.5:27b` + `PARAMETER num_ctx 32768`)
+as designed, and verify it end-to-end: that a wider baked context actually improves
+the director's beats, and that the KV-cache VRAM budget ("one card") holds on the
+2× RTX 6000 Ada alongside the NPC model. The plumbing exists (`LOOM_GM_MODEL` →
+`_director_provider()` → `attach_director(provider=…)`), but the variant has never
+been built, run, or measured — the director has only ever run on the shared NPC
+model (`qwen3.5:35b-a3b`).
+
+**Where it lands:** ops + a live measurement, not code — the wiring is done.
+
+**Considerations for later:**
+- Build and run it: `ollama create loom-gm -f ops/modelfiles/loom-gm.Modelfile`,
+  then `LOOM_GM_MODEL=loom-gm python game/main.py`; confirm both cards stay within
+  budget (`nvidia-smi`) and the director stays responsive at the wider context.
+- A/B the beats: does 27b-dense + wide context read better for the GM role than
+  35b-a3b, at the looser latency the slow cadence allows? (Phase 1's model notes
+  predicted the dense tier for the GM.)
+- If VRAM is tight, `OLLAMA_KV_CACHE_TYPE=q8_0` (already noted in the Modelfile).
+
+**Related:** Phase 3 (director), Phase 1 (model/backend decisions and the GM-tier
+prediction), B9 (autonomy — a wider context helps the director reason over more
+world at once).
+
+---
+
+*Add new observations below with an ID (`B11…`), a date, and the same
 what / where-it-lands / considerations shape.*
