@@ -308,9 +308,10 @@ This is where a model becomes a character.
   never raises; it never lets unvalidated text become an action.
 - `Scene` — a read-only perception snapshot the engine composes (`_scene_for`)
   and hands in: place, description, `exits`, `others` present, `items` on the
-  ground, and the NPC's own `inventory`. The mind renders it into the prompt so
-  it can choose real exits and reason about real objects — but it reads the
-  `Scene`, never the `World`.
+  ground, the NPC's own `inventory`, and any standing `conditions` the director
+  has set over the place (a storm, nightfall). The mind renders it into the prompt
+  so it can choose real exits and reason about real objects and the weather — but
+  it reads the `Scene`, never the `World`.
 
 The golden rule lives in the split: **`NpcMind` never imports or touches
 `World`.** It only returns proposals.
@@ -329,7 +330,7 @@ Game-agnostic and dependency-free.
   `json_schema(names)` accept an optional subset, so one actor can be *offered*
   fewer actions than the registry holds (`NpcMind(offered=…)`) — the player takes
   and drops where the demo's NPCs do not — without a second registry.
-- `default_registry()` now ships six built-ins:
+- `default_registry()` now ships eight built-ins:
   - `emote` (`_emote`) — a purely expressive action, zero world-state change: the
     tightest possible proof that the seam works (schema → validate → execute →
     narrate → remember).
@@ -352,6 +353,13 @@ Game-agnostic and dependency-free.
     this location exist?" and the beat broadcasts where aimed. Offered only to the
     `DirectorMind` (never NPCs or players), via `DIRECTOR_ONLY_ACTIONS` — the same
     offered-subset lever `PLAYER_ONLY_ACTIONS` uses. See §7 `ai/director.py`.
+  - `set_condition` / `clear_condition` (`_set_condition` / `_clear_condition`) —
+    the director's world-*shaping* pair, where `stage_event` only narrated. They
+    raise and lift a *standing* condition (a storm, nightfall) that persists in the
+    world's conditions registry and colors the place until lifted. Also bodiless
+    and director-only. Each does the split the prior art demands: it *stores* the
+    condition **and** *announces* the change once to the room. See §7 and
+    `loom/world/conditions.py`.
 
 Adding an action later (`spawn_item`, `offer_quest`, `nudge_npc`) = a schema + a
 handler registered here. Nothing else in the pipeline changes. That's the point
@@ -380,13 +388,40 @@ The director is the unseen hand over the whole stage, on a slow pulse — where 
   background task (non-blocking, non-overlapping); its validated actions execute
   through the same `engine._perform` as everyone. It acts *on* rooms, not from one:
   a bodiless `_DirectorActor` stub fills the seam's `actor`, and
-  `engine.world_snapshot()` (rooms with someone present, keyed by location id) is
-  the still-frame that complements the chronicle.
+  `engine.world_snapshot()` (rooms with someone present, keyed by location id, and
+  any standing conditions *with their tags* — the handle it clears by) is the
+  still-frame that complements the chronicle.
+- **Reach:** the director narrates one-off beats (`stage_event`) and *shapes the
+  world* with standing conditions (`set_condition` / `clear_condition`), held in
+  `loom/world/conditions.py`. It shapes the world, not minds — NPCs perceive a
+  condition (via `Scene`) and are meant to react on their own (the NPC-autonomy
+  half is next; see `docs/BACKLOG.md` B9).
 - **The perception pair the director reads:** the chronicle (*what changed*) + the
   snapshot (*how it stands now*). Assembled in `game/main.py`; the GM persona is
   authored as data (the `"director"` block in `world.json`, captured into
   `world.meta` by the loader), and `LOOM_GM_MODEL` selects the wide-context
   `loom-gm` model variant.
+
+### Autonomous NPC reactions — the reaction path (B9)
+The director shapes the world, *not* minds — so the NPCs react to it on their own.
+- `ai/mind.py`, `NpcMind.react(event, scene)` — the mind reacts of its own volition
+  to something happening around it (a storm, another character's deed), on a
+  deliberately **high bar**: most events, most characters do nothing (an empty turn
+  = silence). Mirrors `converse` (same constrained decoding, tolerant parse,
+  bounded retry) but the event is an *observation*, addressed to no one.
+- `engine.py`, `_react_to_event(location_id, source_id, event, cascade)` — the
+  re-entrant core: it offers the present NPCs (except the source — the self-guard) a
+  chance to react, and a reaction is *itself* an event the others may answer, so
+  characters play off each other. **The limiter is appropriateness** (each NPC's
+  own `react` judgement), **not a depth cap** — the design directive. Cheap rails
+  keep a genuine runaway bounded: a shared **decaying budget** per originating
+  event, a per-NPC **cooldown**, and a hard **fuse** (`REACT_BUDGET` /
+  `REACT_COOLDOWN` / `REACT_FUSE`). Two triggers feed it: a director world-change
+  (in `_perform`, only the bodiless director) and an NPC's own reply (in
+  `_deliver_npc_reply`); both via `_spawn_reaction` on a background task.
+- **A capability, off by default.** `Engine(autonomous_reactions=…)` — the base
+  default is `False` (so every prior test/scenario keeps its exact behaviour); the
+  game turns it on in `game/main.py`. NPCs are *offered* reaction, never forced.
 
 ---
 
@@ -481,8 +516,8 @@ loom/                     the reusable, game-agnostic framework
   session.py              one connected client; send_text/send_system
   server.py               async TCP server; drives any Handler
   loop.py                 continuous tick loop; the director hangs off it (Phase 3)
-  engine.py               parses input, resolves nouns, routes acts through the seam, NPC dispatch, records the chronicle, attach_director
-  action.py               ActionRegistry: schema + validation + json_schema + handlers (emote/move/give/take/drop/stage_event)
+  engine.py               parses input, resolves nouns, routes acts through the seam, NPC dispatch, chronicle, attach_director, autonomous reactions (_react_to_event)
+  action.py               ActionRegistry: schema + validation + json_schema + handlers (emote/move/give/take/drop/stage_event/set_condition/clear_condition)
   command.py              player-command parser (B1): verb table + DO/prep/IO grammar → a Parse; command_schema for B1b
   chronicle.py            bounded world event feed with a monotonic cursor — the director's turn-digest perception (Phase 3)
   salience.py             SalienceGate: which NPC engages (default: directed address)
@@ -491,11 +526,12 @@ loom/                     the reusable, game-agnostic framework
   world/
     entity.py             Entity → Character → Npc / Player, and Item (held by a `holder`)
     location.py           Location: exits + occupants
-    world.py              World state + queries: move/occupants + place_item/contents/scope
+    conditions.py         Conditions: standing environmental state keyed by location (the director's world-shaping; Phase 3)
+    world.py              World state + queries: move/occupants + place_item/contents/scope + conditions
   ai/
     provider.py           LLMProvider + Fake / OpenAI-compat / Ollama / Anthropic
     memory.py             MemoryStream (append + recency; the substrate)
-    mind.py               NpcMind: persona + memory + turn pipeline + Scene; parse_turn (shared with the director)
+    mind.py               NpcMind: persona + memory + turn pipeline + Scene; converse + react (autonomous, B9); parse_turn (shared with the director)
     intent.py             free-text → one command via the command grammar (B1b fallback; world-free)
     director.py           DirectorMind (game-master turn) + Director (slow, lazy, non-blocking cadence on the loop) — Phase 3
 

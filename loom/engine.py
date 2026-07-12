@@ -4,6 +4,7 @@ particular world — a game may subclass this or register extra commands.
 """
 from __future__ import annotations
 import asyncio
+from dataclasses import dataclass, field
 from .session import Session
 from .world import World, Player, Npc
 from .action import ActionRegistry, ActionContext, ActionIntent, default_registry
@@ -25,15 +26,43 @@ PLAYER_ONLY_ACTIONS = ("take_item", "drop_item")
 # Actions reserved for the game-master director — the unseen hand that shapes the
 # scene. Offered only to the DirectorMind (never to NPCs or players), the same
 # per-mind subset lever PLAYER_ONLY_ACTIONS uses. Excluded from the NPC catalogue
-# below so a character can never stage an ambient beat.
-DIRECTOR_ONLY_ACTIONS = ("stage_event",)
+# below so a character can never stage an ambient beat or change the weather.
+# stage_event narrates a one-off beat; set_condition/clear_condition raise and
+# lift a *standing* condition (a storm, nightfall) that persists in perception.
+DIRECTOR_ONLY_ACTIONS = ("stage_event", "set_condition", "clear_condition")
+
+# Autonomous-reaction rails (BACKLOG B9). NPCs react to what happens around them of
+# their own volition, and to each other — a cascade. The limiter is engine-enforced
+# *appropriateness* (each NPC's own high-bar judgement in NpcMind.react), NOT a hard
+# depth cap; these are only the cheap safety rails that keep a genuine runaway from
+# spending forever. REACT_BUDGET is the shared, decaying reaction budget per
+# originating event (each reaction spends one; when it hits zero the cascade winds
+# down). REACT_COOLDOWN is how many hops an NPC that just reacted sits out — long
+# enough to stop machine-gun ping-pong, short enough that a real back-and-forth
+# still happens. REACT_FUSE is the hard circuit-breaker: a ceiling on total
+# reactions per originating event that should never fire in normal play.
+REACT_BUDGET = 5
+REACT_COOLDOWN = 2
+REACT_FUSE = 16
+
+
+@dataclass
+class _Cascade:
+    """The shared, mutable state threaded through one originating event's cascade
+    of reactions. One per originating event; passed down the recursion so budget,
+    cooldowns, and the fuse are shared across the whole tree of reactions."""
+    budget: int                                     # reactions remaining (decaying)
+    fuse: int                                       # hard ceiling on total reactions
+    spent: int = 0                                  # reactions delivered so far
+    cooldown: dict = field(default_factory=dict)    # npc id -> hops still to sit out
 
 
 class Engine:
     def __init__(self, world: World, provider: LLMProvider, start_location: str,
                  registry: ActionRegistry | None = None,
                  gate: SalienceGate | None = None,
-                 intent_fallback: bool = True):
+                 intent_fallback: bool = True,
+                 autonomous_reactions: bool = False):
         self.world = world
         self.provider = provider
         self.start_location = start_location
@@ -45,6 +74,16 @@ class Engine:
         # for reconstructing a Parse from the model's answer, and the verbs it may
         # map onto — never the meta verbs (a fuzzy read must not quit the player).
         self.intent_fallback = intent_fallback
+        # Autonomous NPC reactions (B9). A framework capability, off by default: a
+        # game opts in (our game does, in game/main.py). When on, a world event or
+        # an NPC's own turn offers the other NPCs present a chance to react of their
+        # own volition, cascading among them under the rails above. Off keeps NPCs
+        # purely responsive to being spoken to — the behaviour every prior test and
+        # scenario was written against, so enabling this regresses nothing existing.
+        self.autonomous_reactions = autonomous_reactions
+        self.react_budget = REACT_BUDGET
+        self.react_cooldown = REACT_COOLDOWN
+        self.react_fuse = REACT_FUSE
         self._by_canonical = {v.canonical: v
                               for v in command._distinct_verbs(self.verbs)}
         self._fallback_verbs = [c for c in self._by_canonical
@@ -196,6 +235,11 @@ class Engine:
             await session.send_text("You are nowhere.")
             return
         lines = [f"== {loc.name} ==", loc.description]
+        # Standing conditions the director has set over this place read as part of
+        # it — appended after the base description at look-time, so a storm shows
+        # on every look until it lifts (not just when it began).
+        for cond in self.world.conditions.texts(loc.id):
+            lines.append(cond)
         others = self.world.occupants(loc.id, exclude=player.id)
         if others:
             lines.append("You see: " + ", ".join(o.name for o in others) + ".")
@@ -259,16 +303,94 @@ class Engine:
             print(f"[loom] NPC {npc.id} unexpected error: {exc!r}")
             await self._broadcast(location_id, "text", f"{npc.name} frowns, at a loss for words.")
             return
+        observed = await self._deliver_turn(location_id, npc, mind, turn)
+        # The NPC's own word or deed is itself something the others present may
+        # answer, of their own volition (B9) — kick off a bounded cascade from it.
+        # (No-op unless the game enabled autonomous_reactions.)
+        self._spawn_reaction(location_id, npc.id, observed)
+
+    async def _deliver_turn(self, location_id: str, npc, mind, turn) -> str:
+        """Deliver a validated turn to the room — broadcast its speech, chronicle
+        it, execute its validated actions — and return a one-line description of
+        what was observed (the speech, plus any action narration), which a reaction
+        can cascade from. Empty string if the turn was silent. Shared by the
+        player-triggered reply path and the autonomous reaction cascade, so a turn
+        is delivered identically however it arose."""
+        observed: list[str] = []
         if turn.speech:
             await self._broadcast(location_id, "text", f"{npc.name}: {turn.speech}")
             # NPC dialogue is salient world activity — the director should perceive
             # what characters say, not only what they physically do.
             self.chronicle.record(f"{npc.name}: {turn.speech}",
                                   location_id=location_id, kind="speech")
+            observed.append(f'{npc.name} said: "{turn.speech}"')
         # Validated intents only — the mind has already checked them against the
         # registry; the engine executes and narrates the outcome to the room.
         for intent in turn.actions:
-            await self._perform(location_id, npc, mind, intent)
+            result = await self._perform(location_id, npc, mind, intent)
+            if result is not None and result.narration:
+                observed.append(result.narration)
+        return " ".join(observed)
+
+    def _spawn_reaction(self, location_id: str, source_id: str,
+                        event_text: str) -> None:
+        """Kick off a bounded reaction cascade from an event (an NPC's turn, or a
+        world change) on a background task, so it never blocks the caller. A fresh
+        budget per originating event. No-op unless the game opted into autonomous
+        reactions, or if there is nothing to react to."""
+        if not self.autonomous_reactions or not event_text:
+            return
+        cascade = _Cascade(budget=self.react_budget, fuse=self.react_fuse)
+        task = asyncio.create_task(
+            self._react_to_event(location_id, source_id, event_text, cascade))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _react_to_event(self, location_id: str, source_id: str,
+                              event_text: str, cascade: _Cascade) -> None:
+        """Offer the NPCs present a chance to react to an event of their own
+        volition, and let a reaction itself become an event the others may answer —
+        a cascade among the characters. Bounded by the rails on ``cascade``: a
+        shared decaying budget, a per-NPC cooldown, a self-guard (the source never
+        reacts to its own event), and a hard fuse. The cascade ends when
+        appropriateness runs out (every present NPC stays silent) or the budget /
+        fuse is spent — never at a fixed depth, so NPCs answer each other as long
+        as it stays warranted."""
+        if not event_text or cascade.budget <= 0 or cascade.spent >= cascade.fuse:
+            return
+        # A new hop: every cooldown ticks down one, so an NPC that reacted recently
+        # becomes eligible again after a beat — a real back-and-forth, not a lockout.
+        for nid in list(cascade.cooldown):
+            cascade.cooldown[nid] -= 1
+            if cascade.cooldown[nid] <= 0:
+                del cascade.cooldown[nid]
+        # Deterministic order (occupants is a set) so a cascade is reproducible.
+        present = sorted((e for e in self.world.occupants(location_id)
+                          if isinstance(e, Npc)), key=lambda e: e.id)
+        for npc in present:
+            if cascade.budget <= 0 or cascade.spent >= cascade.fuse:
+                break
+            if npc.id == source_id:          # self-guard: not to your own line
+                continue
+            if cascade.cooldown.get(npc.id, 0) > 0:
+                continue                      # sitting out a cooldown beat
+            mind = self.minds.get(npc.id)
+            if mind is None:
+                continue
+            scene = self._scene_for(npc, location_id)
+            try:
+                turn = await mind.react(event_text, scene=scene)
+            except Exception as exc:          # a bad reaction must never break the loop
+                print(f"[loom] NPC {npc.id} reaction failed: {exc!r}")
+                continue
+            if turn.is_silent:
+                continue                      # the appropriateness gate: it chose not to
+            cascade.budget -= 1
+            cascade.spent += 1
+            cascade.cooldown[npc.id] = self.react_cooldown
+            observed = await self._deliver_turn(location_id, npc, mind, turn)
+            # This reaction is itself an event the others present may answer.
+            await self._react_to_event(location_id, npc.id, observed, cascade)
 
     def _scene_for(self, actor, location_id: str) -> Scene:
         """Compose the read-only perception snapshot the mind gets — the NPC's
@@ -279,9 +401,10 @@ class Engine:
         others = [e.name for e in self.world.occupants(location_id, exclude=actor.id)]
         items = [i.name for i in self.world.contents(location_id)]
         inventory = [i.name for i in self.world.contents(actor.id)]
+        conditions = self.world.conditions.texts(location_id)
         return Scene(location=loc.name, description=loc.description,
                      exits=list(loc.exits.keys()), others=others, items=items,
-                     inventory=inventory)
+                     inventory=inventory, conditions=conditions)
 
     # ---- the director (game-master) ----
     def world_snapshot(self) -> str:
@@ -301,6 +424,13 @@ class Engine:
             floor = [i.name for i in self.world.contents(loc.id)]
             if floor:
                 line += "; on the ground: " + ", ".join(floor)
+            # Standing conditions the director itself set — shown *with* their tags,
+            # since the tag is the handle clear_condition needs (players and NPCs
+            # see only the text; only the director needs to clear by tag).
+            conds = self.world.conditions.at(loc.id)
+            if conds:
+                line += "; conditions: " + "; ".join(
+                    f'{c.tag} ("{c.text}")' for c in conds)
             lines.append(line)
         return "\n".join(lines) if lines else "(no one is anywhere in the world)"
 
@@ -371,6 +501,14 @@ class Engine:
             beat_loc = (getattr(actor, "location_id", None) or location_id
                         or (result.broadcasts[0][0] if result.broadcasts else None))
             self.chronicle.record(beat, location_id=beat_loc, kind="action")
+        # A director world-change (a condition raised or lifted, a staged beat) is
+        # something the NPCs present may react to of their own volition (B9). Only
+        # the bodiless director triggers a cascade here; an NPC's or player's own
+        # action already cascades through _deliver_turn, so there is no double
+        # fan-out. No-op unless the game enabled autonomous_reactions.
+        if getattr(actor, "id", None) == "director":
+            for target, line in result.broadcasts:
+                self._spawn_reaction(target, "director", line)
         return result
 
     async def _broadcast(self, location_id: str, kind: str, text: str,

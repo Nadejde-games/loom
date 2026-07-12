@@ -90,9 +90,11 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("take_item", reg)
         self.assertIn("drop_item", reg)
         self.assertIn("stage_event", reg)
+        self.assertIn("set_condition", reg)
+        self.assertIn("clear_condition", reg)
         self.assertEqual(reg.names(),
                          ["emote", "move", "give_item", "take_item", "drop_item",
-                          "stage_event"])
+                          "stage_event", "set_condition", "clear_condition"])
 
     def test_describe_lists_move(self):
         text = default_registry().describe()
@@ -400,6 +402,120 @@ class StageEventHandlerTests(unittest.TestCase):
         world = _two_room_world()
         with self.assertRaises(ActionError):
             self._run(world, location="a", text="   ")
+
+
+class SetConditionValidateTests(unittest.TestCase):
+    """The director's set_condition schema: three required strings, nothing else."""
+    def setUp(self):
+        self.reg = default_registry()
+
+    def test_valid(self):
+        self.assertEqual(self.reg.validate(
+            "set_condition", {"location": "a", "tag": "storm", "text": "rain"}), [])
+
+    def test_missing_tag(self):
+        errs = self.reg.validate("set_condition", {"location": "a", "text": "x"})
+        self.assertTrue(any("tag" in e for e in errs))
+
+    def test_missing_text(self):
+        errs = self.reg.validate("set_condition", {"location": "a", "tag": "storm"})
+        self.assertTrue(any("text" in e for e in errs))
+
+    def test_unknown_arg(self):
+        errs = self.reg.validate("set_condition",
+                                 {"location": "a", "tag": "s", "text": "x", "z": 1})
+        self.assertTrue(any('"z"' in e for e in errs))
+
+
+class SetConditionHandlerTests(unittest.TestCase):
+    """set_condition: raise a *standing* condition over a named room. Unlike
+    stage_event it changes world state — the condition persists in the registry —
+    and it announces its onset once to the room."""
+
+    def setUp(self):
+        self.spec = default_registry().get("set_condition")
+
+    def _run(self, world, **args):
+        actor = type("D", (), {"id": "director", "name": "the Director"})()
+        return self.spec.handler(ActionContext(world, actor, args))
+
+    def test_stores_the_condition_and_announces_it(self):
+        world = _two_room_world()
+        line = "A cold rain begins to lash the room."
+        res = self._run(world, location="a", tag="storm", text=line)
+        # Announced once to the room…
+        self.assertEqual(res.broadcasts, [("a", line)])
+        self.assertEqual(res.narration, "")
+        # …and stored as a standing condition that outlives the announcement.
+        self.assertEqual(world.conditions.texts("a"), [line])
+        self.assertEqual(world.conditions.at("a")[0].tag, "storm")
+
+    def test_same_tag_replaces_not_accretes(self):
+        world = _two_room_world()
+        self._run(world, location="a", tag="storm", text="first")
+        self._run(world, location="a", tag="storm", text="second")
+        self.assertEqual(world.conditions.texts("a"), ["second"])
+
+    def test_different_tags_coexist(self):
+        world = _two_room_world()
+        self._run(world, location="a", tag="storm", text="rain")
+        self._run(world, location="a", tag="night", text="dark")
+        self.assertEqual(world.conditions.texts("a"), ["rain", "dark"])
+
+    def test_unknown_location_raises_and_stores_nothing(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="nowhere", tag="storm", text="rain")
+        self.assertEqual(world.conditions.texts("nowhere"), [])
+
+    def test_empty_tag_raises(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="a", tag="  ", text="rain")
+
+    def test_empty_text_raises(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="a", tag="storm", text="  ")
+
+
+class ClearConditionHandlerTests(unittest.TestCase):
+    """clear_condition: lift a standing condition and narrate its passing. Only a
+    condition that is actually in place can be lifted, and validation runs before
+    the removal so a rejected clear never half-lifts one."""
+
+    def setUp(self):
+        self.reg = default_registry()
+        self.set = self.reg.get("set_condition")
+        self.clear = self.reg.get("clear_condition")
+        self.actor = type("D", (), {"id": "director", "name": "the Director"})()
+
+    def _set(self, world, **a):
+        return self.set.handler(ActionContext(world, self.actor, a))
+
+    def _clear(self, world, **a):
+        return self.clear.handler(ActionContext(world, self.actor, a))
+
+    def test_lifts_and_announces(self):
+        world = _two_room_world()
+        self._set(world, location="a", tag="storm", text="rain")
+        passing = "The rain thins and passes."
+        res = self._clear(world, location="a", tag="storm", text=passing)
+        self.assertEqual(res.broadcasts, [("a", passing)])
+        self.assertEqual(world.conditions.texts("a"), [])   # gone from perception
+
+    def test_absent_condition_raises(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._clear(world, location="a", tag="storm", text="it passes")
+
+    def test_empty_text_raises_before_removing(self):
+        world = _two_room_world()
+        self._set(world, location="a", tag="storm", text="rain")
+        with self.assertRaises(ActionError):
+            self._clear(world, location="a", tag="storm", text="  ")
+        # The rejected clear must not have half-lifted the condition.
+        self.assertEqual(world.conditions.texts("a"), ["rain"])
 
 
 class DescribeSubsetTests(unittest.TestCase):

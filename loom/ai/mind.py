@@ -52,6 +52,7 @@ class Scene:
     others: list = field(default_factory=list)    # names of other entities here
     items: list = field(default_factory=list)     # names of items on the ground here
     inventory: list = field(default_factory=list) # names of items the NPC holds
+    conditions: list = field(default_factory=list) # standing atmosphere here (storm, night)
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?[ \t]*\r?\n?|\r?\n?```$",
@@ -196,6 +197,11 @@ class NpcMind:
             lines.append(f"- Place: {scene.location}")
         if scene.description:
             lines.append(f"- {scene.description}")
+        # Standing conditions the game-master has set over this place (a storm,
+        # nightfall). Part of what the NPC perceives — so it can answer, or act,
+        # in light of the weather around it rather than a static room.
+        for cond in scene.conditions:
+            lines.append(f"- {cond}")
         if scene.exits:
             lines.append("- Exits you can take: " + ", ".join(scene.exits))
         else:
@@ -298,6 +304,58 @@ class NpcMind:
         if speech:
             self.memory.add(f'I replied: "{speech}"', kind="speech")
         return Turn(speech=speech, actions=actions)
+
+    async def react(self, event: str, scene: Scene | None = None) -> Turn:
+        """React — of the NPC's *own volition* — to something happening around it:
+        a change in the world (a storm, nightfall) or another character's word or
+        deed. Unlike ``converse`` this is not a line addressed to the NPC and asks
+        nothing of it; it is an observation the NPC may or may not respond to.
+
+        The bar is deliberately high — most events, most characters simply take in
+        and do nothing (an empty turn, honoured by the engine as silence). This is
+        the engine-level restraint on autonomous reaction: the character reacts only
+        when the moment genuinely concerns it, never merely to react. Same
+        constrained decoding, tolerant parse, and bounded retry as ``converse``.
+        """
+        system = self._system_prompt(scene)
+        nudge = (
+            f"Something happens around you: {event}\n"
+            "This was not said to you and asks nothing of you. React only if it "
+            "genuinely concerns your character and you would truly respond — with a "
+            "word, a gesture, or an action from your surroundings. Most of the time "
+            "a character simply takes such a thing in and does nothing; if so, reply "
+            'with exactly {"speech": "", "actions": []}. Do not react merely to react.'
+        )
+        messages = [{"role": "user", "content": nudge}]
+        schema = (self.registry.json_schema(self.offered)
+                  if self.registry is not None else None)
+
+        raw = await self.provider.complete(system, messages, schema=schema)
+        speech, actions, errors = self._parse_turn(raw)
+        if errors and self.registry is not None:
+            correction = ("Your previous reply proposed invalid actions:\n"
+                          + "\n".join(f"- {e}" for e in errors)
+                          + "\nReply again as a single JSON object; fix or omit "
+                            "those actions.")
+            retry = messages + [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": correction},
+            ]
+            raw2 = await self.provider.complete(system, retry, schema=schema)
+            speech2, actions2, _ = self._parse_turn(raw2)
+            speech = speech2 or speech
+            actions = actions2
+
+        turn = Turn(speech=speech, actions=actions)
+        # Record only an *engaged* reaction — a silent NPC writes no memory (the
+        # standing world it saw is already in its Scene, so nothing is lost, and
+        # bystander memory is not flooded by ambient noise; memory importance is
+        # Phase 5's concern).
+        if not turn.is_silent:
+            self.memory.add(f"I noticed: {event}", kind="event")
+            if speech:
+                self.memory.add(f'I said: "{speech}"', kind="speech")
+        return turn
 
     def _parse_turn(self, raw: str) -> tuple[str, list, list]:
         """Return (speech, valid_intents, errors_for_invalid_proposals)."""

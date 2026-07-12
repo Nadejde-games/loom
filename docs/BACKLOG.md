@@ -406,7 +406,37 @@ lever), B4 (salience gate — choosing whether to engage).
 *world*, not minds; NPCs react on their own.** This item is that principle's
 to-do list — the director needs an autonomous way to change the world (a
 world-clock / environmental events), and NPCs need to *react* to those changes of
-their own volition (the NPC-autonomy half). Neither is built yet.
+their own volition (the NPC-autonomy half).
+
+**Update 2026-07-12 — the world-*shaping* half AND the NPC-reaction half have both
+landed; one gap remains.** (a) The director can raise and lift *standing
+conditions* (`set_condition` / `clear_condition`; a storm, nightfall) that persist
+in perception (PLAN, Phase 3 "world-shaping slice"). (b) NPCs now *react* to those
+changes and to each other of their own volition — the re-entrant reaction path
+(`engine._react_to_event`), a bounded cascade under the directive below (PLAN,
+Phase 3 "reaction path"). What is **still missing** is the **autonomous trigger**:
+nothing yet makes the world stir without player-driven activity. The reaction path
+is reactive — it fires on a director beat or an NPC's reply, both ultimately
+player-driven — so a *still* room (no one typing, no director beat) still produces
+nothing. A **world-clock / lull** that writes to the chronicle on its own is the
+remaining work, plus (at scale, deferred) a cheap deterministic salience *pre-gate*
+before the model when a room is crowded.
+
+**NPC-reaction design (directive, 2026-07-12): cascade is the feature; the limiter
+is engine-enforced *appropriateness*, not a count.** NPCs must be able to react to
+each other — a remark drawing a reply drawing a mutter — because a hard one-level
+cap is artificial and kills the emergent room-dynamics worth having. The engine
+strictly gates every potential reaction on whether it is *genuinely warranted*
+(salience re-judged at each hop), so an NPC that would only "react to react" is
+stopped at the seam; a cascade runs exactly as long as each hop is worth reacting
+to and ends when appropriateness runs out — never because a counter tripped. Rails
+are cheap and non-artificial: a **self-guard** (never react to one's own line), a
+**per-NPC cooldown** (a real back-and-forth is fine; machine-gun ping-pong is not),
+a **decaying reaction budget** per originating event so liveliness winds down, and
+a **high runaway fuse** (a generous ceiling that never fires in normal play — the
+Diku recursion-cap lesson) purely as a cost circuit-breaker. This supersedes the
+"strictly one-level (depth-0)" option the prior-art survey offered as the simplest
+safe default.
 
 **Want:** the world should feel alive even when the player is idle — the director
 able to set a beat on a *lull*, and ambient / world-clock events (weather turning,

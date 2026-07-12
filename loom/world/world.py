@@ -2,6 +2,7 @@
 from __future__ import annotations
 from .entity import Entity, Character, Item
 from .location import Location
+from .conditions import Conditions
 
 
 class World:
@@ -17,6 +18,12 @@ class World:
         # game-master director persona, world tone, shared tables). A generic
         # blob so the framework stays agnostic to what a game chooses to put here.
         self.meta: dict = {}
+        # Standing environmental conditions, keyed by location id — the persistent
+        # counterpart to the transient chronicle. The game-master director sets and
+        # clears these; they color perception (look, and every mind's Scene) until
+        # lifted. Held here at the world level, not on Location, so region-wide
+        # weather and a world-clock extend the same shape later (see conditions.py).
+        self.conditions = Conditions()
 
     # --- mutation ---
     def add_location(self, loc: Location) -> None:

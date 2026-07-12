@@ -209,6 +209,43 @@ class EngineActionTests(unittest.IsolatedAsyncioTestCase):
                              for m in engine.minds["odd"].memory.entries))
 
 
+class EngineConditionPerceptionTests(unittest.IsolatedAsyncioTestCase):
+    """A standing condition the director set must surface in every perception:
+    the player's look, the NPC's Scene, and the director's own snapshot."""
+
+    async def test_look_appends_standing_condition(self):
+        engine = build_engine()
+        engine.world.conditions.set("room", "storm", "Rain hammers the roof.")
+        s = FakeSession()
+        await engine.on_connect(s)                  # on_connect calls _look
+        out = s.texts()
+        self.assertIn("A bare room.", out)          # base description still shows
+        self.assertIn("Rain hammers the roof.", out)  # …with the condition after it
+
+    async def test_look_still_clean_with_no_conditions(self):
+        engine = build_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        self.assertIn("A bare room.", s.texts())
+
+    def test_scene_for_carries_conditions_to_the_npc(self):
+        engine = build_engine()
+        engine.world.conditions.set("room", "storm", "Rain hammers the roof.")
+        npc = engine.world.entities["odd"]
+        scene = engine._scene_for(npc, "room")
+        self.assertEqual(scene.conditions, ["Rain hammers the roof."])
+
+    def test_world_snapshot_shows_condition_with_its_tag(self):
+        engine = build_engine()
+        # A player must be present for the room to appear in the snapshot at all.
+        from loom.world import Player
+        engine.world.add_entity(Player(id="p1", name="P", location_id="room"))
+        engine.world.conditions.set("room", "storm", "Rain hammers the roof.")
+        snap = engine.world_snapshot()
+        self.assertIn("storm", snap)                # the tag — the clear handle
+        self.assertIn("Rain hammers the roof.", snap)
+
+
 class EngineInventoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_look_lists_floor_items(self):
         engine = build_item_engine()

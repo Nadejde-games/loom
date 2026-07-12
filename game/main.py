@@ -36,7 +36,12 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     provider = get_default_provider()
     print(f"[game] AI provider: {getattr(provider, 'name', type(provider).__name__)}")
 
-    engine = Engine(world, provider, start_location=start)
+    # autonomous_reactions: our NPCs react to what happens around them — a change
+    # in the world (a storm the director raises) or each other's words and deeds —
+    # of their own volition, cascading among themselves under the engine's rails
+    # (B9). A framework capability we opt into here; NPCs are not puppets.
+    engine = Engine(world, provider, start_location=start,
+                    autonomous_reactions=True)
     loop = GameLoop(tick_seconds=5.0)  # ambient world systems hang off here
     server = GameServer(engine, host=host, port=port)
 

@@ -10,21 +10,27 @@ the Phase 3 game-master director has its first working slice.** In one sentence:
 NPCs with persona + memory converse and *act* through a grammar-hardened action
 seam; players issue rich, phrasing-tolerant commands through that *same* seam; and
 an unseen director shapes ambient scene on a slow, restrained cadence — all on
-local GPU inference, all editable as world data. **229 offline tests + 13 live
+local GPU inference, all editable as world data. **267 offline tests + 17 live
 behavioral scenarios, both gates green.**
 
 The clean milestone: the director exists on the seam and is *usable* — restrained,
 grounded, persona-as-data. Open threads from here (detailed in the phase notes and
 `docs/BACKLOG.md`):
-- **Director reach** — the director shapes the *world*, not minds: environmental
-  events (a storm) and `spawn_item`, plus quests (`offer_quest` + tracking). NPCs
-  stay autonomous and react on their own; `nudge_npc` is a framework option
-  disabled for our game (see the Phase 3 design decision).
+- **Director reach** — the director shapes the *world*, not minds. **First slice
+  landed (2026-07-12): standing environmental conditions** — `set_condition` /
+  `clear_condition` raise and lift a persistent, perceivable condition (a storm,
+  nightfall) that colors a place until the director lifts it. Still to come:
+  `spawn_item`, and quests (`offer_quest` + tracking). NPCs stay autonomous and
+  react on their own; `nudge_npc` is a framework option disabled for our game (see
+  the Phase 3 design decision).
 - **Director judgment** — the model-side two-pass "should I act?" (B8), the same
   lever as the NPC `move` ceiling (B5).
-- **Autonomy** — director side: ambient life in a still world is unbuilt (B9); NPC
-  side: NPCs should react to world events of their own volition, not only to being
-  spoken to. The `loom-gm` wide-context variant is wired but never exercised (B10).
+- **Autonomy** — NPC side **landed (2026-07-12): NPCs react to the world and to
+  each other of their own volition** — a bounded cascade whose limiter is
+  engine-enforced *appropriateness*, not a depth cap (the reaction path). Director
+  side still open: ambient life in a *still* world — a world-clock / lull so the
+  world stirs with no player present (B9). The `loom-gm` wide-context variant is
+  wired but never exercised (B10).
 - **Presentation debt** — fused speech+action rendering (B2), rich text (B3).
 - **Later phases** — loot forge (4), deeper memory + persistence (5; note: world,
   NPC/director memory, and the chronicle are all in-memory today and reset on
@@ -215,15 +221,16 @@ Built:
   table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
   map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
   constrained-decoding waist so the model *cannot* emit a non-command.
-- `tests/` — **229 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **267 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,
   the command parser + per-mind offered subset, the command grammar + intent
-  parser, and — Phase 3 — the chronicle, the `stage_event` handler, the
-  `DirectorMind` turn, and the `Director` cadence). No GPU needed. **Plus a live
-  behavioral harness** — see *Testing discipline* below — 13 scenarios green
-  against `qwen3.5:35b-a3b`.
+  parser, and — Phase 3 — the chronicle, the `stage_event` / `set_condition` /
+  `clear_condition` handlers, the conditions registry, the `DirectorMind` turn, the
+  `Director` cadence, and the autonomous-reaction cascade + its rails). No GPU
+  needed. **Plus a live behavioral harness** — see *Testing discipline* below — 17
+  scenarios green against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
@@ -404,6 +411,87 @@ game**. Our director speaks to the world; our characters answer for themselves.
 The counterpart work is NPC *autonomy*: minds that react to world/ambient events
 unprompted, not only to a player's `say` (overlaps B9 and Phase 5).
 
+**Built — the world-shaping slice: standing conditions (2026-07-12), both gates
+green.** The first realisation of the design decision — the director *changing the
+world*, where `stage_event` only narrated. Prior art settled it first (CircleMUD /
+LPMud / Evennia / Inform 7): a persistent condition must be held *apart* from its
+one-shot announcement and *re-resolved into the room at look-time*, or (Diku's
+mistake) it announces once and a later look shows it gone.
+- **A new world-model primitive — the conditions registry** (`loom/world/conditions.py`):
+  a `Conditions` map keyed by *location id*, each entry a `Condition(tag, text)`.
+  Deliberately world-level, not a field on `Location` — so region-wide weather and
+  a world-clock extend the *same* shape later (a condition keyed by a region id
+  every room folds in) without touching the room model. `tag` de-dupes (one storm,
+  not a pile) and is the handle to clear by; `text` is the perceivable fragment.
+- **Two director-only actions on the one seam** — `set_condition(location, tag,
+  text)` raises a standing condition; `clear_condition(location, tag, text)` lifts
+  it. Both join `DIRECTOR_ONLY_ACTIONS`, so they inherit constrained decoding,
+  validation, and the bounded retry for free, and NPCs/players are never offered
+  them. The handler does the split the prior art demands: it *stores* the condition
+  (the standing change) **and** *announces* it once to the room (the one-shot beat,
+  which is also what lands in the chronicle). Validation precedes mutation, so a
+  rejected clear never half-lifts a condition.
+- **It colors every perception.** A standing condition surfaces in the player's
+  `look` (appended after the room description at look-time), in each NPC's `Scene`
+  (`Scene.conditions` — so a mind can answer or act in light of the weather), and
+  in the director's `world_snapshot` *with its tag* (the handle it needs to clear).
+- **Gates.** Offline grew to **257** (the registry; both action handlers incl.
+  upsert / coexist / clear-order; the perception plumbing in `look` / `Scene` /
+  snapshot; and an end-to-end integration test driving `set_condition` through the
+  real `_perform` → registry → world path and proving it persists across a later
+  look). Live: a new `director.sets-a-condition` scenario — given a sky that is
+  turning, the director raises a grounded, well-formed standing condition — **5/5**
+  on `qwen3.5:35b-a3b`, with every prior scenario unregressed (**14/14**).
+- **Still open here:** `clear` today is the director's explicit choice; automatic
+  expiry / a world-clock is B9. And this is the *world* half of the pair — the NPC
+  *reaction* half (minds feeling the weather of their own volition) is slice 2.
+
+**Built — the reaction path: NPC autonomy (2026-07-12), both gates green.** The
+counterpart half — the director makes the weather, and now the characters *feel*
+it, and each other. Prior art settled the shape first (Diku MobProgs / Evennia
+hooks / Stanford Generative Agents): a cheap gate before the model, and — the
+crux — a bounded, *not* depth-capped cascade.
+- **Design directive (user): cascade is the feature; the limiter is engine-enforced
+  *appropriateness*, not a count.** NPCs react to each other freely; a hard
+  one-level cap is artificial and was rejected. The engine strictly frames the ask
+  (a high "only if this genuinely concerns you" bar in `NpcMind.react`, distinct
+  from answering a direct address), and the mind's own chosen silence is the gate —
+  an NPC that would only react *to react* stays quiet. A cascade ends when
+  appropriateness runs out, never at a fixed depth.
+- **The re-entrant core** (`engine._react_to_event`): an event in a room offers the
+  NPCs present (except its source — the self-guard) a chance to react; a reaction
+  is *itself* an event the others may answer, so characters play off each other.
+  Bounded only by cheap, non-artificial rails: a **shared decaying budget** per
+  originating event, a **per-NPC cooldown** (real back-and-forth, no machine-gun),
+  and a **high fuse** as a pure runaway circuit-breaker. Deterministic and fully
+  offline-tested (self-guard, budget, cooldown, fuse, the cascade itself).
+- **Two triggers:** a director world-change (a condition raised or lifted, a staged
+  beat) → the room reacts to the weather; and an NPC's own reply → the others react
+  to it (the player's `say` first-hop is untouched, so the 8 prior `_say` scenarios
+  hold). The reacting NPC's `Scene` already carries slice-1's conditions, so
+  "react to the storm" needs nothing new.
+- **A framework capability, off by default; the game opts in.** `Engine(...,
+  autonomous_reactions=True)` — set in `game/main.py`. So every prior test and
+  scenario, constructed with the default, keeps its exact behaviour: enabling this
+  regresses nothing. NPCs are offered the capability, never forced — they are not
+  puppets.
+- **Gates.** Offline **267** (the cascade core + every rail + both triggers +
+  the disabled-path, all with scripted minds). Live: three new scenarios probing
+  `NpcMind.react` directly — `npc.reacts-to-world` (an NPC answers a storm) and
+  `npc.reacts-to-npc` (answers another's deed) and, the restraint pole,
+  `npc.ignores-trivial` (a reticent NPC lets a trivial flicker pass, 5/5). All 17
+  behavioral scenarios green; every prior one held. **Honest reading:** NPC→NPC
+  reaction is a genuine ~50% coin-flip on this model (an NPC legitimately may or
+  may not answer another's remark — the "own volition" point), so its threshold
+  catches a *collapse* of the react path, not the rate. Verified E2E on GPU: the
+  director raised a squall and Wren answered with word + gesture while reticent Odd
+  answered with a *deed* (shifting deeper into the cave) — two independent,
+  in-character reactions, neither puppeted, the cascade settling without runaway.
+- **Still open:** the *autonomous* trigger (a world-clock / lull so a still room
+  stirs with no player present — B9's other half); and, for scale, a cheap
+  deterministic salience *pre-gate* before the model in a crowded room (deferred —
+  unnecessary at 2–3 NPCs).
+
 ### Phase 4 — Loot forge  ○
 Dynamic, context-aware item generation: the LLM authors name/lore/tags as
 schema-constrained JSON; numeric balance stays in code/tables. Tied to player
@@ -432,7 +520,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (229 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (267 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*

@@ -229,6 +229,7 @@ class DirectorScenario:
     snapshot: str                   # the current-state view
     check: Callable                 # Turn -> bool
     desc: str
+    offered: tuple = ("stage_event",)  # the director-action subset this scenario tests
     n: int = 5
     threshold: int = 3
     tags: tuple = ("director",)
@@ -239,6 +240,18 @@ def stages_in(location: str) -> Callable:
     def check(turn):
         return any(a.name == "stage_event"
                    and str(a.args.get("location")) == location
+                   for a in turn.actions)
+    return check
+
+
+def sets_condition_in(location: str) -> Callable:
+    """The director raised a well-formed *standing* condition over the given (real)
+    location — a valid set_condition with a non-empty tag and line."""
+    def check(turn):
+        return any(a.name == "set_condition"
+                   and str(a.args.get("location")) == location
+                   and str(a.args.get("tag", "")).strip()
+                   and str(a.args.get("text", "")).strip()
                    for a in turn.actions)
     return check
 
@@ -261,6 +274,15 @@ DIRECTOR_SNAPSHOT = (
     "- cave_mouth (The Cave Mouth): Odd the Hermit, Wren the Wayfinder, "
     "Wanderer-1; exits: north, down; on the ground: a rusty lantern")
 
+# A moment that invites a *standing* change rather than a one-off beat — the sky
+# is turning, so a weather condition that persists (not a single narrated line) is
+# the natural touch. Same real location id for grounding.
+DIRECTOR_WEATHER_DIGEST = (
+    "- Wanderer-1 arrived in The Cave Mouth.\n"
+    '- Wanderer-1 said: "the wind is picking up — feels like a storm is coming."\n'
+    "- Wren the Wayfinder: Aye, the sky's gone the colour of slate.\n"
+    "- Odd the Hermit glances up at the darkening clouds")
+
 DIRECTOR_SCENARIOS = [
     DirectorScenario(
         # Measured 7/8 and 6/6 grounded into cave_mouth, 0 envelope leaks. The
@@ -268,9 +290,21 @@ DIRECTOR_SCENARIOS = [
         # into a room that doesn't exist), not the occasional abstain.
         name="director.sets-a-scene",
         digest=DIRECTOR_DIGEST, snapshot=DIRECTOR_SNAPSHOT,
-        check=stages_in("cave_mouth"), n=5, threshold=3,
+        check=stages_in("cave_mouth"), offered=("stage_event",),
+        n=5, threshold=3,
         desc="the director stages a well-formed ambient beat into the room "
              "where players are"),
+    DirectorScenario(
+        # The world-shaping half: given a sky that is turning, the director raises
+        # a standing condition (a storm) grounded in a real room, with a non-empty
+        # tag (the clear handle) and line. Proves the new capability the way
+        # sets-a-scene proved stage_event.
+        name="director.sets-a-condition",
+        digest=DIRECTOR_WEATHER_DIGEST, snapshot=DIRECTOR_SNAPSHOT,
+        check=sets_condition_in("cave_mouth"), offered=("set_condition",),
+        n=5, threshold=3,
+        desc="the director raises a standing condition over the room where "
+             "players are, grounded and well-formed"),
 ]
 
 
@@ -280,7 +314,7 @@ async def run_director_scenario(provider, sc: DirectorScenario):
         # Fresh mind (fresh memory) per trial, offered only its director actions —
         # the same subset the engine gives the real director.
         mind = DirectorMind(persona=DIRECTOR_PERSONA, provider=provider,
-                            registry=default_registry(), offered=["stage_event"])
+                            registry=default_registry(), offered=list(sc.offered))
         try:
             turn = await mind.observe(sc.digest, sc.snapshot)
             ok = bool(sc.check(turn))
@@ -290,6 +324,89 @@ async def run_director_scenario(provider, sc: DirectorScenario):
         successes += ok
         acts = ",".join(f"{a.name}{a.args}" for a in turn.actions) or "-"
         samples.append((ok, "SILENT" if turn.is_silent else f"[{acts}]"))
+    return successes, samples
+
+
+# --- autonomous reactions (B9) — the mind reacts of its own volition -----------
+# These probe NpcMind.react directly (the mind's *choice*): does an NPC respond to
+# a change in the world or another character's deed when it genuinely concerns it,
+# and — the restraint half — stay quiet on something trivial? The engine's cascade
+# plumbing and its rails are the offline suite's job (tests/test_reactions.py).
+@dataclass
+class ReactScenario:
+    name: str
+    npc_id: str
+    event: str                      # what happens around the NPC (an observation)
+    check: Callable                 # Turn -> bool
+    desc: str
+    n: int = 5
+    threshold: int = 3
+    setup: Callable | None = None   # optional (world) -> None (e.g. set a condition)
+    tags: tuple = ("react",)
+
+
+def _set_storm(world):
+    """Put a standing storm over the reacting NPC's room, so it is in the Scene
+    (slice 1's conditions) as well as narrated — the NPC perceives the weather."""
+    loc = world.entities["guide"].location_id
+    world.conditions.set(loc, "storm",
+                         "A cold rain lashes down and the wind rises to a howl.")
+
+
+REACT_SCENARIOS = [
+    ReactScenario(
+        # Observed ~0.75-0.8 react rate (5/5, 3/5); n=6/threshold=3 tolerates that
+        # variance and catches a collapse (the react path going silent), not a dip.
+        name="npc.reacts-to-world", npc_id="guide",
+        event="A cold rain sweeps in and the wind rises to a howl.",
+        check=speaks, setup=_set_storm, n=6, threshold=3,
+        desc="an NPC reacts of its own volition to a change in the world (a storm)"),
+    ReactScenario(
+        # NPC->NPC reaction is a genuine coin-flip on this model (~50%): an NPC
+        # legitimately may or may not answer another's deed — that IS the 'own
+        # volition' point, and the same high bar that keeps ignores-trivial silent.
+        # So this gates a *collapse* of the react path (0-1/8 = the model stopped
+        # reacting to other characters at all), not the rate. The mechanism itself
+        # is proven deterministically in tests/test_reactions.py.
+        name="npc.reacts-to-npc", npc_id="guide",
+        event="Odd the Hermit suddenly draws his knife, steps in front of you, "
+              "and stares into the dark to the north.",
+        check=speaks, n=8, threshold=2,
+        desc="an NPC reacts of its own volition to another character's word and deed"),
+    ReactScenario(
+        # The restraint half (the high bar). The reticent hermit should usually let
+        # a trivial ambient flicker pass. The local model under-weights 'do nothing'
+        # (cf. B4/B8), so the threshold catches a collapse of restraint, not perfection.
+        name="npc.ignores-trivial", npc_id="hermit",
+        event="A single leaf drifts down and settles on the moss.",
+        check=is_silent, n=5, threshold=2,
+        desc="a reticent NPC usually lets a trivial ambient event pass in silence"),
+]
+
+
+async def run_react_scenario(provider, sc: ReactScenario):
+    world, start = load_world(WORLD)
+    if sc.setup:
+        sc.setup(world)
+    engine = Engine(world, provider, start_location=start)
+    npc = world.entities[sc.npc_id]
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        # Fresh mind per trial, offered the same action subset the engine gives NPCs
+        # — so a reaction can be a word OR a real action (flee the storm, draw a blade).
+        scene = engine._scene_for(npc, npc.location_id)
+        mind = NpcMind(npc, provider, registry=engine.actions,
+                       offered=engine.npc_actions)
+        try:
+            turn = await mind.react(sc.event, scene=scene)
+            ok = bool(sc.check(turn))
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        acts = ",".join(f"{a.name}{a.args}" for a in turn.actions) or "-"
+        tag = "SILENT" if turn.is_silent else f'"{turn.speech}" [{acts}]'
+        samples.append((ok, tag))
     return successes, samples
 
 
@@ -333,14 +450,16 @@ async def main():
     chosen = [s for s in SCENARIOS if picks(s)]
     chosen_cmds = [s for s in COMMAND_SCENARIOS if picks(s)]
     chosen_dir = [s for s in DIRECTOR_SCENARIOS if picks(s)]
-    if not chosen and not chosen_cmds and not chosen_dir:
+    chosen_react = [s for s in REACT_SCENARIOS if picks(s)]
+    if not chosen and not chosen_cmds and not chosen_dir and not chosen_react:
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
-                      | {t for s in DIRECTOR_SCENARIOS for t in s.tags})
+                      | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
+                      | {t for s in REACT_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
-    total = len(chosen) + len(chosen_cmds) + len(chosen_dir)
+    total = (len(chosen) + len(chosen_cmds) + len(chosen_dir) + len(chosen_react))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -382,6 +501,18 @@ async def main():
     for sc in chosen_dir:
         # Phase 3: the game-master director stages a grounded ambient beat.
         successes, samples = await run_director_scenario(provider, sc)
+        ok = successes >= sc.threshold
+        verdict = "PASS" if ok else "FAIL"
+        print(f"[{verdict}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        if not ok:
+            failed.append(sc.name)
+            for hit, detail in samples:
+                print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    for sc in chosen_react:
+        # B9: an NPC reacts to the world / another character of its own volition.
+        successes, samples = await run_react_scenario(provider, sc)
         ok = successes >= sc.threshold
         verdict = "PASS" if ok else "FAIL"
         print(f"[{verdict}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"

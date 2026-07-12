@@ -18,6 +18,12 @@ STAGE = ('{"speech":"let the wood breathe","actions":[{"name":"stage_event",'
 WATCH = '{"speech":"","actions":[]}'
 STAGE_LINE = "A cold wind gutters the lanterns."
 
+# A world-shaping director turn: raise a standing condition over room "room".
+SET_STORM = ('{"speech":"the sky turns","actions":[{"name":"set_condition",'
+             '"args":{"location":"room","tag":"storm",'
+             '"text":"A cold rain begins to fall."}}]}')
+STORM_LINE = "A cold rain begins to fall."
+
 
 class CannedProvider:
     """Returns scripted replies in order (the last repeats); records the schema
@@ -299,6 +305,33 @@ class EngineChronicleTests(unittest.TestCase):
             # the director's own staged beat is itself chronicled (kind=action)
             self.assertTrue(any(STAGE_LINE in e.text
                                 for e in engine.chronicle.recent()))
+        asyncio.run(go())
+
+
+class DirectorConditionIntegrationTests(unittest.TestCase):
+    """The world-shaping action end-to-end through the real engine path
+    (_perform -> registry -> world): the condition persists, its onset is
+    announced to the room, the beat is chronicled, and a later look still shows it."""
+
+    def test_set_condition_persists_announces_and_chronicles(self):
+        async def go():
+            engine, director, _ = _build(period=1, reply=SET_STORM)
+            s = FakeSession()
+            await engine.on_connect(s)
+            s.sent.clear()                         # drop the connect/look output
+            await director.tick(1.0)
+            await _drain(engine)
+            # Stored as a standing condition on the world registry…
+            self.assertEqual(engine.world.conditions.texts("room"), [STORM_LINE])
+            # …announced once to the room the player is in…
+            self.assertIn(STORM_LINE, s.texts())
+            # …and recorded to the chronicle the director itself reads.
+            self.assertTrue(any(STORM_LINE in e.text
+                                for e in engine.chronicle.recent()))
+            # …and it persists: a fresh look still shows it, after the announcement.
+            s.sent.clear()
+            await engine._look(s)
+            self.assertIn(STORM_LINE, s.texts())
         asyncio.run(go())
 
 

@@ -438,6 +438,65 @@ def _stage_event(ctx: ActionContext) -> ActionResult:
     )
 
 
+def _set_condition(ctx: ActionContext) -> ActionResult:
+    """Set a standing environmental condition over a place — the game-master's
+    first world-*changing* touch, where ``stage_event`` only narrates.
+
+    A storm, nightfall, a hush over the wood: unlike an ambient beat, this
+    *persists*. It is stored on the world's condition registry, from where it
+    colors every later look at the place and every mind's perception of it, until
+    the director clears it. The schema guarantees the strings; this handler is the
+    gate — the named place must exist, and both the tag and the line must be
+    non-empty. Two outputs, the split the prior art insists on: the condition is
+    *stored* (the standing change) and *announced* once to the room (the one-shot
+    'it begins' line, which is also the chronicle beat the director then sees).
+    """
+    world = ctx.world
+    location_id = str(ctx.args["location"]).strip()
+    tag = str(ctx.args["tag"]).strip()
+    text = str(ctx.args["text"]).strip()
+    if location_id not in getattr(world, "locations", {}):
+        raise ActionError(f'no such location "{location_id}" to set a condition in')
+    if not tag:
+        raise ActionError("set_condition needs a short non-empty tag")
+    if not text:
+        raise ActionError("set_condition needs a non-empty line to describe it")
+    world.conditions.set(location_id, tag, text)
+    return ActionResult(
+        broadcasts=[(location_id, text)],
+        actor_memory=f'I set "{tag}" over {location_id}: "{text}"',
+    )
+
+
+def _clear_condition(ctx: ActionContext) -> ActionResult:
+    """Lift a standing condition the director set earlier — the storm passes.
+
+    The counterpart to ``set_condition``: the named condition is removed from the
+    world registry (so it stops coloring the place) and its passing is announced
+    once to the room. The schema guarantees the strings; this handler is the gate
+    — the place must exist, the line must be non-empty, and that condition must
+    actually be in place, or nothing changes and nothing is said (``ActionError``,
+    which the engine drops). Validation runs before the removal, so a rejected
+    clear never half-lifts a condition.
+    """
+    world = ctx.world
+    location_id = str(ctx.args["location"]).strip()
+    tag = str(ctx.args["tag"]).strip()
+    text = str(ctx.args["text"]).strip()
+    if location_id not in getattr(world, "locations", {}):
+        raise ActionError(f'no such location "{location_id}" to clear a condition in')
+    if not tag:
+        raise ActionError("clear_condition needs the tag of the condition to lift")
+    if not text:
+        raise ActionError("clear_condition needs a non-empty line for the change")
+    if not world.conditions.clear(location_id, tag):
+        raise ActionError(f'no "{tag}" condition in "{location_id}" to lift')
+    return ActionResult(
+        broadcasts=[(location_id, text)],
+        actor_memory=f'I lifted "{tag}" from {location_id}: "{text}"',
+    )
+
+
 def default_registry() -> ActionRegistry:
     """A registry preloaded with the built-in actions every world gets."""
     reg = ActionRegistry()
@@ -517,5 +576,49 @@ def default_registry() -> ActionRegistry:
                           desc="the ambient line, as those present will read it"),
         },
         handler=_stage_event,
+    ))
+    reg.register(ActionSpec(
+        name="set_condition",
+        description=('as the unseen game-master, bring a standing change over a '
+                     'place that lasts until you lift it — weather turning, night '
+                     'falling, a hush settling. Name the place by its id, give a '
+                     'short tag naming the condition (e.g. "storm", "night"), and '
+                     'the line as those present should read it, e.g. location '
+                     '"clearing", tag "storm", text "A cold rain begins to lash '
+                     'the clearing.". Unlike stage_event this persists and colors '
+                     'the place until you clear it; setting the same tag again '
+                     'replaces that condition.'),
+        params={
+            "location": Param("str", required=True,
+                              desc="the id of the place to change, as shown in "
+                                   "your view of the world"),
+            "tag": Param("str", required=True,
+                         desc='a short handle for the condition, e.g. "storm" or '
+                              '"night"; reusing a tag replaces that condition'),
+            "text": Param("str", required=True,
+                          desc="the standing line, as those present will read it"),
+        },
+        handler=_set_condition,
+    ))
+    reg.register(ActionSpec(
+        name="clear_condition",
+        description=('as the unseen game-master, lift a standing condition you set '
+                     'earlier — the storm passes, day breaks. Name the place by '
+                     'its id, the tag of the condition to lift (as shown in your '
+                     'view of the world), and a line for its passing, e.g. '
+                     'location "clearing", tag "storm", text "The rain thins and '
+                     'passes, and the wood drips quietly.". Only lifts a condition '
+                     'that is actually in place.'),
+        params={
+            "location": Param("str", required=True,
+                              desc="the id of the place, as shown in your view"),
+            "tag": Param("str", required=True,
+                         desc="the tag of the standing condition to lift, as shown "
+                              "in your view of the world"),
+            "text": Param("str", required=True,
+                          desc="the line narrating the change, as those present "
+                               "will read it"),
+        },
+        handler=_clear_condition,
     ))
     return reg

@@ -138,7 +138,7 @@ class SchemaSubsetTests(unittest.TestCase):
         branches = _branches(default_registry().json_schema())
         self.assertEqual(set(branches),
                          {"emote", "move", "give_item", "take_item", "drop_item",
-                          "stage_event"})
+                          "stage_event", "set_condition", "clear_condition"})
 
 
 class CapturingProvider(OpenAICompatibleProvider):
