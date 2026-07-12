@@ -103,6 +103,46 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
+def parse_turn(registry: ActionRegistry | None, raw: str) -> tuple[str, list, list]:
+    """Turn a raw model reply into ``(speech, valid_intents, errors)``.
+
+    The shared reading of the turn envelope, used by every mind on the seam (the
+    NPC mind and the game-master director alike) so a turn is parsed and validated
+    identically no matter who proposed it. Tolerant of the malformations the
+    tolerant extractor handles; each proposed action is checked against
+    ``registry`` and only validated intents survive, with the exact errors for any
+    invalid proposal returned for a one-shot retry. Never raises.
+    """
+    obj = _extract_json(raw)
+    if obj is None:
+        # No JSON at all: treat the whole reply as spoken text. Never crash.
+        return _strip_fences(raw).strip(), [], []
+    speech = obj.get("speech")
+    speech = speech.strip() if isinstance(speech, str) else ""
+    proposed = obj.get("actions")
+    if not isinstance(proposed, list):
+        proposed = []
+    valid: list = []
+    errors: list[str] = []
+    for item in proposed[:MAX_ACTIONS]:
+        if not isinstance(item, dict):
+            errors.append(f"action entry must be an object, "
+                          f"got {type(item).__name__}")
+            continue
+        if registry is None:
+            continue
+        name = item.get("name")
+        args = item.get("args", {})
+        if args is None:
+            args = {}
+        errs = registry.validate(name, args)
+        if errs:
+            errors.extend(errs)
+            continue
+        valid.append(ActionIntent(name=name, args=args))
+    return speech, valid, errors
+
+
 class NpcMind:
     def __init__(self, npc: Npc, provider: LLMProvider,
                  memory: MemoryStream | None = None,
@@ -261,34 +301,7 @@ class NpcMind:
 
     def _parse_turn(self, raw: str) -> tuple[str, list, list]:
         """Return (speech, valid_intents, errors_for_invalid_proposals)."""
-        obj = _extract_json(raw)
-        if obj is None:
-            # No JSON at all: treat the whole reply as spoken text. Never crash.
-            return _strip_fences(raw).strip(), [], []
-        speech = obj.get("speech")
-        speech = speech.strip() if isinstance(speech, str) else ""
-        proposed = obj.get("actions")
-        if not isinstance(proposed, list):
-            proposed = []
-        valid: list = []
-        errors: list[str] = []
-        for item in proposed[:MAX_ACTIONS]:
-            if not isinstance(item, dict):
-                errors.append(f"action entry must be an object, "
-                              f"got {type(item).__name__}")
-                continue
-            if self.registry is None:
-                continue
-            name = item.get("name")
-            args = item.get("args", {})
-            if args is None:
-                args = {}
-            errs = self.registry.validate(name, args)
-            if errs:
-                errors.extend(errs)
-                continue
-            valid.append(ActionIntent(name=name, args=args))
-        return speech, valid, errors
+        return parse_turn(self.registry, raw)
 
     # ---- back-compat ----
     async def hear_and_respond(self, speaker_name: str, utterance: str) -> str:

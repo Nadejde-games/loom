@@ -89,8 +89,10 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("give_item", reg)
         self.assertIn("take_item", reg)
         self.assertIn("drop_item", reg)
+        self.assertIn("stage_event", reg)
         self.assertEqual(reg.names(),
-                         ["emote", "move", "give_item", "take_item", "drop_item"])
+                         ["emote", "move", "give_item", "take_item", "drop_item",
+                          "stage_event"])
 
     def test_describe_lists_move(self):
         text = default_registry().describe()
@@ -340,6 +342,66 @@ class DropItemHandlerTests(unittest.TestCase):
         self.assertEqual(world.entities["lantern"].holder, "room")
 
 
+class StageEventValidateTests(unittest.TestCase):
+    """The director's stage_event schema: two required strings, nothing else."""
+    def setUp(self):
+        self.reg = default_registry()
+
+    def test_valid(self):
+        self.assertEqual(
+            self.reg.validate("stage_event", {"location": "a", "text": "x"}), [])
+
+    def test_missing_text(self):
+        errs = self.reg.validate("stage_event", {"location": "a"})
+        self.assertTrue(any("text" in e for e in errs))
+
+    def test_missing_location(self):
+        errs = self.reg.validate("stage_event", {"text": "x"})
+        self.assertTrue(any("location" in e for e in errs))
+
+    def test_unknown_arg(self):
+        errs = self.reg.validate(
+            "stage_event", {"location": "a", "text": "x", "who": "bob"})
+        self.assertTrue(any("who" in e for e in errs))
+
+
+class StageEventHandlerTests(unittest.TestCase):
+    """stage_event: narrate an ambient beat into a named room. The director has
+    no body — the target room is an explicit arg — and it changes nothing."""
+
+    def setUp(self):
+        self.spec = default_registry().get("stage_event")
+
+    def _run(self, world, **args):
+        # A bodiless director stub: no location_id; the action names its target.
+        actor = type("D", (), {"id": "director", "name": "the Director"})()
+        return self.spec.handler(ActionContext(world, actor, args))
+
+    def test_broadcasts_into_the_named_room(self):
+        world = _two_room_world()
+        line = "A cold wind gutters the lanterns."
+        res = self._run(world, location="a", text=line)
+        self.assertEqual(res.broadcasts, [("a", line)])
+        self.assertEqual(res.narration, "")        # ambient only, no actor line
+        self.assertIn("a", res.actor_memory)
+
+    def test_changes_no_world_state(self):
+        world = _two_room_world()
+        before = world.entities["odd"].location_id
+        self._run(world, location="a", text="Thunder rolls far off.")
+        self.assertEqual(world.entities["odd"].location_id, before)
+
+    def test_unknown_location_raises(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="nowhere", text="A door creaks.")
+
+    def test_empty_text_raises(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="a", text="   ")
+
+
 class DescribeSubsetTests(unittest.TestCase):
     def test_describe_narrows_to_named_actions(self):
         text = default_registry().describe(["emote", "move"])
@@ -347,10 +409,12 @@ class DescribeSubsetTests(unittest.TestCase):
         self.assertIn("move(", text)
         self.assertNotIn("give_item(", text)
         self.assertNotIn("take_item(", text)
+        self.assertNotIn("stage_event(", text)
 
     def test_describe_none_lists_all(self):
         text = default_registry().describe()
-        for name in ("emote(", "move(", "give_item(", "take_item(", "drop_item("):
+        for name in ("emote(", "move(", "give_item(", "take_item(", "drop_item(",
+                     "stage_event("):
             self.assertIn(name, text)
 
     def test_unknown_names_are_skipped(self):

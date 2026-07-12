@@ -187,13 +187,15 @@ Built:
   table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
   map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
   constrained-decoding waist so the model *cannot* emit a non-command.
-- `tests/` — **191 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **219 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,
-  the command parser + per-mind offered subset, and the command grammar + intent
-  parser). No GPU needed. **Plus a live behavioral harness** — see *Testing
-  discipline* below — 12 scenarios green against `qwen3.5:35b-a3b`.
+  the command parser + per-mind offered subset, the command grammar + intent
+  parser, and — Phase 3 — the chronicle, the `stage_event` handler, the
+  `DirectorMind` turn, and the `Director` cadence). No GPU needed. **Plus a live
+  behavioral harness** — see *Testing discipline* below — 13 scenarios green
+  against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
@@ -280,7 +282,7 @@ run on the real Ollama `/v1` path — the constrained turn envelope compiles and
 returns conformant, and the `envelope.well-formed` harness scenario (5/5) confirms
 a constrained turn cannot reproduce the B6 malformation.
 
-### Phase 3 — Game-master director  ○
+### Phase 3 — Game-master director  ▶ in progress (first slice: "the director's first breath", 2026-07-12)
 A world-observing "director" agent on a slow cadence (hangs off the game loop),
 injecting events/quests and adjusting the world to player behaviour, while
 characters stay in-role. Emits only tool-call actions (Phase 2). Runs on its own
@@ -288,6 +290,58 @@ model variant with a large baked context (`ops/modelfiles/loom-gm.Modelfile`) �
 Ollama's `/v1` ignores per-request `num_ctx`, and a Modelfile `PARAMETER num_ctx`
 overrides the global 8192 NPC default upward. Large context ⇒ large KV-cache
 VRAM, so budget one card for it (or quantize KV).
+
+Prior art settled before building (the TaleWeave spike, `docs/spikes/`): its "DM"
+is a synchronous narrator invoked *inside* a character's turn — no cadence, no
+world-observation between turns, quest-gen a stub — so the slow-cadence director
+is ours to build. Patterns adopted: the **turn-digest** (a feed of what changed)
+and, held for later, the two-phase plan→act split and memory-as-tools.
+
+**Built — the first slice ("the director's first breath", 2026-07-12), both
+gates green.** The tightest proof of the director seam, exactly as `emote` was for
+NPC actions: prove the whole new structure — a bodiless, slow-cadence,
+world-observing actor on the seam — with the single lightest action, then build
+the catalogue out on it.
+- **The director is a bodiless actor on the *same* seam.** No new registry: its
+  action registers on the one `ActionRegistry` and is offered to it (and only it)
+  via a `DIRECTOR_ONLY_ACTIONS` subset — the exact mirror of `PLAYER_ONLY_ACTIONS`.
+  It inherits constrained decoding, validation, and the bounded retry for free;
+  NPCs and players are never offered it, so the NPC catalogue (and all 12 prior
+  behavioral scenarios) are unchanged. It acts *on* rooms, not from one: the target
+  location is an explicit arg, so a bodiless director stub fills `ActionContext`
+  and `_perform`'s multi-room `broadcasts` deliver the beat where aimed.
+- **`stage_event(location, text)`** — narrate an ambient beat into a room. Pure
+  narration, no state change; the handler is the gate (the named location must
+  exist, the line non-empty). Its world-mutating siblings (`spawn_item`,
+  `offer_quest`) will build on this same location-addressed shape.
+- **Perception = a chronicle + a snapshot.** `loom/chronicle.py` — a bounded,
+  game-agnostic event feed (arrivals, speech, actions, moves) with a monotonic
+  cursor; the engine records salient beats as they broadcast. The director reads
+  the chronicle (what *changed* — the turn-digest) plus `engine.world_snapshot()`
+  (how things *stand now*, only rooms with someone present, keyed by location id).
+- **`DirectorMind`** (`loom/ai/director.py`) mirrors `NpcMind`: persona + memory +
+  the seam, one constrained turn where an empty `actions` list means *watch and do
+  nothing*; the shared `parse_turn` (factored out of `NpcMind`) validates its turn
+  identically. Its "speech" is a private note, never broadcast.
+- **`Director`** — the orchestrator on the loop: slow (every `period_ticks`), lazy
+  (no model call when nothing has changed since its last beat or no players are
+  present — a cheapness gate like B4's salience gate), non-blocking (each beat on a
+  background task), and non-overlapping. A broken beat is logged, never fatal.
+  `engine.attach_director(loop, persona, provider, period_ticks)` wires it; the
+  game passes the world's GM persona and, via `LOOM_GM_MODEL`, the `loom-gm`
+  variant (else it shares the engine provider).
+- Verified live on GPU (`qwen3.5:35b-a3b`): the director stages a grounded,
+  well-formed ambient beat into the room where players are (measured 7/8 and 6/6
+  into the right location, 0 envelope leaks) — new harness scenario
+  `director.sets-a-scene` (4/5). And end-to-end through the loop and seam: a player
+  utterance → chronicle → a director pulse → a real ambient line delivered to the
+  room. **Honest limit:** on this model the director stages a beat on nearly every
+  pulse — restraint ("intervene sparingly") is under-weighted, a ceiling like B5,
+  captured as **BACKLOG B8**; not gated, since it is not a verified behavior.
+- **Next on this seam:** world-mutating director actions (`spawn_item`, toward the
+  Phase 4 loot forge), NPC-directing (`nudge_npc` — shape a character's goals/
+  memory without puppeting its words), and `offer_quest` with real tracking. B8's
+  restraint lever (a two-pass "should I act?" decision, the same shape B5 wants).
 
 ### Phase 4 — Loot forge  ○
 Dynamic, context-aware item generation: the LLM authors name/lore/tags as
@@ -313,7 +367,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (191 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (219 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*

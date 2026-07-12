@@ -9,8 +9,10 @@ from .world import World, Player, Npc
 from .action import ActionRegistry, ActionContext, ActionIntent, default_registry
 from .salience import SalienceGate, SalienceContext, default_gate, is_addressed
 from .naming import resolve, Resolved, Ambiguous
+from .chronicle import Chronicle
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
 from .ai import intent
+from .ai.director import DirectorMind, Director
 from . import command
 
 # Actions the default game offers the *player* but not its NPCs — the NPCs in
@@ -19,6 +21,12 @@ from . import command
 # set. Keeps the NPC action catalogue (and the behavioral harness) unchanged as
 # player-only verbs are added to the shared registry.
 PLAYER_ONLY_ACTIONS = ("take_item", "drop_item")
+
+# Actions reserved for the game-master director — the unseen hand that shapes the
+# scene. Offered only to the DirectorMind (never to NPCs or players), the same
+# per-mind subset lever PLAYER_ONLY_ACTIONS uses. Excluded from the NPC catalogue
+# below so a character can never stage an ambient beat.
+DIRECTOR_ONLY_ACTIONS = ("stage_event",)
 
 
 class Engine:
@@ -46,12 +54,21 @@ class Engine:
         self.sessions: dict[str, Session] = {}  # session id -> session
         self._pcount = 0
         self._tasks: set[asyncio.Task] = set()  # in-flight async NPC replies
+        # The running record of salient world beats — arrivals, speech, actions,
+        # moves. The game-master director (attach_director) reads it on its slow
+        # cadence as its perception of what has changed since it last looked.
+        self.chronicle = Chronicle()
+        self.director: Director | None = None
         # The action catalogue offered to NPCs — the shared registry minus the
-        # player-only verbs (see PLAYER_ONLY_ACTIONS). Both the prompt and the
+        # player-only verbs and the director-only verbs. Both the prompt and the
         # constrained-decoding grammar are narrowed to this, so NPC behavior is
-        # unchanged as player-only actions join the registry.
+        # unchanged as player-only or director-only actions join the registry.
         self.npc_actions = [n for n in self.actions.names()
-                            if n not in PLAYER_ONLY_ACTIONS]
+                            if n not in PLAYER_ONLY_ACTIONS
+                            and n not in DIRECTOR_ONLY_ACTIONS]
+        # The director's own subset — the actions only the unseen hand may take.
+        self.director_actions = [n for n in self.actions.names()
+                                 if n in DIRECTOR_ONLY_ACTIONS]
         # Give every NPC in the world a mind that can act through the registry.
         for ent in world.entities.values():
             if isinstance(ent, Npc):
@@ -71,6 +88,10 @@ class Engine:
         await session.send_system(f"Connected as {player.name}.")
         await session.send_text(self._banner())
         await self._look(session)
+        loc = self.world.locations.get(self.start_location)
+        where = loc.name if loc else self.start_location
+        self.chronicle.record(f"{player.name} arrived in {where}.",
+                              location_id=self.start_location, kind="arrival")
 
     async def on_disconnect(self, session: Session) -> None:
         self.sessions.pop(session.id, None)
@@ -190,6 +211,8 @@ class Engine:
             await session.send_text('Say what? (try: say hello)')
             return
         await session.send_text(f'You say: "{words}"')
+        self.chronicle.record(f'{player.name} said: "{words}"',
+                              location_id=player.location_id, kind="speech")
         # Each NPC in the room *may* hear and answer. A cheap salience gate runs
         # first (B4): an NPC that isn't engaged — e.g. a bystander when someone
         # else was addressed by name — stays silent, costing no thinking beat and
@@ -256,6 +279,46 @@ class Engine:
                      exits=list(loc.exits.keys()), others=others, items=items,
                      inventory=inventory)
 
+    # ---- the director (game-master) ----
+    def world_snapshot(self) -> str:
+        """A compact current-state view for the game-master director: only the
+        places with someone present — who is there, the exits, the floor items —
+        each keyed by its location *id* (the handle the director names in a
+        stage_event), with the human title alongside. The still-frame that
+        complements the chronicle's record of what changed."""
+        lines = []
+        for loc in self.world.locations.values():
+            occ = self.world.occupants(loc.id)
+            if not occ:
+                continue                       # no audience, nothing to shape here
+            line = f"- {loc.id} ({loc.name}): " + ", ".join(e.name for e in occ)
+            if loc.exits:
+                line += "; exits: " + ", ".join(loc.exits.keys())
+            floor = [i.name for i in self.world.contents(loc.id)]
+            if floor:
+                line += "; on the ground: " + ", ".join(floor)
+            lines.append(line)
+        return "\n".join(lines) if lines else "(no one is anywhere in the world)"
+
+    def attach_director(self, loop, persona: dict | None = None,
+                        provider: LLMProvider | None = None,
+                        period_ticks: int = 12,
+                        name: str = "the Director") -> Director:
+        """Give this world an unseen game-master and hang it off ``loop``.
+
+        The director rides the same seam as everyone else, offered only its own
+        ``director_actions``. ``provider`` may point at a larger-context model
+        variant (e.g. ``loom-gm``) for the GM's wider view; it defaults to the
+        engine's provider. ``period_ticks`` is how many loop ticks pass between
+        the director's slow pulses. Returns the ``Director`` (also on
+        ``self.director``)."""
+        mind = DirectorMind(persona=persona, provider=provider or self.provider,
+                            registry=self.actions, offered=self.director_actions,
+                            name=name)
+        self.director = Director(self, mind, period_ticks=period_ticks, name=name)
+        self.director.install(loop)
+        return self.director
+
     async def _perform(self, location_id: str, actor, mind, intent,
                        exclude_session: str | None = None):
         """Execute one validated intent and narrate its outcome. Returns the
@@ -291,6 +354,14 @@ class Engine:
         for target, line in result.broadcasts:
             if target and line:
                 await self._broadcast(target, "text", line, exclude=exclude_session)
+        # Record the beat for the chronicle — the perception feed the director
+        # reads. Use the room-visible narration, or a move's first broadcast line.
+        beat = result.narration or (result.broadcasts[0][1]
+                                    if result.broadcasts else "")
+        if beat:
+            beat_loc = (getattr(actor, "location_id", None) or location_id
+                        or (result.broadcasts[0][0] if result.broadcasts else None))
+            self.chronicle.record(beat, location_id=beat_loc, kind="action")
         return result
 
     async def _broadcast(self, location_id: str, kind: str, text: str,
@@ -325,8 +396,13 @@ class Engine:
         if not loc or direction not in loc.exits:
             await session.send_text("You can't go that way.")
             return
-        self.world.move(player.id, loc.exits[direction])
+        dest_id = loc.exits[direction]
+        self.world.move(player.id, dest_id)
         await self._look(session)
+        dest = self.world.locations.get(dest_id)
+        self.chronicle.record(f"{player.name} goes {direction} to "
+                              f"{dest.name if dest else dest_id}.",
+                              location_id=dest_id, kind="move")
 
     async def _examine(self, session: Session, player, phrase: str) -> None:
         """look at / examine a specific thing in scope — a read-only description."""

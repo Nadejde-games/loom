@@ -1,0 +1,244 @@
+"""The game-master director, offline: the mind maps perception to a validated
+stage_event (and knows when to do nothing), and the orchestrator's cadence is
+slow, lazy (no model call when idle or unattended), non-blocking, and never
+overlaps itself. All deterministic — canned providers, no GPU, no network."""
+import asyncio
+import unittest
+
+from loom.world import World, Location
+from loom.engine import Engine
+from loom.ai import FakeProvider
+from loom.ai.director import DirectorMind, Director
+from loom.action import default_registry
+from loom.protocol import Channel
+
+# A well-formed director turn: one ambient beat into room "room".
+STAGE = ('{"speech":"let the wood breathe","actions":[{"name":"stage_event",'
+         '"args":{"location":"room","text":"A cold wind gutters the lanterns."}}]}')
+WATCH = '{"speech":"","actions":[]}'
+STAGE_LINE = "A cold wind gutters the lanterns."
+
+
+class CannedProvider:
+    """Returns scripted replies in order (the last repeats); records the schema
+    handed to each call, so a test can prove the constraint was narrowed."""
+    name = "canned"
+
+    def __init__(self, *replies):
+        self.replies = list(replies) or [WATCH]
+        self.calls = 0
+        self.schemas = []
+
+    async def complete(self, system, messages, schema=None):
+        self.schemas.append(schema)
+        reply = self.replies[min(self.calls, len(self.replies) - 1)]
+        self.calls += 1
+        return reply
+
+
+class FakeSession:
+    def __init__(self, sid="s1"):
+        self.id = sid
+        self.player_id = None
+        self.sent = []
+        self.closed = False
+
+    async def send(self, channel, data):
+        self.sent.append((channel, data))
+
+    async def send_text(self, text):
+        await self.send(Channel.TEXT, text)
+
+    async def send_system(self, text):
+        await self.send(Channel.SYSTEM, text)
+
+    async def close(self):
+        self.closed = True
+
+    def texts(self):
+        return "\n".join(d for (c, d) in self.sent if c == Channel.TEXT)
+
+
+class FakeLoop:
+    def __init__(self):
+        self.systems = []
+
+    def add_system(self, fn):
+        self.systems.append(fn)
+
+
+def _mind(*replies):
+    return DirectorMind(persona={"tone": "hushed"}, provider=CannedProvider(*replies),
+                        registry=default_registry(), offered=["stage_event"])
+
+
+def _build(period=3, reply=STAGE):
+    """A one-room world with a director attached, its own canned provider."""
+    world = World()
+    world.add_location(Location(id="room", name="Room", description="A bare room."))
+    engine = Engine(world, FakeProvider(), start_location="room")
+    canned = CannedProvider(reply)
+    director = engine.attach_director(FakeLoop(), provider=canned,
+                                      period_ticks=period)
+    return engine, director, canned
+
+
+async def _drain(engine):
+    for _ in range(10):
+        if not engine._tasks:
+            return
+        await asyncio.gather(*list(engine._tasks))
+
+
+class DirectorMindTests(unittest.TestCase):
+    def test_maps_perception_to_stage_event(self):
+        mind = _mind(STAGE)
+        turn = asyncio.run(mind.observe("- Wren arrived", "- room (Room): Wren"))
+        self.assertEqual(len(turn.actions), 1)
+        a = turn.actions[0]
+        self.assertEqual(a.name, "stage_event")
+        self.assertEqual(a.args["location"], "room")
+        self.assertFalse(turn.is_silent)
+
+    def test_empty_turn_is_watch(self):
+        mind = _mind(WATCH)
+        turn = asyncio.run(mind.observe("- nothing", "- room (Room): Wren"))
+        self.assertEqual(turn.actions, [])
+        self.assertTrue(turn.is_silent)
+
+    def test_remembers_its_own_musing(self):
+        mind = _mind(STAGE)
+        asyncio.run(mind.observe("- x", "- room (Room): Wren"))
+        mems = [m.text for m in mind.memory.recent()]
+        self.assertTrue(any("let the wood breathe" in m for m in mems))
+
+    def test_invalid_action_triggers_retry_and_recovers(self):
+        bad = ('{"speech":"oops","actions":[{"name":"stage_event",'
+               '"args":{"location":"room"}}]}')            # missing required text
+        mind = _mind(bad, STAGE)
+        turn = asyncio.run(mind.observe("- x", "- room (Room): Wren"))
+        self.assertEqual(mind.provider.calls, 2)           # it retried once
+        self.assertEqual([a.name for a in turn.actions], ["stage_event"])
+
+    def test_constraint_is_narrowed_to_director_actions(self):
+        mind = _mind(WATCH)
+        asyncio.run(mind.observe("- x", "- room (Room): Wren"))
+        schema = mind.provider.schemas[0]
+        self.assertIsNotNone(schema)                       # constrained decoding on
+        branches = schema["properties"]["actions"]["items"]["oneOf"]
+        consts = {b["properties"]["name"]["const"] for b in branches}
+        self.assertEqual(consts, {"stage_event"})          # only its own actions
+
+
+class DirectorCadenceTests(unittest.TestCase):
+    def test_fires_when_due_and_broadcasts_to_the_room(self):
+        async def go():
+            engine, director, _ = _build(period=3)
+            s = FakeSession()
+            await engine.on_connect(s)                      # player in room; seq=1
+            await director.tick(1.0)                        # tick 1 — not due
+            await director.tick(1.0)                        # tick 2 — not due
+            await _drain(engine)
+            self.assertNotIn(STAGE_LINE, s.texts())         # nothing staged yet
+            await director.tick(1.0)                        # tick 3 — due
+            await _drain(engine)
+            self.assertIn(STAGE_LINE, s.texts())            # the beat reached the room
+        asyncio.run(go())
+
+    def test_skips_when_nothing_has_happened(self):
+        async def go():
+            engine, director, _ = _build(period=1)
+            s = FakeSession()
+            await engine.on_connect(s)                      # seq=1 (an arrival)
+            await director.tick(1.0)
+            await _drain(engine)
+            self.assertEqual(s.texts().count(STAGE_LINE), 1)  # one beat
+            await director.tick(1.0)                        # nothing new since
+            await _drain(engine)
+            self.assertEqual(s.texts().count(STAGE_LINE), 1)  # no second beat
+        asyncio.run(go())
+
+    def test_skips_when_no_players_present(self):
+        async def go():
+            engine, director, canned = _build(period=1)
+            engine.chronicle.record("a tree falls in the wood")  # activity, no one here
+            await director.tick(1.0)
+            await _drain(engine)
+            self.assertEqual(canned.calls, 0)              # model never consulted
+            self.assertEqual(director._last_seq, 0)        # no beat ever ran
+        asyncio.run(go())
+
+    def test_not_due_before_the_period(self):
+        async def go():
+            engine, director, canned = _build(period=5)
+            s = FakeSession()
+            await engine.on_connect(s)
+            for _ in range(4):                             # 4 < period
+                await director.tick(1.0)
+            await _drain(engine)
+            self.assertEqual(canned.calls, 0)              # not yet consulted
+            self.assertNotIn(STAGE_LINE, s.texts())
+        asyncio.run(go())
+
+    def test_does_not_overlap_itself(self):
+        async def go():
+            gate = asyncio.Event()
+
+            class Gated:
+                name = "gated"
+
+                def __init__(self):
+                    self.calls = 0
+
+                async def complete(self, system, messages, schema=None):
+                    self.calls += 1
+                    await gate.wait()
+                    return STAGE
+
+            engine, director, _ = _build(period=1)
+            director.mind.provider = Gated()
+            s = FakeSession()
+            await engine.on_connect(s)                      # seq=1
+            await director.tick(1.0)                        # due -> a beat starts
+            await asyncio.sleep(0)                          # let it block on the gate
+            self.assertTrue(director._running)
+            self.assertEqual(len(engine._tasks), 1)
+            await director.tick(1.0)                        # due again, but busy
+            self.assertEqual(len(engine._tasks), 1)         # no second beat spawned
+            gate.set()
+            await _drain(engine)
+            self.assertFalse(director._running)             # cleared when done
+            self.assertIn(STAGE_LINE, s.texts())
+        asyncio.run(go())
+
+
+class EngineChronicleTests(unittest.TestCase):
+    """The engine records the salient beats the director reads."""
+
+    def test_records_player_arrival_and_speech(self):
+        async def go():
+            engine, _, _ = _build(period=99)               # director dormant here
+            s = FakeSession()
+            await engine.on_connect(s)
+            self.assertTrue(any(e.kind == "arrival"
+                                for e in engine.chronicle.recent()))
+            await engine._say(s, engine.players[s.id], "is anyone there")
+            self.assertTrue(any("is anyone there" in e.text
+                                for e in engine.chronicle.recent()))
+        asyncio.run(go())
+
+    def test_records_an_action_beat(self):
+        async def go():
+            engine, director, _ = _build(period=1)
+            s = FakeSession()
+            await engine.on_connect(s)
+            await director.tick(1.0)
+            await _drain(engine)
+            # the director's own staged beat is itself chronicled (kind=action)
+            self.assertTrue(any(STAGE_LINE in e.text
+                                for e in engine.chronicle.recent()))
+        asyncio.run(go())
+
+
+if __name__ == "__main__":
+    unittest.main()

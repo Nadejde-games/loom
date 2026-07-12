@@ -326,5 +326,50 @@ data). Deferred here at the user's request (2026-07-12) rather than built now.
 
 ---
 
-*Add new observations below with an ID (`B8…`), a date, and the same
+## B8 — The director under-weights restraint (stages a beat almost every pulse)
+*Noticed 2026-07-12 (during Phase 3, the director's first slice).*
+
+**Want:** the game-master director should intervene *sparingly* — most slow
+pulses the world needs nothing from it, and it should reply with an empty turn
+(watch and do nothing). The prompt says exactly this ("intervene sparingly; most
+beats the world needs nothing from you"), and an empty `actions` list is a
+first-class, tested outcome (`DirectorMind` returns `Turn.is_silent`; the engine
+performs nothing).
+
+**Observed:** with `qwen3.5:35b-a3b`, given a scene with players present, the
+director staged an ambient `stage_event` on nearly every pulse — 7/8 on an
+evocative scene *and* 6/6 on a deliberately quiet one (a bare arrival, nothing of
+note). The beats themselves are grounded and in-tone; the problem is *frequency*,
+not quality. In continuous play at the default cadence this would over-narrate.
+This is the director's analogue of **B5** — the model's action-selection bias
+under-weights the "do nothing" option, and persona/prompt wording alone does not
+fix it (the same lesson as B5: negative or scarce-phrasing priors are weak levers).
+
+**Where it lands:** the AI layer — `DirectorMind` (how the watch-and-wait option
+is weighted/primed) and, structurally, the director's turn shape. Not a grammar
+issue (the empty turn is already valid and reachable); a *selection* issue.
+
+**Considerations for later:**
+- **A two-pass director turn** — a cheap, low-temp "is a beat warranted right
+  now?" gate before composing one. This is the *same* lever B5 wants (a
+  should-I-act? pass distinct from the act), and the TaleWeave spike's two-phase
+  plan→act split is the pattern. A shared "act gate" could serve both the NPC
+  `move` ceiling and the director's restraint.
+- **A cooldown / budget in the orchestrator** (`Director`), independent of the
+  model: e.g. stage at most once per N pulses, or require M new chronicle events
+  since the last beat, so restraint is partly enforced in code rather than left to
+  the model. Cheap, deterministic, and testable — a good first step.
+- **Salience for the director** — reuse the B4 idea: score whether the recent
+  chronicle actually *calls* for a beat (a lull, a player stuck, a dramatic turn)
+  rather than pulsing on any change.
+- Currently **not gated** by the behavioral harness — restraint is not a verified
+  working behavior, and the discipline is one scenario per *verified* behavior. Add
+  a `director.restraint` scenario once a lever above makes it real.
+
+**Related:** Phase 3 (director), B5 (the same action-selection ceiling / two-pass
+lever), B4 (salience gate — choosing whether to engage).
+
+---
+
+*Add new observations below with an ID (`B9…`), a date, and the same
 what / where-it-lands / considerations shape.*

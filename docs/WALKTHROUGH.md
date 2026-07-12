@@ -322,7 +322,7 @@ Game-agnostic and dependency-free.
   `json_schema(names)` accept an optional subset, so one actor can be *offered*
   fewer actions than the registry holds (`NpcMind(offered=…)`) — the player takes
   and drops where the demo's NPCs do not — without a second registry.
-- `default_registry()` now ships five built-ins:
+- `default_registry()` now ships six built-ins:
   - `emote` (`_emote`) — a purely expressive action, zero world-state change: the
     tightest possible proof that the seam works (schema → validate → execute →
     narrate → remember).
@@ -338,10 +338,43 @@ Game-agnostic and dependency-free.
     source) and its inverse. Promoted onto the seam so the player's `take`/`drop`
     run the same validated path as `give`; offered to the player but not (by
     default) to NPCs, via the offered-subset above.
+  - `stage_event` (`_stage_event`) — the game-master director's action (Phase 3),
+    and the mirror of `emote` on the director side: it narrates an ambient beat
+    into a room, changing nothing. Unlike every actor action above it has *no
+    body* — the target room is an explicit arg, so the handler's gate is "does
+    this location exist?" and the beat broadcasts where aimed. Offered only to the
+    `DirectorMind` (never NPCs or players), via `DIRECTOR_ONLY_ACTIONS` — the same
+    offered-subset lever `PLAYER_ONLY_ACTIONS` uses. See §7 `ai/director.py`.
 
-Adding an action later (offer_quest, remember_fact) = a schema + a handler
-registered here. Nothing else in the pipeline changes. That's the point of the
-seam.
+Adding an action later (`spawn_item`, `offer_quest`, `nudge_npc`) = a schema + a
+handler registered here. Nothing else in the pipeline changes. That's the point
+of the seam.
+
+### `chronicle.py` + `ai/director.py` — the game-master (Phase 3)
+The director is the unseen hand over the whole stage, on a slow pulse — where an
+`NpcMind` is one character answering one line. It rides the *same* seam.
+- `loom/chronicle.py` — a bounded, game-agnostic event feed with a monotonic
+  `seq`. The engine `record()`s salient beats as they broadcast (arrival, speech,
+  action, move); the director reads it as its perception of *what changed* (the
+  turn-digest). `seq == last_seen` is the laziness gate — nothing happened, no
+  model call.
+- `ai/director.py`, `DirectorMind` — mirrors `NpcMind`: persona + memory + the
+  seam, `observe(chronicle, snapshot)` → a validated `Turn`, constrained-decoded
+  and offered only its `DIRECTOR_ONLY_ACTIONS`. An empty `actions` list = *watch
+  and do nothing* (a first-class outcome). Its `speech` is a private note, never
+  broadcast. The turn is parsed by the shared `mind.parse_turn` (factored out of
+  `NpcMind`) so every mind on the seam validates identically.
+- `ai/director.py`, `Director` — the orchestrator hung off the loop (§3) by
+  `engine.attach_director(loop, …)`. Every `period_ticks` it *considers* a beat,
+  but only if the chronicle changed since its last beat **and** a player is present
+  (else zero cost). Each beat runs on a background task (non-blocking,
+  non-overlapping); its validated actions execute through the same `engine._perform`
+  as everyone. It acts *on* rooms, not from one: a bodiless `_DirectorActor` stub
+  fills the seam's `actor`, and `engine.world_snapshot()` (rooms with someone
+  present, keyed by location id) is the still-frame that complements the chronicle.
+- **The perception pair the director reads:** the chronicle (*what changed*) + the
+  snapshot (*how it stands now*). Wired in `game/main.py` with the world's GM
+  persona and, via `LOOM_GM_MODEL`, the wide-context `loom-gm` model variant.
 
 ---
 
@@ -435,10 +468,11 @@ loom/                     the reusable, game-agnostic framework
   protocol.py             wire format: {"c":channel,"d":data} + newline
   session.py              one connected client; send_text/send_system
   server.py               async TCP server; drives any Handler
-  loop.py                 continuous tick loop (idle hook for ambient/GM)
-  engine.py               parses player input, resolves nouns, routes acts through the seam, NPC dispatch
-  action.py               ActionRegistry: schema + validation + json_schema + handlers (emote/move/give/take/drop)
+  loop.py                 continuous tick loop; the director hangs off it (Phase 3)
+  engine.py               parses input, resolves nouns, routes acts through the seam, NPC dispatch, records the chronicle, attach_director
+  action.py               ActionRegistry: schema + validation + json_schema + handlers (emote/move/give/take/drop/stage_event)
   command.py              player-command parser (B1): verb table + DO/prep/IO grammar → a Parse; command_schema for B1b
+  chronicle.py            bounded world event feed with a monotonic cursor — the director's turn-digest perception (Phase 3)
   salience.py             SalienceGate: which NPC engages (default: directed address)
   naming.py               resolve(phrase, scope) → Resolved / Ambiguous / NoMatch (noun-phrase resolution)
   content.py              load a World from editable JSON (locations, npcs, items)
@@ -449,8 +483,9 @@ loom/                     the reusable, game-agnostic framework
   ai/
     provider.py           LLMProvider + Fake / OpenAI-compat / Ollama / Anthropic
     memory.py             MemoryStream (append + recency; the substrate)
-    mind.py               NpcMind: persona + memory + turn pipeline + Scene (perception: exits/others/items/inventory)
+    mind.py               NpcMind: persona + memory + turn pipeline + Scene; parse_turn (shared with the director)
     intent.py             free-text → one command via the command grammar (B1b fallback; world-free)
+    director.py           DirectorMind (game-master turn) + Director (slow, lazy, non-blocking cadence on the loop) — Phase 3
 
 game/                     the first world built on Loom (content only)
   main.py                 entry point: assemble + run server & loop

@@ -412,6 +412,32 @@ def _drop_item(ctx: ActionContext) -> ActionResult:
                         actor_memory=f"I dropped {item.name}.")
 
 
+def _stage_event(ctx: ActionContext) -> ActionResult:
+    """Narrate an ambient beat into a room — the game-master's lightest touch.
+
+    The director's counterpart of ``emote``: the tightest proof of *its* seam. It
+    has no body and acts *on* a room rather than from one, so — unlike every actor
+    action above — the target location is an explicit argument, not the actor's
+    own position. The schema only guaranteed two strings; this handler is the
+    gate: it confirms the named location actually exists before anything is said,
+    raising ``ActionError`` (which the engine drops) otherwise. No world state
+    changes — the beat is pure narration broadcast to whoever is present, exactly
+    where the director aimed it. Its stronger, world-mutating siblings (spawn a
+    thing, offer a quest) build on this same location-addressed shape.
+    """
+    world = ctx.world
+    location_id = str(ctx.args["location"]).strip()
+    text = str(ctx.args["text"]).strip()
+    if location_id not in getattr(world, "locations", {}):
+        raise ActionError(f'no such location "{location_id}" to stage a beat in')
+    if not text:
+        raise ActionError("stage_event needs a non-empty line to narrate")
+    return ActionResult(
+        broadcasts=[(location_id, text)],
+        actor_memory=f'I set a scene in {location_id}: "{text}"',
+    )
+
+
 def default_registry() -> ActionRegistry:
     """A registry preloaded with the built-in actions every world gets."""
     reg = ActionRegistry()
@@ -474,5 +500,22 @@ def default_registry() -> ActionRegistry:
         params={"item": Param("str", required=True,
                               desc="the item you are holding, by name")},
         handler=_drop_item,
+    ))
+    reg.register(ActionSpec(
+        name="stage_event",
+        description=('as the unseen game-master, narrate a brief ambient beat '
+                     'into a place — a sound, a shift in weather or light, a sign '
+                     'the world is alive; name the place by its id and give the '
+                     'line as it should read to those present, e.g. location '
+                     '"clearing", text "A cold wind gutters the lanterns.". Sets '
+                     'the scene only; it moves and changes nothing.'),
+        params={
+            "location": Param("str", required=True,
+                              desc="the id of the place to narrate into, as shown "
+                                   "in your view of the world"),
+            "text": Param("str", required=True,
+                          desc="the ambient line, as those present will read it"),
+        },
+        handler=_stage_event,
     ))
     return reg

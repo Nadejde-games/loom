@@ -38,7 +38,9 @@ from typing import Callable
 from loom.content import load_world
 from loom.engine import Engine
 from loom.ai import get_default_provider, NpcMind
+from loom.ai.director import DirectorMind
 from loom.ai.intent import interpret
+from loom.action import default_registry
 from loom.command import command_schema, describe_verbs, default_verbs
 
 WORLD = os.path.join(os.path.dirname(__file__), "..", "game", "world", "world.json")
@@ -212,6 +214,85 @@ async def run_command_scenario(provider, sc: CommandScenario, schema, catalogue)
     return successes, samples
 
 
+# --- Phase 3: the game-master director (a world-observing gate) --------------
+# Behavioral because it is the *model* reading perception (a chronicle of what
+# changed + a current snapshot) and choosing to shape the scene, grounded on a
+# real location id. Note what this gate does and does NOT prove: on the current
+# model the director stages a beat on nearly every pulse — restraint ("intervene
+# sparingly") is under-weighted, a known ceiling like B5, tracked in BACKLOG B8.
+# So this proves the GROUNDED, well-formed beat (it targets a room that exists,
+# where players are, and never leaks a raw envelope), not restraint.
+@dataclass
+class DirectorScenario:
+    name: str
+    digest: str                     # the chronicle the director reads
+    snapshot: str                   # the current-state view
+    check: Callable                 # Turn -> bool
+    desc: str
+    n: int = 5
+    threshold: int = 3
+    tags: tuple = ("director",)
+
+
+def stages_in(location: str) -> Callable:
+    """The director staged an ambient beat into the given (real) location id."""
+    def check(turn):
+        return any(a.name == "stage_event"
+                   and str(a.args.get("location")) == location
+                   for a in turn.actions)
+    return check
+
+
+DIRECTOR_PERSONA = {
+    "tone": "a hushed, folkloric wilderness where small omens carry weight and "
+            "the land seems half-awake",
+    "goals": ["make the wilds feel watchful and alive",
+              "let small signs draw wanderers onward, never forcing them"],
+}
+
+# An evocative moment with a real location id ("cave_mouth", from the demo world)
+# and players present — exactly the perception the engine hands the director.
+DIRECTOR_DIGEST = (
+    "- Wanderer-1 arrived in The Cave Mouth.\n"
+    '- Wanderer-1 said: "is anyone out here in this dark?"\n'
+    "- Odd the Hermit narrows his eyes\n"
+    "- Wren the Wayfinder: This way, traveler — the north path is safest.")
+DIRECTOR_SNAPSHOT = (
+    "- cave_mouth (The Cave Mouth): Odd the Hermit, Wren the Wayfinder, "
+    "Wanderer-1; exits: north, down; on the ground: a rusty lantern")
+
+DIRECTOR_SCENARIOS = [
+    DirectorScenario(
+        # Measured 7/8 and 6/6 grounded into cave_mouth, 0 envelope leaks. The
+        # threshold catches a collapse (a director that stops staging, or stages
+        # into a room that doesn't exist), not the occasional abstain.
+        name="director.sets-a-scene",
+        digest=DIRECTOR_DIGEST, snapshot=DIRECTOR_SNAPSHOT,
+        check=stages_in("cave_mouth"), n=5, threshold=3,
+        desc="the director stages a well-formed ambient beat into the room "
+             "where players are"),
+]
+
+
+async def run_director_scenario(provider, sc: DirectorScenario):
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        # Fresh mind (fresh memory) per trial, offered only its director actions —
+        # the same subset the engine gives the real director.
+        mind = DirectorMind(persona=DIRECTOR_PERSONA, provider=provider,
+                            registry=default_registry(), offered=["stage_event"])
+        try:
+            turn = await mind.observe(sc.digest, sc.snapshot)
+            ok = bool(sc.check(turn))
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        acts = ",".join(f"{a.name}{a.args}" for a in turn.actions) or "-"
+        samples.append((ok, "SILENT" if turn.is_silent else f"[{acts}]"))
+    return successes, samples
+
+
 async def run_scenario(provider, sc: Scenario):
     world, start = load_world(WORLD)
     if sc.setup:
@@ -251,17 +332,20 @@ async def main():
         return selector is None or selector == s.name or selector in s.tags
     chosen = [s for s in SCENARIOS if picks(s)]
     chosen_cmds = [s for s in COMMAND_SCENARIOS if picks(s)]
-    if not chosen and not chosen_cmds:
+    chosen_dir = [s for s in DIRECTOR_SCENARIOS if picks(s)]
+    if not chosen and not chosen_cmds and not chosen_dir:
         tags = sorted({t for s in SCENARIOS for t in s.tags}
-                      | {t for s in COMMAND_SCENARIOS for t in s.tags})
+                      | {t for s in COMMAND_SCENARIOS for t in s.tags}
+                      | {t for s in DIRECTOR_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
+    total = len(chosen) + len(chosen_cmds) + len(chosen_dir)
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
               "anything against the LIVE model. Set LOOM_PROVIDER=ollama.\n")
-    print(f"{len(chosen) + len(chosen_cmds)} scenario(s); each is N live trials "
+    print(f"{total} scenario(s); each is N live trials "
           f"against a stochastic model.\n")
 
     failed = []
@@ -295,13 +379,24 @@ async def main():
                 for hit, detail in samples:
                     print(f"          {'ok ' if hit else 'MISS'} {detail}")
 
+    for sc in chosen_dir:
+        # Phase 3: the game-master director stages a grounded ambient beat.
+        successes, samples = await run_director_scenario(provider, sc)
+        ok = successes >= sc.threshold
+        verdict = "PASS" if ok else "FAIL"
+        print(f"[{verdict}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        if not ok:
+            failed.append(sc.name)
+            for hit, detail in samples:
+                print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
     print()
     if failed:
         print(f"FAILED ({len(failed)}): {', '.join(failed)}")
         print("A verified behavior regressed. Fix it before moving on.")
         return 1
-    print(f"OK — all {len(chosen) + len(chosen_cmds)} behavioral scenarios met "
-          f"their thresholds.")
+    print(f"OK — all {total} behavioral scenarios met their thresholds.")
     return 0
 
 

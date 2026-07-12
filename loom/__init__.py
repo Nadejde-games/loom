@@ -9,6 +9,7 @@ from .protocol import Message, Channel
 from .session import Session
 from .server import GameServer
 from .loop import GameLoop
+from .chronicle import Chronicle, ChronicleEvent
 from .engine import Engine
 from .action import (
     ActionRegistry, ActionSpec, ActionIntent, ActionContext, ActionResult,
@@ -19,6 +20,7 @@ from .naming import resolve, Resolved, Ambiguous, NoMatch
 
 __all__ = [
     "Message", "Channel", "Session", "GameServer", "GameLoop", "Engine",
+    "Chronicle", "ChronicleEvent",
     "ActionRegistry", "ActionSpec", "ActionIntent", "ActionContext",
     "ActionResult", "Param", "ActionError", "default_registry",
     "SalienceGate", "SalienceContext", "default_gate",
