@@ -165,15 +165,26 @@ class Director:
     """
 
     def __init__(self, engine, mind: DirectorMind, *, period_ticks: int = 12,
-                 name: str = "the Director", digest_lines: int = DIGEST_LINES) -> None:
+                 name: str = "the Director", digest_lines: int = DIGEST_LINES,
+                 min_new_events: int = 3, cooldown_pulses: int = 2) -> None:
         self.engine = engine
         self.mind = mind
         self.period_ticks = max(1, period_ticks)
         self.digest_lines = digest_lines
+        # Restraint (BACKLOG B8): the model, offered a beat, takes one on nearly
+        # every pulse. Until a model-side "should I act?" pass lands, hold the
+        # frequency down deterministically in the orchestrator — most pulses the
+        # director simply does nothing, without spending a call. A beat needs BOTH
+        # enough to have happened (min_new_events new chronicle events since its
+        # last beat) AND enough breathing room (cooldown_pulses pulses since it).
+        self.min_new_events = max(1, min_new_events)
+        self.cooldown_pulses = max(1, cooldown_pulses)
         self.actor = _DirectorActor(name=name)
         self._ticks = 0
         self._running = False
         self._last_seq = 0          # chronicle seq at the last beat it acted on
+        # Start "warmed up" so the first beat is not needlessly delayed by cooldown.
+        self._pulses_since_beat = self.cooldown_pulses
 
     def install(self, loop) -> None:
         """Register this director as a system on the game loop."""
@@ -181,12 +192,13 @@ class Director:
 
     async def tick(self, dt: float) -> None:
         """The loop callback. Counts ticks; on the period, decides whether to run
-        a beat. Cheap: the model is only consulted when the world has changed and
-        someone is present to see the result."""
+        a beat. Cheap: the model is only consulted when enough has changed, enough
+        time has passed, and someone is present to see the result."""
         self._ticks += 1
         if self._ticks < self.period_ticks or self._running:
             return
         self._ticks = 0
+        self._pulses_since_beat += 1        # a pulse: an opportunity to act
         if not self._should_beat():
             return
         self._running = True
@@ -200,10 +212,14 @@ class Director:
 
     def _should_beat(self) -> bool:
         chron = getattr(self.engine, "chronicle", None)
-        if chron is None or chron.seq == self._last_seq:
-            return False            # nothing has happened since the last beat
+        if chron is None:
+            return False
         if not getattr(self.engine, "players", None):
             return False            # no audience — no reason to spend a call
+        if self._pulses_since_beat < self.cooldown_pulses:
+            return False            # too soon since the last beat — let it breathe
+        if len(chron.since(self._last_seq)) < self.min_new_events:
+            return False            # too little has happened to warrant a beat
         return True
 
     async def _guarded_beat(self) -> None:
@@ -225,5 +241,7 @@ class Director:
         for intent in turn.actions:
             await self.engine._perform(None, self.actor, self.mind, intent)
         # Mark everything up to now as seen — including this beat's own staged
-        # events — so the director does not react to its own touch next pulse.
+        # events — so the director does not react to its own touch next pulse, and
+        # restart the cooldown from this beat.
         self._last_seq = max(acting_on, chron.seq)
+        self._pulses_since_beat = 0

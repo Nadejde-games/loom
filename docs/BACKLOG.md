@@ -329,6 +329,21 @@ data). Deferred here at the user's request (2026-07-12) rather than built now.
 ## B8 — The director under-weights restraint (stages a beat almost every pulse)
 *Noticed 2026-07-12 (during Phase 3, the director's first slice).*
 
+**Status (2026-07-12): partly landed — a deterministic orchestrator gate caps the
+rate; the model-side judgment lever is still open.** The `Director` now holds
+frequency down in code, independent of the model: a beat needs BOTH
+`min_new_events` new chronicle events since its last beat AND `cooldown_pulses`
+pulses of breathing room since it (defaults 3 / 2; tunable via
+`attach_director(...)` or `LOOM_DIRECTOR_MIN_EVENTS` / `LOOM_DIRECTOR_COOLDOWN`).
+So most pulses the director spends no model call and does nothing — the observable
+goal (sparse intervention) is met even though the model, when consulted, still
+takes a beat nearly every time. Proven: a model that *always* stages was held to
+~7 beats over 20 pulses; three new offline tests guard the gate. Also fixed a
+perception gap found here — NPC *speech* is now recorded to the chronicle (only
+NPC actions were), so the director perceives conversation, not just movement.
+**Still open:** making the director *choose* wisely (not just be rate-limited) —
+the model-side two-pass "should I act?" pass below, shared with B5.
+
 **Want:** the game-master director should intervene *sparingly* — most slow
 pulses the world needs nothing from it, and it should reply with an empty turn
 (watch and do nothing). The prompt says exactly this ("intervene sparingly; most
@@ -356,9 +371,10 @@ issue (the empty turn is already valid and reachable); a *selection* issue.
   plan→act split is the pattern. A shared "act gate" could serve both the NPC
   `move` ceiling and the director's restraint.
 - **A cooldown / budget in the orchestrator** (`Director`), independent of the
-  model: e.g. stage at most once per N pulses, or require M new chronicle events
-  since the last beat, so restraint is partly enforced in code rather than left to
-  the model. Cheap, deterministic, and testable — a good first step.
+  model — DONE 2026-07-12: `min_new_events` + `cooldown_pulses` require both M new
+  chronicle events and N pulses since the last beat. Cheap, deterministic, tested.
+  Next dial to consider: a per-day/per-scene *budget*, or scaling the floor with
+  how many players are present.
 - **Salience for the director** — reuse the B4 idea: score whether the recent
   chronicle actually *calls* for a beat (a lull, a player stuck, a dramatic turn)
   rather than pulsing on any change.

@@ -261,6 +261,10 @@ class Engine:
             return
         if turn.speech:
             await self._broadcast(location_id, "text", f"{npc.name}: {turn.speech}")
+            # NPC dialogue is salient world activity — the director should perceive
+            # what characters say, not only what they physically do.
+            self.chronicle.record(f"{npc.name}: {turn.speech}",
+                                  location_id=location_id, kind="speech")
         # Validated intents only — the mind has already checked them against the
         # registry; the engine executes and narrates the outcome to the room.
         for intent in turn.actions:
@@ -303,19 +307,24 @@ class Engine:
     def attach_director(self, loop, persona: dict | None = None,
                         provider: LLMProvider | None = None,
                         period_ticks: int = 12,
-                        name: str = "the Director") -> Director:
+                        name: str = "the Director",
+                        min_new_events: int = 3,
+                        cooldown_pulses: int = 2) -> Director:
         """Give this world an unseen game-master and hang it off ``loop``.
 
         The director rides the same seam as everyone else, offered only its own
         ``director_actions``. ``provider`` may point at a larger-context model
         variant (e.g. ``loom-gm``) for the GM's wider view; it defaults to the
         engine's provider. ``period_ticks`` is how many loop ticks pass between
-        the director's slow pulses. Returns the ``Director`` (also on
-        ``self.director``)."""
+        the director's slow pulses; ``min_new_events`` / ``cooldown_pulses`` hold
+        its intervention rate down (see ``Director``; BACKLOG B8). Returns the
+        ``Director`` (also on ``self.director``)."""
         mind = DirectorMind(persona=persona, provider=provider or self.provider,
                             registry=self.actions, offered=self.director_actions,
                             name=name)
-        self.director = Director(self, mind, period_ticks=period_ticks, name=name)
+        self.director = Director(self, mind, period_ticks=period_ticks, name=name,
+                                 min_new_events=min_new_events,
+                                 cooldown_pulses=cooldown_pulses)
         self.director.install(loop)
         return self.director
 

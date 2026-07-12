@@ -72,14 +72,20 @@ def _mind(*replies):
                         registry=default_registry(), offered=["stage_event"])
 
 
-def _build(period=3, reply=STAGE):
-    """A one-room world with a director attached, its own canned provider."""
+def _build(period=3, reply=STAGE, min_new_events=1, cooldown_pulses=1):
+    """A one-room world with a director attached, its own canned provider.
+
+    Restraint defaults to permissive (1, 1) so the cadence-mechanics tests below
+    exercise the timing wheel without the B8 rate-limit interfering; the restraint
+    suite sets stricter values explicitly."""
     world = World()
     world.add_location(Location(id="room", name="Room", description="A bare room."))
     engine = Engine(world, FakeProvider(), start_location="room")
     canned = CannedProvider(reply)
     director = engine.attach_director(FakeLoop(), provider=canned,
-                                      period_ticks=period)
+                                      period_ticks=period,
+                                      min_new_events=min_new_events,
+                                      cooldown_pulses=cooldown_pulses)
     return engine, director, canned
 
 
@@ -209,6 +215,62 @@ class DirectorCadenceTests(unittest.TestCase):
             await _drain(engine)
             self.assertFalse(director._running)             # cleared when done
             self.assertIn(STAGE_LINE, s.texts())
+        asyncio.run(go())
+
+
+class DirectorRestraintTests(unittest.TestCase):
+    """B8: the orchestrator holds intervention frequency down deterministically —
+    a beat needs enough new activity AND enough breathing room since the last one,
+    so the model is not consulted (and does not stage) on every pulse."""
+
+    def test_waits_for_enough_new_events(self):
+        async def go():
+            engine, director, canned = _build(period=1, min_new_events=3,
+                                              cooldown_pulses=1)
+            s = FakeSession()
+            await engine.on_connect(s)                     # 1 event (arrival)
+            await director.tick(1.0)
+            await _drain(engine)
+            self.assertEqual(canned.calls, 0)              # 1 < 3 -> no beat, no call
+            engine.chronicle.record("a stir in the leaves")
+            engine.chronicle.record("a distant call")      # now 3 new events
+            await director.tick(1.0)
+            await _drain(engine)
+            self.assertEqual(canned.calls, 1)              # threshold met -> a beat
+        asyncio.run(go())
+
+    def test_cooldown_spaces_beats_apart(self):
+        async def go():
+            engine, director, canned = _build(period=1, min_new_events=1,
+                                              cooldown_pulses=3)
+            s = FakeSession()
+            await engine.on_connect(s)
+            await director.tick(1.0)
+            await _drain(engine)
+            self.assertEqual(canned.calls, 1)              # first beat allowed
+            for _ in range(2):                             # plenty of events, but...
+                engine.chronicle.record("something happens")
+                await director.tick(1.0)
+                await _drain(engine)
+                self.assertEqual(canned.calls, 1)          # ...still within cooldown
+            engine.chronicle.record("something happens")
+            await director.tick(1.0)                        # 3rd pulse since the beat
+            await _drain(engine)
+            self.assertEqual(canned.calls, 2)              # cooldown elapsed -> a beat
+        asyncio.run(go())
+
+    def test_quiet_world_never_beats(self):
+        async def go():
+            # A lone arrival (1 event) under a stricter event floor: the director
+            # stays its hand — no over-narration of an empty room.
+            engine, director, canned = _build(period=1, min_new_events=5,
+                                              cooldown_pulses=1)
+            s = FakeSession()
+            await engine.on_connect(s)
+            for _ in range(4):
+                await director.tick(1.0)
+                await _drain(engine)
+            self.assertEqual(canned.calls, 0)
         asyncio.run(go())
 
 

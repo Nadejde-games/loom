@@ -187,7 +187,7 @@ Built:
   table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
   map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
   constrained-decoding waist so the model *cannot* emit a non-command.
-- `tests/` — **219 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **229 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,
@@ -324,12 +324,16 @@ the catalogue out on it.
   nothing*; the shared `parse_turn` (factored out of `NpcMind`) validates its turn
   identically. Its "speech" is a private note, never broadcast.
 - **`Director`** — the orchestrator on the loop: slow (every `period_ticks`), lazy
-  (no model call when nothing has changed since its last beat or no players are
-  present — a cheapness gate like B4's salience gate), non-blocking (each beat on a
-  background task), and non-overlapping. A broken beat is logged, never fatal.
-  `engine.attach_director(loop, persona, provider, period_ticks)` wires it; the
-  game passes the world's GM persona and, via `LOOM_GM_MODEL`, the `loom-gm`
-  variant (else it shares the engine provider).
+  (no model call when nothing has changed or no players are present — a cheapness
+  gate like B4's salience gate), non-blocking (each beat on a background task), and
+  non-overlapping. A broken beat is logged, never fatal. **Restraint (B8):** a beat
+  also needs both `min_new_events` new chronicle events *and* `cooldown_pulses`
+  pulses since the last one — so most pulses it spends no call and does nothing,
+  capping frequency in code regardless of the model's eagerness. NPC speech is
+  chronicled too (not only NPC actions), so it perceives conversation.
+  `engine.attach_director(loop, persona, provider, period_ticks, min_new_events,
+  cooldown_pulses)` wires it (env: `LOOM_GM_MODEL` for the `loom-gm` variant,
+  `LOOM_DIRECTOR_PERIOD` / `_MIN_EVENTS` / `_COOLDOWN`).
 - Verified live on GPU (`qwen3.5:35b-a3b`): the director stages a grounded,
   well-formed ambient beat into the room where players are (measured 7/8 and 6/6
   into the right location, 0 envelope leaks) — new harness scenario
@@ -337,7 +341,8 @@ the catalogue out on it.
   utterance → chronicle → a director pulse → a real ambient line delivered to the
   room. **Honest limit:** on this model the director stages a beat on nearly every
   pulse — restraint ("intervene sparingly") is under-weighted, a ceiling like B5,
-  captured as **BACKLOG B8**; not gated, since it is not a verified behavior.
+  held down deterministically in the orchestrator (min-events + cooldown, **BACKLOG
+  B8**), the honest first lever; the model-side "should I act?" pass remains open.
 - **Next on this seam:** world-mutating director actions (`spawn_item`, toward the
   Phase 4 loot forge), NPC-directing (`nudge_npc` — shape a character's goals/
   memory without puppeting its words), and `offer_quest` with real tracking. B8's
@@ -367,7 +372,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (219 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (229 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*

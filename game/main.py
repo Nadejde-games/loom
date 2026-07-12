@@ -11,16 +11,9 @@ from loom.ai import get_default_provider, OllamaProvider
 from loom.content import load_world
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# A single file today; point this at the "world" directory to split by region
+# later — load_world merges either form (see loom/content.py).
 WORLD_FILE = os.path.join(HERE, "world", "world.json")
-
-# The game-master persona for this world — content, not framework. Sets the
-# world's mood; the director machinery in loom/ is game-agnostic.
-DIRECTOR_PERSONA = {
-    "tone": "a hushed, folkloric wilderness where small omens carry weight and "
-            "the land seems half-awake",
-    "goals": ["make the wilds feel watchful and alive",
-              "let small signs draw wanderers onward, never forcing them"],
-}
 
 
 def _director_provider():
@@ -51,10 +44,17 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     # on its own model variant if LOOM_GM_MODEL is set, else the engine provider.
     gm_provider = _director_provider()
     period = int(os.environ.get("LOOM_DIRECTOR_PERIOD", "12"))  # ticks between pulses
-    engine.attach_director(loop, persona=DIRECTOR_PERSONA,
-                           provider=gm_provider, period_ticks=period)
+    min_events = int(os.environ.get("LOOM_DIRECTOR_MIN_EVENTS", "3"))
+    cooldown = int(os.environ.get("LOOM_DIRECTOR_COOLDOWN", "2"))
+    # The GM persona is world content — authored in world.json ("director" block),
+    # captured into world.meta by the loader — not baked into this entry point.
+    persona = world.meta.get("director")
+    engine.attach_director(loop, persona=persona,
+                           provider=gm_provider, period_ticks=period,
+                           min_new_events=min_events, cooldown_pulses=cooldown)
     gm_name = getattr(gm_provider or provider, "name", "engine provider")
-    print(f"[game] game-master director: every {period} ticks, via {gm_name}")
+    print(f"[game] game-master director: every {period} ticks "
+          f"(>= {min_events} new events, >= {cooldown} pulses apart), via {gm_name}")
 
     await asyncio.gather(server.serve_forever(), loop.run())
 

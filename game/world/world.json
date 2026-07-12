@@ -1,5 +1,12 @@
 {
   "start_location": "cave_mouth",
+  "director": {
+    "tone": "a hushed, folkloric wilderness where small omens carry weight and the land seems half-awake",
+    "goals": [
+      "make the wilds feel watchful and alive",
+      "let small signs draw wanderers onward, never forcing them"
+    ]
+  },
   "locations": [
     {
       "id": "cave_mouth",

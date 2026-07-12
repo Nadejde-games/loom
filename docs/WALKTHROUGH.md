@@ -179,14 +179,21 @@ Plain data, no AI, no networking. These are the nouns an author edits.
   `World` import. It is the generalisation of `salience.is_addressed` (which only
   asks "was this name mentioned?"); both the NPC give-handler and the player's
   take/drop/give use it. Prior-art survey behind it is recorded on B1.
-- `content.py` — `load_world` (`loom/content.py:23`) reads `world.json` into a
-  `World`. **This is design commitment #2 made real:** the world is editable
-  data, not code. Open `game/world/world.json` alongside it and match the fields
-  to the parser — the cave, the exits, its two NPCs ("Odd the Hermit", wary and
-  command-averse; "Wren the Wayfinder", a cheerful guide who walks you around),
-  and now an `"items"` array (a lantern and a key on the cave floor; a hill-map in
-  Wren's hand). They share the start room so one `say` shows the contrast, Wren
-  exercises `move`, and the items exercise take/drop/`give_item`.
+- `content.py` — `load_world` reads world data into a `World`. **This is design
+  commitment #2 made real:** the world is editable data, not code. Open
+  `game/world/world.json` alongside it and match the fields to the parser — the
+  cave, the exits, its two NPCs ("Odd the Hermit", wary and command-averse; "Wren
+  the Wayfinder", a cheerful guide who walks you around), an `"items"` array (a
+  lantern and a key on the cave floor; a hill-map in Wren's hand), and a
+  `"director"` block (the game-master persona). Two things to note about the
+  loader: (a) any top-level key beyond `locations`/`npcs`/`items`/`start_location`
+  (like `director`) is captured into `world.meta` — world-level config the
+  framework doesn't interpret but the game reads; (b) `path` may be a single file
+  *or a directory* of `*.json` files it merges in sorted order (locations/npcs/
+  items accumulate, meta blocks shallow-merge), so a world starts as one file and
+  splits by region later with no engine change. The two NPCs share the start room
+  so one `say` shows the contrast, Wren exercises `move`, and the items exercise
+  take/drop/`give_item`.
 
 ---
 
@@ -366,15 +373,20 @@ The director is the unseen hand over the whole stage, on a slow pulse — where 
   `NpcMind`) so every mind on the seam validates identically.
 - `ai/director.py`, `Director` — the orchestrator hung off the loop (§3) by
   `engine.attach_director(loop, …)`. Every `period_ticks` it *considers* a beat,
-  but only if the chronicle changed since its last beat **and** a player is present
-  (else zero cost). Each beat runs on a background task (non-blocking,
-  non-overlapping); its validated actions execute through the same `engine._perform`
-  as everyone. It acts *on* rooms, not from one: a bodiless `_DirectorActor` stub
-  fills the seam's `actor`, and `engine.world_snapshot()` (rooms with someone
-  present, keyed by location id) is the still-frame that complements the chronicle.
+  but only if a player is present **and** restraint allows (B8): at least
+  `min_new_events` new chronicle events since its last beat *and* `cooldown_pulses`
+  pulses of breathing room — so most pulses cost nothing and it does nothing,
+  capping frequency in code no matter how eager the model is. Each beat runs on a
+  background task (non-blocking, non-overlapping); its validated actions execute
+  through the same `engine._perform` as everyone. It acts *on* rooms, not from one:
+  a bodiless `_DirectorActor` stub fills the seam's `actor`, and
+  `engine.world_snapshot()` (rooms with someone present, keyed by location id) is
+  the still-frame that complements the chronicle.
 - **The perception pair the director reads:** the chronicle (*what changed*) + the
-  snapshot (*how it stands now*). Wired in `game/main.py` with the world's GM
-  persona and, via `LOOM_GM_MODEL`, the wide-context `loom-gm` model variant.
+  snapshot (*how it stands now*). Assembled in `game/main.py`; the GM persona is
+  authored as data (the `"director"` block in `world.json`, captured into
+  `world.meta` by the loader), and `LOOM_GM_MODEL` selects the wide-context
+  `loom-gm` model variant.
 
 ---
 
@@ -475,7 +487,7 @@ loom/                     the reusable, game-agnostic framework
   chronicle.py            bounded world event feed with a monotonic cursor — the director's turn-digest perception (Phase 3)
   salience.py             SalienceGate: which NPC engages (default: directed address)
   naming.py               resolve(phrase, scope) → Resolved / Ambiguous / NoMatch (noun-phrase resolution)
-  content.py              load a World from editable JSON (locations, npcs, items)
+  content.py              load a World from editable JSON — one file OR a directory of region files; world-level config → world.meta
   world/
     entity.py             Entity → Character → Npc / Player, and Item (held by a `holder`)
     location.py           Location: exits + occupants
@@ -489,7 +501,8 @@ loom/                     the reusable, game-agnostic framework
 
 game/                     the first world built on Loom (content only)
   main.py                 entry point: assemble + run server & loop
-  world/world.json        the cave, its NPCs (Odd, Wren), and its items (lantern, key, map)
+  world/world.json        the cave, its NPCs (Odd, Wren), items (lantern, key, map), and the "director" persona block
+                          (one file today; point WORLD_FILE at world/ to split by region — the loader merges either form)
 
 client/
   terminal.py             minimal reference client; knows only the protocol

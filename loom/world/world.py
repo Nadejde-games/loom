@@ -12,6 +12,11 @@ class World:
         # source of truth is each Item.holder; this mirrors it for O(1) lookup,
         # exactly as Location.occupants mirrors Character.location_id.
         self._contents: dict[str, set] = {}
+        # World-level authored configuration that isn't a structural entity — any
+        # top-level key in the world data beyond locations/npcs/items (e.g. the
+        # game-master director persona, world tone, shared tables). A generic
+        # blob so the framework stays agnostic to what a game chooses to put here.
+        self.meta: dict = {}
 
     # --- mutation ---
     def add_location(self, loc: Location) -> None:
