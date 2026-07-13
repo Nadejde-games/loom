@@ -64,7 +64,8 @@ class Engine:
                  registry: ActionRegistry | None = None,
                  gate: SalienceGate | None = None,
                  intent_fallback: bool = True,
-                 autonomous_reactions: bool = False):
+                 autonomous_reactions: bool = False,
+                 npc_act_gate: bool = False):
         self.world = world
         self.provider = provider
         self.start_location = start_location
@@ -83,6 +84,12 @@ class Engine:
         # purely responsive to being spoken to — the behaviour every prior test and
         # scenario was written against, so enabling this regresses nothing existing.
         self.autonomous_reactions = autonomous_reactions
+        # The NPC two-pass act-gate (B5), off by default: when on, each NPC decides
+        # its action in a cheap low-temp pass before the blended turn speaks, so a
+        # willing guide reliably *moves* when asked, not just talks of it (raising the
+        # ~70% blended ceiling). A framework capability the game opts into; off keeps
+        # the single blended turn every prior test was written against.
+        self.npc_act_gate = npc_act_gate
         self.react_budget = REACT_BUDGET
         self.react_cooldown = REACT_COOLDOWN
         self.react_fuse = REACT_FUSE
@@ -122,7 +129,8 @@ class Engine:
         for ent in world.entities.values():
             if isinstance(ent, Npc):
                 self.minds[ent.id] = NpcMind(ent, provider, registry=self.actions,
-                                             offered=self.npc_actions)
+                                             offered=self.npc_actions,
+                                             act_gate=self.npc_act_gate)
 
     # ---- Handler protocol (called by GameServer) ----
     async def on_connect(self, session: Session) -> None:
@@ -486,7 +494,8 @@ class Engine:
                         min_new_events: int = 3,
                         cooldown_pulses: int = 2,
                         lull_pulses: int = 0,
-                        foreshadow: bool = False) -> Director:
+                        foreshadow: bool = False,
+                        act_gate: bool = False) -> Director:
         """Give this world an unseen game-master and hang it off ``loop``.
 
         The director rides the same seam as everyone else, offered only its own
@@ -498,7 +507,9 @@ class Engine:
         ``lull_pulses`` (0 = off) is the opt-in liveliness *floor* (B9): after that
         many quiet pulses since its last beat the director stirs a still room with
         one gentle beat. ``foreshadow`` (opt-in, B9) lets it also see and shape the
-        empty rooms just ahead of the players. Returns the ``Director`` (also on
+        empty rooms just ahead of the players. ``act_gate`` (opt-in, B8) adds a
+        cheap model-side wait/act decision before each warranted beat, layered after
+        the deterministic ceiling/floor. Returns the ``Director`` (also on
         ``self.director``)."""
         mind = DirectorMind(persona=persona, provider=provider or self.provider,
                             registry=self.actions, offered=self.director_actions,
@@ -506,7 +517,8 @@ class Engine:
         self.director = Director(self, mind, period_ticks=period_ticks, name=name,
                                  min_new_events=min_new_events,
                                  cooldown_pulses=cooldown_pulses,
-                                 lull_pulses=lull_pulses, foreshadow=foreshadow)
+                                 lull_pulses=lull_pulses, foreshadow=foreshadow,
+                                 act_gate=act_gate)
         self.director.install(loop)
         return self.director
 

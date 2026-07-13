@@ -8,7 +8,7 @@ import unittest
 from loom.world import World, Location
 from loom.engine import Engine
 from loom.ai import FakeProvider
-from loom.ai.director import DirectorMind, Director
+from loom.ai.director import DirectorMind, Director, ACT_GATE_TEMPERATURE
 from loom.action import default_registry
 from loom.protocol import Channel
 
@@ -24,6 +24,11 @@ SET_STORM = ('{"speech":"the sky turns","actions":[{"name":"set_condition",'
              '"text":"A cold rain begins to fall."}}]}')
 STORM_LINE = "A cold rain begins to fall."
 
+# Act-gate decision replies (B8): the tiny wait/act envelope the decision pass
+# returns, ahead of any compose reply.
+DECIDE_ACT = '{"decision":"act","reason":"the moment calls for it"}'
+DECIDE_WAIT = '{"decision":"wait","reason":"let it breathe"}'
+
 
 class CannedProvider:
     """Returns scripted replies in order (the last repeats); records the schema
@@ -36,11 +41,13 @@ class CannedProvider:
         self.schemas = []
         self.messages = []          # the messages handed to each call (nudge spy)
         self.system_prompts = []    # the system prompt handed to each call
+        self.temperatures = []      # the per-call temperature (act-gate spy)
 
-    async def complete(self, system, messages, schema=None):
+    async def complete(self, system, messages, schema=None, temperature=None):
         self.schemas.append(schema)
         self.messages.append(messages)
         self.system_prompts.append(system)
+        self.temperatures.append(temperature)
         reply = self.replies[min(self.calls, len(self.replies) - 1)]
         self.calls += 1
         return reply
@@ -102,6 +109,22 @@ def _build(period=3, reply=STAGE, min_new_events=1, cooldown_pulses=1,
     return engine, director, canned
 
 
+def _build_gated(*replies, min_new_events=1, cooldown_pulses=1, lull_pulses=0):
+    """A one-room, act-gated director (B8): its canned provider serves the decision
+    reply first, then any compose reply, in order — mirroring the two-pass turn
+    (decide -> maybe observe). Restraint defaults permissive so the gate itself,
+    not the deterministic ceiling, is what these tests exercise."""
+    world = World()
+    world.add_location(Location(id="room", name="Room", description="A bare room."))
+    engine = Engine(world, FakeProvider(), start_location="room")
+    canned = CannedProvider(*replies)
+    director = engine.attach_director(FakeLoop(), provider=canned, period_ticks=1,
+                                      min_new_events=min_new_events,
+                                      cooldown_pulses=cooldown_pulses,
+                                      lull_pulses=lull_pulses, act_gate=True)
+    return engine, director, canned
+
+
 async def _drain(engine):
     for _ in range(10):
         if not engine._tasks:
@@ -147,6 +170,45 @@ class DirectorMindTests(unittest.TestCase):
         branches = schema["properties"]["actions"]["items"]["oneOf"]
         consts = {b["properties"]["name"]["const"] for b in branches}
         self.assertEqual(consts, {"stage_event"})          # only its own actions
+
+
+class DirectorMindGateTests(unittest.TestCase):
+    """B8 act-gate at the mind level: ``decide`` returns a wait/act judgment from a
+    cheap, low-temperature, tightly-constrained pass, and fails toward silence."""
+
+    def test_act_decision_returns_true_with_reason(self):
+        mind = _mind(DECIDE_ACT)
+        act, reason = asyncio.run(mind.decide("- x", "- room (Room): Wren"))
+        self.assertTrue(act)
+        self.assertEqual(reason, "the moment calls for it")
+
+    def test_wait_decision_returns_false(self):
+        mind = _mind(DECIDE_WAIT)
+        act, _ = asyncio.run(mind.decide("- x", "- room (Room): Wren"))
+        self.assertFalse(act)
+
+    def test_unparseable_decision_fails_toward_wait(self):
+        # A restraint gate that cannot read the model's answer must not act.
+        mind = _mind("on balance, I would rather not commit to anything")
+        act, _ = asyncio.run(mind.decide("- x", "- room (Room): Wren"))
+        self.assertFalse(act)
+
+    def test_decision_pass_is_low_temp_and_constrained(self):
+        mind = _mind(DECIDE_WAIT)
+        asyncio.run(mind.decide("- x", "- room (Room): Wren"))
+        self.assertEqual(mind.provider.temperatures[0], ACT_GATE_TEMPERATURE)
+        schema = mind.provider.schemas[0]
+        self.assertEqual(schema["properties"]["decision"]["enum"], ["wait", "act"])
+
+    def test_decision_prompt_is_lean_no_action_catalogue(self):
+        # The gate only judges wait-or-act, so it carries none of compose's action
+        # catalogue or envelope examples — that is what keeps it cheap.
+        mind = _mind(DECIDE_WAIT)
+        asyncio.run(mind.decide("- happened", "- room (Room): Wren"))
+        system = mind.provider.system_prompts[0]
+        self.assertNotIn("Available actions", system)
+        self.assertIn("happened", system)                  # it still reads perception
+        self.assertIn("Wren", system)
 
 
 class DirectorCadenceTests(unittest.TestCase):
@@ -284,6 +346,109 @@ class DirectorRestraintTests(unittest.TestCase):
                 await director.tick(1.0)
                 await _drain(engine)
             self.assertEqual(canned.calls, 0)
+        asyncio.run(go())
+
+
+class DirectorActGateTests(unittest.TestCase):
+    """B8 act-gate at the orchestrator level: a warranted pulse first pays for the
+    cheap wait/act decision, and composes only on 'act'. Layered AFTER the
+    deterministic ceiling/floor, and off by default — so nothing regresses."""
+
+    def test_off_by_default(self):
+        _, director, _ = _build()
+        self.assertFalse(director.act_gate)
+
+    def test_act_decision_composes_the_beat(self):
+        async def go():
+            # Decision 'act' -> both the decision call and the compose call run, and
+            # the beat reaches the room, exactly as an ungated warranted pulse would.
+            engine, director, canned = _build_gated(DECIDE_ACT, STAGE)
+            s = FakeSession()
+            await engine.on_connect(s)                     # 1 event >= floor(1)
+            await director.tick(1.0)
+            await _drain(engine)
+            self.assertEqual(canned.calls, 2)              # decide + compose
+            self.assertIn(STAGE_LINE, s.texts())
+        asyncio.run(go())
+
+    def test_wait_decision_stays_silent_and_pays_only_for_the_decision(self):
+        async def go():
+            engine, director, canned = _build_gated(DECIDE_WAIT)
+            s = FakeSession()
+            await engine.on_connect(s)                     # seq=1
+            await director.tick(1.0)
+            await _drain(engine)
+            self.assertEqual(canned.calls, 1)              # only the decision, no compose
+            self.assertNotIn(STAGE_LINE, s.texts())        # nothing staged
+            # A wait marks the events seen (so they do not re-trigger)...
+            self.assertEqual(director._last_seq, engine.chronicle.seq)
+            # ...but is NOT a beat: the cooldown is not restarted (still warmed).
+            self.assertGreaterEqual(director._pulses_since_beat,
+                                    director.cooldown_pulses)
+        asyncio.run(go())
+
+    def test_wait_does_not_re_litigate_the_same_events(self):
+        async def go():
+            # After a wait, the identical events do not warrant a fresh decision —
+            # the gate is not re-consulted until something new happens.
+            engine, director, canned = _build_gated(DECIDE_WAIT)
+            s = FakeSession()
+            await engine.on_connect(s)
+            await director.tick(1.0); await _drain(engine)
+            self.assertEqual(canned.calls, 1)
+            await director.tick(1.0); await _drain(engine)  # nothing new since
+            self.assertEqual(canned.calls, 1)              # not consulted again
+        asyncio.run(go())
+
+    def test_wait_then_a_new_event_warrants_a_fresh_decision_and_beat(self):
+        async def go():
+            engine, director, canned = _build_gated(DECIDE_WAIT, DECIDE_ACT, STAGE)
+            s = FakeSession()
+            await engine.on_connect(s)                     # seq=1
+            await director.tick(1.0); await _drain(engine)  # decide -> wait
+            self.assertEqual(canned.calls, 1)
+            engine.chronicle.record("a new stir in the dark")  # seq=2, genuinely new
+            await director.tick(1.0); await _drain(engine)  # decide -> act -> compose
+            self.assertEqual(canned.calls, 3)
+            self.assertIn(STAGE_LINE, s.texts())
+        asyncio.run(go())
+
+    def test_decision_call_is_low_temp_lean_and_constrained(self):
+        async def go():
+            engine, director, canned = _build_gated(DECIDE_WAIT)
+            s = FakeSession()
+            await engine.on_connect(s)
+            await director.tick(1.0); await _drain(engine)
+            self.assertEqual(canned.temperatures[0], ACT_GATE_TEMPERATURE)
+            self.assertEqual(canned.schemas[0]["properties"]["decision"]["enum"],
+                             ["wait", "act"])
+            self.assertNotIn("Available actions", canned.system_prompts[0])
+        asyncio.run(go())
+
+    def test_unparseable_decision_defaults_to_wait(self):
+        async def go():
+            engine, director, canned = _build_gated("hmm, hard to say either way")
+            s = FakeSession()
+            await engine.on_connect(s)
+            await director.tick(1.0); await _drain(engine)
+            self.assertEqual(canned.calls, 1)              # no compose followed
+            self.assertNotIn(STAGE_LINE, s.texts())
+        asyncio.run(go())
+
+    def test_lull_path_is_not_gated(self):
+        async def go():
+            # The lull is a liveliness *floor*, not a thing to restrain: with the gate
+            # on, a lull beat still composes, and the gate's decision pass never runs
+            # (only observe does). A strict event floor forces the lull path, not
+            # activity. This is the scoping that lets the gate default on without
+            # killing B9 (the model judges a quiet scene 'leave it').
+            engine, director, canned = _build_gated(STAGE, min_new_events=5,
+                                                    cooldown_pulses=1, lull_pulses=2)
+            s = FakeSession()
+            await engine.on_connect(s)                     # 1 event, below the floor(5)
+            await director.tick(1.0); await _drain(engine)  # pulses 1 -> 2 >= lull(2)
+            self.assertEqual(canned.calls, 1)              # observe only — no decide
+            self.assertIn(STAGE_LINE, s.texts())           # the gentle floor beat landed
         asyncio.run(go())
 
 

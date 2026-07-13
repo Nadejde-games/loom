@@ -112,6 +112,7 @@ class Scenario:
     n: int = 5                      # trials
     threshold: int = 4              # pass iff successes >= threshold
     setup: Callable | None = None   # optional (world) -> None world prep
+    act_gate: bool = False          # run the mind two-pass (B5) instead of blended
     tags: tuple = ()
 
 
@@ -134,6 +135,21 @@ SCENARIOS = [
         check=NOT(emits("move")), n=4, threshold=3,
         desc="the guide does NOT move on idle chatter (no over-eager move)"),
     Scenario(
+        # B5: the two-pass act-gate should raise the guide's move-when-asked rate
+        # above the ~70% blended ceiling — the deed is chosen on its own, where the
+        # cosmetic emote is not a flavour attractor. Measured live, threshold set
+        # from the run; the point is to clear the ceiling the blended turn plateaued at.
+        name="move.guide-leads-gated", npc_id="guide", tags=("move", "gate"),
+        utterance="Wren, will you lead me north to show me the way?",
+        check=emits("move"), act_gate=True, n=8, threshold=7,
+        desc="the two-pass act-gate raises move-when-asked above the ~70% ceiling (B5)"),
+    Scenario(
+        # The guard on the other side: the gate must not over-fire move on idle talk.
+        name="move.guide-no-idle-move-gated", npc_id="guide", tags=("move", "gate"),
+        utterance="Wren, lovely weather today isn't it?",
+        check=NOT(emits("move")), act_gate=True, n=4, threshold=3,
+        desc="the act-gate still does NOT move on idle chatter (no over-eager move)"),
+    Scenario(
         name="move.hermit-stays-put", npc_id="hermit", tags=("move",),
         utterance="please leave, old man.", addressed=True,
         check=NOT(emits("move")), n=4, threshold=3,
@@ -143,6 +159,14 @@ SCENARIOS = [
         utterance="what a grey sky today.", addressed=False,
         check=is_silent, n=5, threshold=2,
         desc="a reticent hermit often stays silent on an overheard idle remark"),
+    Scenario(
+        # Regression guard for defaulting the two-pass on: the split speech path must
+        # still honour silence (B4) — a reticent hermit can decide no action AND say
+        # nothing, an empty turn.
+        name="silence.hermit-idle-gated", npc_id="hermit", tags=("silence", "gate"),
+        utterance="what a grey sky today.", addressed=False,
+        check=is_silent, act_gate=True, n=5, threshold=2,
+        desc="the act-gate preserves reticent silence on an overheard idle remark"),
     Scenario(
         name="speech.guide-answers", npc_id="guide", tags=("speech",),
         utterance="Wren, are you there?",
@@ -154,10 +178,25 @@ SCENARIOS = [
         check=mentions("key", "lantern", "map"), n=3, threshold=2,
         desc="an NPC grounds its reply on items it can perceive on the floor"),
     Scenario(
+        # Regression guard: the two-pass *speech* pass still grounds on perceived
+        # items (the compose pass reads the same scene).
+        name="perception.ground-items-gated", npc_id="guide",
+        tags=("perception", "gate"),
+        utterance="Wren, what do you see on the ground here?",
+        check=mentions("key", "lantern", "map"), act_gate=True, n=3, threshold=2,
+        desc="the act-gate's speech pass still grounds on perceived floor items"),
+    Scenario(
         name="give.guide-hands-over", npc_id="guide", tags=("give",),
         utterance="Wren, please hand your map to Odd for me.",
         check=emits("give_item"), n=5, threshold=3,
         desc="a willing NPC emits `give_item` when asked to hand something over"),
+    Scenario(
+        # Regression guard: the decision pass picks give_item when asked to hand over
+        # (another world-mutating action, like move — it must not under-select here).
+        name="give.guide-hands-over-gated", npc_id="guide", tags=("give", "gate"),
+        utterance="Wren, please hand your map to Odd for me.",
+        check=emits("give_item"), act_gate=True, n=5, threshold=3,
+        desc="the act-gate's decision pass emits give_item when asked to hand over"),
     Scenario(
         # Phase 2 hardening: constrained decoding guarantees a well-formed
         # envelope at the token level. The utterance provokes an actions array
@@ -299,6 +338,11 @@ DIRECTOR_LULL_DIGEST = (
     "- Wanderer-1 arrived in The Cave Mouth.\n"
     "- Wanderer-1 looks slowly around the quiet clearing.")
 
+# A *bare* moment — a lone arrival, nothing of note. This is the B8 case where the
+# ungated director staged anyway (6/6): the act-gate should judge it needs nothing.
+DIRECTOR_BARE_DIGEST = (
+    "- Wanderer-1 arrived in The Cave Mouth.")
+
 # The players are about to head *north* to the hill path — an empty room one exit
 # away. The foreshadow snapshot marks it [ahead, empty], so the director can shape
 # what they will find there before they arrive (off-screen staging, B9).
@@ -379,6 +423,65 @@ async def run_director_scenario(provider, sc: DirectorScenario):
         successes += ok
         acts = ",".join(f"{a.name}{a.args}" for a in turn.actions) or "-"
         samples.append((ok, "SILENT" if turn.is_silent else f"[{acts}]"))
+    return successes, samples
+
+
+# --- B8: the model-side act-gate (the whole open question) --------------------
+# The act-gate asks the model ONE narrow, low-temperature question — is a beat
+# warranted right now? — before the full compose is paid for. It probes
+# DirectorMind.decide directly (the judgment), NOT observe (the compose). The
+# lever is unproven: the same model that over-stages may just answer "act" every
+# time. So we measure BOTH poles as a tension pair — it must *discriminate*:
+#   * director.restraint     — a bare scene the ungated director staged 6/6 (B8):
+#                              the gate should judge it needs nothing ("wait").
+#   * director.gate-acts-on-cue — an evocative scene: the gate should still act,
+#                              proving it did not simply learn to always wait.
+# Adopt the gate iff BOTH discriminate live; otherwise report the null result and
+# ship it off. Thresholds are provisional until this first live run sets the rates.
+@dataclass
+class GateScenario:
+    name: str
+    digest: str
+    snapshot: str
+    want_act: bool                  # the decision we expect the gate to reach
+    desc: str
+    n: int = 8
+    threshold: int = 5              # collapse-detector (either pole failing = fail)
+    tags: tuple = ("director", "gate")
+
+
+GATE_SCENARIOS = [
+    GateScenario(
+        name="director.restraint",
+        digest=DIRECTOR_BARE_DIGEST, snapshot=DIRECTOR_SNAPSHOT, want_act=False,
+        desc="the act-gate judges a bare, nothing-of-note scene needs no beat "
+             "(model-side restraint, B8)"),
+    GateScenario(
+        name="director.gate-acts-on-cue",
+        digest=DIRECTOR_DIGEST, snapshot=DIRECTOR_SNAPSHOT, want_act=True,
+        desc="the act-gate still acts on an evocative scene (it did not just learn "
+             "to always wait)"),
+    # NOTE: the lull path is deliberately NOT gated (the gate is scoped to the
+    # activity path in Director._run_beat). Measured 2026-07-13: decide() on a quiet
+    # lull scene judged 'wait' 8/8 — the model would kill the B9 liveliness floor if
+    # the gate sat on it. The floor stays deterministic; director.lull-beat (which
+    # probes observe(lull=True)) remains its guard.
+]
+
+
+async def run_gate_scenario(provider, sc: GateScenario):
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        mind = DirectorMind(persona=DIRECTOR_PERSONA, provider=provider,
+                            registry=default_registry(), offered=["stage_event"])
+        try:
+            act, why = await mind.decide(sc.digest, sc.snapshot)
+            ok = (act == sc.want_act)
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        samples.append((ok, f'{"act " if act else "wait"} — {why!r}'))
     return successes, samples
 
 
@@ -502,7 +605,7 @@ async def run_scenario(provider, sc: Scenario):
         # the same action subset the engine gives its NPCs, so the harness tests
         # the real catalogue (not the player-only take/drop).
         mind = NpcMind(npc, provider, registry=engine.actions,
-                       offered=engine.npc_actions)
+                       offered=engine.npc_actions, act_gate=sc.act_gate)
         try:
             turn = await mind.converse("Wanderer", sc.utterance,
                                        scene=scene, addressed=sc.addressed)
@@ -528,16 +631,19 @@ async def main():
     chosen = [s for s in SCENARIOS if picks(s)]
     chosen_cmds = [s for s in COMMAND_SCENARIOS if picks(s)]
     chosen_dir = [s for s in DIRECTOR_SCENARIOS if picks(s)]
+    chosen_gate = [s for s in GATE_SCENARIOS if picks(s)]
     chosen_react = [s for s in REACT_SCENARIOS if picks(s)]
-    if not chosen and not chosen_cmds and not chosen_dir and not chosen_react:
+    if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
+                      | {t for s in GATE_SCENARIOS for t in s.tags}
                       | {t for s in REACT_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
-    total = (len(chosen) + len(chosen_cmds) + len(chosen_dir) + len(chosen_react))
+    total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
+             + len(chosen_gate) + len(chosen_react))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -579,6 +685,20 @@ async def main():
     for sc in chosen_dir:
         # Phase 3: the game-master director stages a grounded ambient beat.
         successes, samples = await run_director_scenario(provider, sc)
+        ok = successes >= sc.threshold
+        verdict = "PASS" if ok else "FAIL"
+        print(f"[{verdict}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        if not ok:
+            failed.append(sc.name)
+            for hit, detail in samples:
+                print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    for sc in chosen_gate:
+        # B8: the model-side act-gate judges whether a beat is warranted (decide,
+        # not observe). A tension pair — it must restrain on a bare scene AND still
+        # act on an evocative one.
+        successes, samples = await run_gate_scenario(provider, sc)
         ok = successes >= sc.threshold
         verdict = "PASS" if ok else "FAIL"
         print(f"[{verdict}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"

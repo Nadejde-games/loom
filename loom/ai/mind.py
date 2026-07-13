@@ -22,6 +22,17 @@ from .memory import MemoryStream
 
 MAX_ACTIONS = 3   # cap per turn: bounds execution and keeps replies focused
 
+# The two-pass act-gate (BACKLOG B5), opt-in. The local model under-selects the
+# world-mutating action (a guide asked to lead speaks of it but emits `move` only
+# ~70% of the time, substituting a cosmetic `emote`). A single blended turn makes
+# the action compete with dialogue for the model's attention; splitting it — a
+# cheap, low-temperature pass that decides the DEED alone, then a second that
+# speaks to it — lets the action be chosen on its own, where `emote` is not a
+# flavour attractor. Authoritative: the decided action IS the turn's action (the
+# plan→act split), so the move rate becomes the decision's accuracy, not the blended
+# compose's. Research-y and unproven until measured live; off by default.
+DECIDE_TEMPERATURE = 0.2
+
 
 @dataclass
 class Turn:
@@ -148,7 +159,8 @@ class NpcMind:
     def __init__(self, npc: Npc, provider: LLMProvider,
                  memory: MemoryStream | None = None,
                  registry: ActionRegistry | None = None,
-                 offered: list | None = None):
+                 offered: list | None = None,
+                 act_gate: bool = False):
         self.npc = npc
         self.provider = provider
         self.memory = memory or MemoryStream()
@@ -159,9 +171,19 @@ class NpcMind:
         # the constrained-decoding grammar are both narrowed to this same set, so
         # what the mind is told about and what it is constrained to stay one.
         self.offered = offered
+        # The two-pass act-gate (B5), opt-in (default off). When set, ``converse``
+        # decides its action in a cheap low-temp pass, then composes speech to it —
+        # so a willing guide reliably *moves*, not just talks of moving. Off keeps
+        # the single blended turn (every existing behaviour) exactly. Unproven until
+        # measured live; the game opts in only if it clears the ~70% move ceiling.
+        self.act_gate = act_gate
 
     # ---- prompt ----
-    def _system_prompt(self, scene: Scene | None = None) -> str:
+    def _base_lines(self, scene: Scene | None = None) -> list:
+        """Persona, memories, and the perceived scene — the shared head of every
+        prompt this mind builds (the blended turn, and the two-pass decision and
+        speech prompts). Ends with the stay-in-character line; each caller appends
+        its own instruction block after it."""
         p = self.npc.persona or {}
         parts = [f"You are {self.npc.name}, a character in a living text world."]
         if p.get("backstory"):
@@ -182,6 +204,10 @@ class NpcMind:
         if scene is not None:
             parts.append(self._scene_description(scene))
         parts.append("Stay in character. Never break character or mention being an AI.")
+        return parts
+
+    def _system_prompt(self, scene: Scene | None = None) -> str:
+        parts = self._base_lines(scene)
         if self.registry is not None:
             parts.append(self._action_instructions())
         else:
@@ -271,6 +297,30 @@ class NpcMind:
             heard = f'You overhear {speaker_name} say to the room: "{utterance}"'
             self.memory.add(f'{speaker_name} said to the room: "{utterance}"',
                             kind="speech")
+
+        if self.act_gate and self.registry is not None:
+            # Two-pass act-gate (B5): a cheap, low-temperature pass decides the DEED
+            # authoritatively — raising the move-when-asked rate off the blended
+            # ceiling, because the action is chosen on its own where the cosmetic
+            # emote is not a flavour attractor. The SPEECH, and the choice to stay
+            # silent (B4), stay the proven blended turn; only its action is discarded
+            # in favour of the decided one. Same two-call cost as the blended path
+            # with its retry, and every speech behaviour is preserved by construction.
+            actions = await self._decide_actions(heard, scene)
+            speech, _blended_actions = await self._blended_turn(heard, scene)
+        else:
+            speech, actions = await self._blended_turn(heard, scene)
+
+        if speech:
+            self.memory.add(f'I replied: "{speech}"', kind="speech")
+        return Turn(speech=speech, actions=actions)
+
+    async def _blended_turn(self, heard: str,
+                            scene: Scene | None) -> tuple[str, list]:
+        """The single blended turn: one constrained-envelope call (speech + actions),
+        tolerant parse, and one bounded retry. The default turn shape — and, under the
+        act-gate, the source of the spoken line (its actions discarded for the
+        decision pass's). Returns ``(speech, actions)``; records no memory."""
         system = self._system_prompt(scene)
         messages = [{"role": "user", "content": heard}]
 
@@ -300,10 +350,63 @@ class NpcMind:
             speech2, actions2, _ = self._parse_turn(raw2)
             speech = speech2 or speech      # prefer the retry's line if it has one
             actions = actions2              # invalid actions already dropped here
+        return speech, actions
 
-        if speech:
-            self.memory.add(f'I replied: "{speech}"', kind="speech")
-        return Turn(speech=speech, actions=actions)
+    # ---- the two-pass act-gate (B5): decide the deed; the blended turn speaks ----
+    def _action_decision_instructions(self) -> str:
+        return (
+            'Decide only what you DO now — not what you say. Someone nearby has just '
+            'spoken or acted. Choose the single action your character would take in '
+            'response, or none at all. This is about deeds, not words: take an action '
+            'only when the moment truly calls for changing the world — you are asked '
+            'to lead the way or to go somewhere (use "move" with a direction from '
+            'your surroundings), to hand something over ("give_item"), and so on. If '
+            'the moment calls only for words — a greeting, a question, idle talk, '
+            'something that asks nothing of you — take NO action. Stay true to your '
+            'character: a rooted or wary one acts rarely; a willing, helpful one acts '
+            'when genuinely asked. If you would lead or go, the "move" is the step '
+            'that actually takes you there — do not settle for a gesture in its place.\n'
+            'Reply with a single JSON object and nothing else: {"speech": "", '
+            '"actions": [{"name": "<action>", "args": {<named arguments>}}]}. Leave '
+            '"speech" empty — you are choosing the deed here, not the words. Put the '
+            'one action you choose in "actions", or leave it [] for no action. Never '
+            'invent actions or arguments beyond those listed.\n'
+            'Example (asked to lead or to go): {"speech": "", "actions": [{"name": '
+            '"move", "args": {"direction": "north"}}]}\n'
+            'Example (only words are called for): {"speech": "", "actions": []}\n'
+            'Available actions:\n' + self.registry.describe(self.offered)
+        )
+
+    def _decision_system(self, scene: Scene | None) -> str:
+        parts = self._base_lines(scene)
+        parts.append(self._action_decision_instructions())
+        return "\n\n".join(parts)
+
+    async def _decide_actions(self, heard: str, scene: Scene | None) -> list:
+        """Pass 1 of the act-gate: a cheap, low-temperature, constrained pass whose
+        only job is to pick the action this moment calls for (or none). Returns the
+        validated intents — the turn's *authoritative* actions. Same tolerant parse,
+        constrained grammar, and one bounded retry as the blended turn; any speech in
+        the reply is ignored (the second pass composes it)."""
+        system = self._decision_system(scene)
+        messages = [{"role": "user", "content": heard}]
+        schema = self.registry.json_schema(self.offered)
+        raw = await self.provider.complete(system, messages, schema=schema,
+                                           temperature=DECIDE_TEMPERATURE)
+        _speech, actions, errors = self._parse_turn(raw)
+        if errors:
+            correction = ("Your previous reply proposed invalid actions:\n"
+                          + "\n".join(f"- {e}" for e in errors)
+                          + "\nReply again as a single JSON object; fix or omit "
+                            "those actions.")
+            retry = messages + [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": correction},
+            ]
+            raw2 = await self.provider.complete(system, retry, schema=schema,
+                                                temperature=DECIDE_TEMPERATURE)
+            _s2, actions, _e2 = self._parse_turn(raw2)
+        return actions
 
     async def react(self, event: str, scene: Scene | None = None) -> Turn:
         """React — of the NPC's *own volition* — to something happening around it:

@@ -26,7 +26,8 @@ from typing import Protocol, runtime_checkable
 @runtime_checkable
 class LLMProvider(Protocol):
     async def complete(self, system: str, messages: list[dict],
-                       schema: dict | None = None) -> str: ...
+                       schema: dict | None = None,
+                       temperature: float | None = None) -> str: ...
 
 
 class ProviderError(RuntimeError):
@@ -66,10 +67,12 @@ class FakeProvider:
     name = "fake"
 
     async def complete(self, system: str, messages: list[dict],
-                       schema: dict | None = None) -> str:
-        # ``schema`` (the constrained-decoding grammar) is ignored: the fake has
-        # no model to constrain, and the offline suite must behave identically
-        # with or without it. Structured mode is still keyed off the prompt.
+                       schema: dict | None = None,
+                       temperature: float | None = None) -> str:
+        # ``schema`` (the constrained-decoding grammar) and ``temperature`` are
+        # both ignored: the fake has no model to constrain or to sample, and the
+        # offline suite must behave identically with or without them. Structured
+        # mode is still keyed off the prompt.
         utterance = ""
         for m in messages:
             if m.get("role") == "user":
@@ -153,14 +156,17 @@ class OpenAICompatibleProvider:
         }}
 
     async def complete(self, system: str, messages: list[dict],
-                       schema: dict | None = None) -> str:
+                       schema: dict | None = None,
+                       temperature: float | None = None) -> str:
         if self.system_suffix:
             system = f"{system}\n\n{self.system_suffix}"
         payload = {
             "model": self.model,
             "messages": [{"role": "system", "content": system}] + list(messages),
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature,
+            # A per-call override (e.g. the director's low-temp act-gate) wins over
+            # the provider's configured default; None means "use the default".
+            "temperature": self.temperature if temperature is None else temperature,
             "stream": False,
             **self.extra_body,
         }
@@ -246,16 +252,19 @@ class AnthropicProvider:
         self.name = f"anthropic:{model}"
 
     async def complete(self, system: str, messages: list[dict],
-                       schema: dict | None = None) -> str:
+                       schema: dict | None = None,
+                       temperature: float | None = None) -> str:
         # ``schema`` is accepted for interface parity but not applied here:
         # Claude's structured-output path is tool-use, not ``response_format``.
         # Until that graduates, the mind's validate-and-retry stays this
         # provider's shape guarantee — defense-in-depth, never dropped silently.
+        extra = {} if temperature is None else {"temperature": temperature}
         resp = await self._client.messages.create(
             model=self.model,
             max_tokens=self.max_tokens,
             system=system,
             messages=messages,
+            **extra,
         )
         return "".join(
             b.text for b in resp.content if getattr(b, "type", "") == "text"

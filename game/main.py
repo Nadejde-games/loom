@@ -40,8 +40,14 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     # in the world (a storm the director raises) or each other's words and deeds —
     # of their own volition, cascading among themselves under the engine's rails
     # (B9). A framework capability we opt into here; NPCs are not puppets.
+    # npc_act_gate (B5): a cheap low-temp pass decides each NPC's action before the
+    # blended turn speaks, so a willing guide reliably *moves* when asked (raising the
+    # ~70% blended ceiling — measured 8/8 gated, with silence/give/perception all
+    # preserved). On here; LOOM_NPC_ACT_GATE=0 to disable. Costs a second model call
+    # per engaged NPC turn (bounded by salience — only engaged NPCs pay it).
+    npc_gate = os.environ.get("LOOM_NPC_ACT_GATE", "1") not in ("0", "", "false")
     engine = Engine(world, provider, start_location=start,
-                    autonomous_reactions=True)
+                    autonomous_reactions=True, npc_act_gate=npc_gate)
     loop = GameLoop(tick_seconds=5.0)  # ambient world systems hang off here
     server = GameServer(engine, host=host, port=port)
 
@@ -58,18 +64,26 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     # Off-screen staging (B9): let the director see and foreshadow into the empty
     # rooms just ahead of the players. On here; LOOM_DIRECTOR_FORESHADOW=0 to disable.
     foreshadow = os.environ.get("LOOM_DIRECTOR_FORESHADOW", "1") not in ("0", "", "false")
+    # The model-side act-gate (B8): a cheap low-temp wait/act decision before each
+    # activity-driven beat, so the director stages only when the moment truly calls
+    # for it. Proven live (bare scene 8/8 wait, evocative 8/8 act; behavior_probe
+    # director.restraint / director.gate-acts-on-cue) — on here. LOOM_DIRECTOR_ACT_GATE=0
+    # to disable and fall back to the deterministic-only restraint. (Scoped to the
+    # activity path; the lull floor stays deterministic — the model would silence it.)
+    act_gate = os.environ.get("LOOM_DIRECTOR_ACT_GATE", "1") not in ("0", "", "false")
     # The GM persona is world content — authored in world.json ("director" block),
     # captured into world.meta by the loader — not baked into this entry point.
     persona = world.meta.get("director")
     engine.attach_director(loop, persona=persona,
                            provider=gm_provider, period_ticks=period,
                            min_new_events=min_events, cooldown_pulses=cooldown,
-                           lull_pulses=lull, foreshadow=foreshadow)
+                           lull_pulses=lull, foreshadow=foreshadow, act_gate=act_gate)
     gm_name = getattr(gm_provider or provider, "name", "engine provider")
     print(f"[game] game-master director: every {period} ticks "
           f"(>= {min_events} new events, >= {cooldown} pulses apart"
           + (f", or a {lull}-pulse lull" if lull else "")
-          + (", foreshadowing ahead" if foreshadow else "") + f"), via {gm_name}")
+          + (", foreshadowing ahead" if foreshadow else "")
+          + (", act-gated" if act_gate else "") + f"), via {gm_name}")
 
     # The world-clock: the world's own time, advancing on the loop whether or not
     # anyone is present (B9). Time-of-day turns through a table authored in the

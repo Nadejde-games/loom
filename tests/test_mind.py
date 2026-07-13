@@ -7,7 +7,7 @@ import unittest
 from loom.world.entity import Npc
 from loom.action import default_registry
 from loom.ai import FakeProvider
-from loom.ai.mind import NpcMind, Scene
+from loom.ai.mind import NpcMind, Scene, DECIDE_TEMPERATURE
 
 
 def run(coro):
@@ -19,11 +19,13 @@ class ScriptedProvider:
     def __init__(self, replies):
         self.replies = list(replies)
         self.calls = []
-        self.schemas = []   # the constraint schema passed on each call (or None)
+        self.schemas = []        # the constraint schema passed on each call (or None)
+        self.temperatures = []   # the per-call temperature (act-gate spy)
 
-    async def complete(self, system, messages, schema=None):
+    async def complete(self, system, messages, schema=None, temperature=None):
         self.calls.append((system, messages))
         self.schemas.append(schema)
+        self.temperatures.append(temperature)
         return self.replies.pop(0)
 
 
@@ -272,6 +274,73 @@ class OfferedSubsetTests(unittest.TestCase):
         p = ScriptedProvider(['{"speech":"Hi.","actions":[]}'])
         run(self._mind(p, ["emote"]).converse("W", "hello"))
         self.assertEqual(p.schemas[0], default_registry().json_schema(["emote"]))
+
+
+class ActGateTests(unittest.TestCase):
+    """B5 two-pass act-gate (opt-in): a cheap low-temp pass decides the action
+    authoritatively, while the proven blended turn supplies the speech (its own
+    action discarded). The blended single-pass path (every test above) is unchanged;
+    this proves the split path preserves speech behaviour and raises the deed."""
+
+    D_MOVE = '{"speech":"","actions":[{"name":"move","args":{"direction":"north"}}]}'
+    D_NONE = '{"speech":"","actions":[]}'
+
+    def _gated(self, provider):
+        npc = Npc(id="odd", name="Odd", persona={"voice": "terse"})
+        return NpcMind(npc, provider, registry=default_registry(), act_gate=True)
+
+    def test_decision_action_wins_blended_speech_is_kept(self):
+        # The decision picks move; the blended turn's OWN action (an emote) is
+        # discarded, but its spoken line is kept — the decision is authoritative.
+        blended = ('{"speech":"This way — follow me.","actions":'
+                   '[{"name":"emote","args":{"text":"grins"}}]}')
+        p = ScriptedProvider([self.D_MOVE, blended])
+        turn = run(self._gated(p).converse("W", "lead me north"))
+        self.assertEqual(len(p.calls), 2)                    # decide, then blended
+        self.assertEqual([a.name for a in turn.actions], ["move"])   # from the decision
+        self.assertEqual(turn.actions[0].args, {"direction": "north"})
+        self.assertEqual(turn.speech, "This way — follow me.")       # from the blended turn
+
+    def test_decision_is_low_temp_blended_is_default_both_constrained(self):
+        p = ScriptedProvider([self.D_MOVE, '{"speech":"Onward.","actions":[]}'])
+        run(self._gated(p).converse("W", "lead me north"))
+        schema = default_registry().json_schema()
+        self.assertEqual(p.temperatures[0], DECIDE_TEMPERATURE)   # decision: low temp
+        self.assertEqual(p.schemas[0], schema)                    # decision constrained
+        self.assertIsNone(p.temperatures[1])                 # blended: default temp
+        self.assertEqual(p.schemas[1], schema)               # blended still constrained
+
+    def test_decision_pass_is_deed_focused_blended_keeps_silence_lever(self):
+        p = ScriptedProvider([self.D_MOVE, '{"speech":"Onward.","actions":[]}'])
+        run(self._gated(p).converse("W", "lead me north"))
+        decision_system, blended_system = p.calls[0][0], p.calls[1][0]
+        self.assertIn("Decide only what you DO", decision_system)  # pass 1: the deed
+        self.assertIn("Available actions", decision_system)        # with the catalogue
+        # pass 2 is the ordinary blended turn, with its B4 silence machinery intact.
+        self.assertIn("Available actions", blended_system)
+        self.assertIn("Example (choosing silence", blended_system)
+
+    def test_silence_when_no_action_and_blended_stays_quiet(self):
+        p = ScriptedProvider([self.D_NONE, '{"speech":"","actions":[]}'])
+        turn = run(self._gated(p).converse("W", "what a grey sky", addressed=False))
+        self.assertTrue(turn.is_silent)
+        self.assertEqual(turn.actions, [])
+
+    def test_gate_off_stays_single_pass(self):
+        good = '{"speech":"Hi.","actions":[{"name":"emote","args":{"text":"nods"}}]}'
+        p = ScriptedProvider([good, "unused"])
+        turn = run(mind(p).converse("W", "hello"))           # mind() = gate off
+        self.assertEqual(len(p.calls), 1)                    # one blended call
+        self.assertEqual(turn.speech, "Hi.")
+        self.assertEqual([a.name for a in turn.actions], ["emote"])
+
+    def test_gated_with_fake_yields_move_and_speech(self):
+        # End-to-end shape offline: the decision picks move (departure cue + a real
+        # exit), the blended turn speaks — a guaranteed move plus a line.
+        turn = run(self._gated(FakeProvider()).converse(
+            "W", "please leave", scene=Scene(location="A", exits=["north"])))
+        self.assertEqual([a.name for a in turn.actions], ["move"])
+        self.assertTrue(turn.speech)
 
 
 if __name__ == "__main__":

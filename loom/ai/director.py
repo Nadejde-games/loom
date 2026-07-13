@@ -27,11 +27,30 @@ from dataclasses import dataclass, field
 from ..action import ActionRegistry
 from .provider import LLMProvider
 from .memory import MemoryStream
-from .mind import Turn, parse_turn
+from .mind import Turn, parse_turn, _extract_json
 
 # How many recent chronicle lines the director reads as its digest of "what
 # changed" each beat. Bounded so the prompt stays lean even on a busy world.
 DIGEST_LINES = 24
+
+# The act-gate (BACKLOG B8/B5), opt-in. A cheap, low-temperature, tightly
+# constrained pass — "does this exact moment need a beat, or wait?" — run before
+# the full compose is paid for. The local model, asked to *compose*, stages on
+# nearly every pulse (it under-weights 'do nothing'); asked this one narrow
+# question at low temperature with 'wait' the primed default, it may restrain.
+# RESEARCH-Y and unproven — measured live before it is trusted (behavior_probe
+# director.restraint); ships off until it demonstrably discriminates.
+ACT_GATE_TEMPERATURE = 0.2
+_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        # "wait" first so the low-temperature default token is restraint, not act.
+        "decision": {"type": "string", "enum": ["wait", "act"]},
+        "reason": {"type": "string"},
+    },
+    "required": ["decision", "reason"],
+    "additionalProperties": False,
+}
 
 
 class DirectorMind:
@@ -167,6 +186,72 @@ class DirectorMind:
             self.memory.add(f"I mused: {speech}", kind="director")
         return Turn(speech=speech, actions=actions)
 
+    # ---- the act-gate: judge *whether* to beat before composing one ----
+    def _decision_prompt(self, chronicle: str, snapshot: str) -> str:
+        """A deliberately *lean* prompt for the act-gate — persona tone and goals, the
+        same perception the compose call reads, and one narrow instruction. It carries
+        NO action catalogue and no envelope examples: the gate decides only
+        wait-or-act, so it stays cheap. Used only on the *activity* path (the lull is a
+        deterministic floor, not a thing to restrain — see ``Director._run_beat``)."""
+        p = self.persona
+        parts = [
+            f"You are {self.name}, the unseen game-master of a living text world — a "
+            "watcher who shapes the scene only rarely, and only ever its atmosphere. "
+            "You are not composing anything now; you are making one small judgment: "
+            "would this exact moment be deepened by a touch from you, or is it better "
+            "left alone?"
+        ]
+        if p.get("tone"):
+            parts.append("Tone of the world: " + str(p["tone"]))
+        if p.get("goals"):
+            # The gate judges against what the director is *for* — atmosphere and
+            # small omens — not a generic 'intervene only if something is broken' bar.
+            parts.append("What you are shaping toward: " + ", ".join(p["goals"]))
+        mems = self.memory.recent()
+        if mems:
+            parts.append("Beats you have recently set (do not crowd them):\n"
+                         + "\n".join(f"- {m.text}" for m in mems))
+        parts.append("What has happened recently, oldest first:\n" + chronicle)
+        parts.append("The world right now:\n" + snapshot)
+        parts.append(
+            "Judge whether one small beat would deepen THIS moment. You shape "
+            "atmosphere and small omens — you never fix problems or move the "
+            "story, the characters do that. The test is whether the scene gives "
+            "you something specific and present to answer: words exchanged, a "
+            "question left hanging, characters reacting to one another, a tension "
+            "held between them. When it does, a single atmospheric touch — a "
+            "sound, a shift of light, an omen — can answer it: act. When it does "
+            "not — only an arrival, a pause, nothing yet stirring — wait; someone "
+            "merely entering a place is ordinary, not a cue, and an omen laid on "
+            "an empty moment is noise, not atmosphere. Prefer to wait unless the "
+            "scene hands you something to answer.")
+        parts.append(
+            'Reply with a single JSON object and nothing else: '
+            '{"decision": "wait" or "act", "reason": "<a few words>"}. '
+            '"wait" means do nothing this moment; "act" means one beat is warranted now.')
+        return "\n\n".join(parts)
+
+    async def decide(self, chronicle: str, snapshot: str) -> tuple[bool, str]:
+        """The act-gate (B8): a cheap, low-temperature, constrained wait/act pass run
+        *before* the full ``observe`` compose, so only a warranted moment pays for
+        generation. Returns ``(act, reason)``.
+
+        Scoped to the *activity* path (the ``Director`` does not call it on a lull —
+        the lull is a liveliness floor, and the model judges a quiet scene 'leave it',
+        which would kill the floor). On any parse failure the gate returns
+        ``(False, ...)`` — it fails *toward silence*, the whole point of a restraint gate.
+        """
+        system = self._decision_prompt(chronicle, snapshot)
+        nudge = "Make the call for this moment: wait, or act?"
+        messages = [{"role": "user", "content": nudge}]
+        raw = await self.provider.complete(system, messages,
+                                           schema=_DECISION_SCHEMA,
+                                           temperature=ACT_GATE_TEMPERATURE)
+        obj = _extract_json(raw) or {}
+        decision = str(obj.get("decision", "")).strip().lower()
+        reason = str(obj.get("reason", "")).strip()
+        return (decision == "act"), reason
+
 
 @dataclass(frozen=True)
 class _DirectorActor:
@@ -195,7 +280,8 @@ class Director:
     def __init__(self, engine, mind: DirectorMind, *, period_ticks: int = 12,
                  name: str = "the Director", digest_lines: int = DIGEST_LINES,
                  min_new_events: int = 3, cooldown_pulses: int = 2,
-                 lull_pulses: int = 0, foreshadow: bool = False) -> None:
+                 lull_pulses: int = 0, foreshadow: bool = False,
+                 act_gate: bool = False) -> None:
         self.engine = engine
         self.mind = mind
         self.period_ticks = max(1, period_ticks)
@@ -220,6 +306,12 @@ class Director:
         # into them (a standing condition that outlasts the walk). Off keeps the
         # snapshot to occupied rooms only, exactly as before.
         self.foreshadow = bool(foreshadow)
+        # The model-side act-gate (B8), opt-in (default off). When set, a warranted
+        # pulse first pays for a cheap, low-temp wait/act decision (mind.decide) and
+        # composes only on 'act' — the model judging the specific moment, layered
+        # AFTER the deterministic ceiling/floor above. Off keeps the exact prior
+        # behaviour (every warranted pulse composes). Unproven until measured live.
+        self.act_gate = bool(act_gate)
         self.actor = _DirectorActor(name=name)
         self._ticks = 0
         self._running = False
@@ -287,6 +379,22 @@ class Director:
         acting_on = chron.seq       # what this beat is a response to
         digest = chron.render(self.digest_lines)
         snapshot = self.engine.world_snapshot(include_adjacent=self.foreshadow)
+        # The act-gate (B8), opt-in, scoped to the ACTIVITY path: before paying for a
+        # full beat when something has happened, ask the model the one narrow question
+        # — is a beat warranted right now? — at low temperature with 'wait' primed. On
+        # 'wait' the director stays its hand. The lull path is deliberately NOT gated:
+        # it is a liveliness *floor* (B9), and the model judges a quiet scene 'leave it'
+        # (measured 8/8) — the very deadness the floor exists to prevent — so a restraint
+        # gate must not sit on it.
+        if self.act_gate and reason == "activity":
+            act, _reason = await self.mind.decide(digest, snapshot)
+            if not act:
+                # The model judged this moment needs nothing. Mark the events seen so
+                # the same ones do not re-trigger, but do NOT count this as a beat:
+                # leave the cooldown untouched so a genuinely new moment is not delayed
+                # by a decision to wait (a 'wait' is restraint, not an intervention).
+                self._last_seq = max(acting_on, chron.seq)
+                return
         turn = await self.mind.observe(digest, snapshot, lull=(reason == "lull"),
                                        foreshadow=self.foreshadow)
         # The director's "speech" is a private note, never broadcast; only its

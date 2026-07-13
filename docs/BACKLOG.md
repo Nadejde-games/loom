@@ -194,8 +194,28 @@ be **choice on the NPC's side** whether (and when) to respond.
 
 ---
 
-## B5 — The model under-selects world-mutating actions (move) vs. emote
+## B5 — The model under-selects world-mutating actions (move) vs. emote  — DONE 2026-07-13 (two-pass act-gate)
 *Noticed 2026-07-10.*
+
+**Update 2026-07-13 — RESOLVED by the two-pass act-gate.** The structural lever the
+prompt tweaks could not reach is built: `NpcMind(act_gate=…)` (opt-in). When on,
+`converse` runs two passes — a cheap, low-temperature, constrained pass that decides
+the *deed* alone (where the cosmetic `emote` is not a flavour attractor competing with
+dialogue), then the *proven blended turn* supplies the spoken line, its own action
+discarded for the decided one. So the action is **authoritative** from the focused pass
+(the plan→act split), and the move-when-asked rate becomes the decision's accuracy, not
+the blended compose's. Measured live on `qwen3.5:35b-a3b`: **move-when-asked 8/8 gated
+vs ~6/8 (~70%) blended** — the ceiling cleared — while every other behaviour held
+(silence 5/5, give_item 5/5, ground-items 3/3, no over-eager move on idle chatter 4/4).
+A first cut used a *dedicated* speech pass told the decided deed; it regressed silence
+(the reticent hermit spoke 5/5 where it should often stay quiet), so the speech was
+handed back to the blended turn — which owns the B4 silence machinery — and silence was
+restored. Same two-call cost as the blended path with its retry (bounded by salience —
+only engaged NPCs pay it). Guarded by `move.guide-leads-gated` +
+`move.guide-no-idle-move-gated` + regression guards (`silence.*-gated`,
+`give.*-gated`, `perception.*-gated`). Wired through `Engine(npc_act_gate=…)`; the game
+defaults it **on** (`LOOM_NPC_ACT_GATE`). The director's binary act-gate (B8) proved the
+machinery; this is its *authoritative-action* variant for the NPC selection fault.
 
 **Status (2026-07-12): partly landed — prompt levers applied, honest ceiling
 measured, and now GUARDED by the behavioral harness.**
@@ -215,11 +235,14 @@ measured, and now GUARDED by the behavioral harness.**
   (`scripts/behavior_probe.py`, `move.*`) now guards it — the threshold catches a
   *collapse* or a regression, not to force the model higher. In real play the
   effective rate runs higher (accumulating memory makes an NPC repeat its move).
-- **Still open (the real B5 lever):** raising the ceiling above ~70% needs a
-  structural change, not another prompt tweak — a two-pass turn (a cheap, low-temp
-  "act? and how?" decision, then the speech) or a more capable model. Deferred.
-  Note lowering temperature alone would entrench the *emote* mode on some
-  phrasings, so it is not the lever.
+- ~~**Still open (the real B5 lever)**~~ — **DONE 2026-07-13** (see the resolution
+  note at the top of B5). Raising the ceiling above ~70% needed a structural change,
+  not another prompt tweak — the two-pass turn: a cheap, low-temp constrained pass
+  decides the deed, then the blended turn speaks. The *director* proved the two-pass
+  machinery first (B8, `DirectorMind.decide`); B5's variant makes the decided action
+  **authoritative** (rather than the director's binary wait/act) — the honest fix for
+  a *selection* fault. Note lowering temperature alone would entrench the *emote* mode
+  on some phrasings, so it was never the lever.
 
 **Want:** when an NPC's *intent* is to act on the world (e.g. a guide asked to
 lead should **walk**), it should reliably emit that action — not settle for a
@@ -353,8 +376,38 @@ takes a beat nearly every time. Proven: a model that *always* stages was held to
 ~7 beats over 20 pulses; three new offline tests guard the gate. Also fixed a
 perception gap found here — NPC *speech* is now recorded to the chronicle (only
 NPC actions were), so the director perceives conversation, not just movement.
-**Still open:** making the director *choose* wisely (not just be rate-limited) —
-the model-side two-pass "should I act?" pass below, shared with B5.
+**Still open (until 2026-07-13):** making the director *choose* wisely (not just be
+rate-limited) — the model-side two-pass "should I act?" pass below.
+
+**Update 2026-07-13 — the model-side act-gate has landed, been measured, and works.**
+The open lever is built: `DirectorMind.decide` — a cheap, low-temperature (0.2),
+tightly-constrained *wait/act* pass run *before* the full compose, layered **after**
+the deterministic ceiling/floor (so nothing regresses; opt-in, off by default via
+`attach_director(act_gate=…)` / `LOOM_DIRECTOR_ACT_GATE`). The whole open question was
+whether asking the same over-staging model "should you act?" would simply yield "yes"
+too — it does **not**. Measured live on `qwen3.5:35b-a3b`: on the exact bare scene the
+ungated director staged 6/6, the gate now judges **wait 8/8**; on an evocative scene it
+still **acts 8/8**. The lever is real but the band is narrow — two framings bracketed it
+(an over-restraint frame gave bare 8/8-wait but evocative only 2/8-act; an enrichment
+frame gave the inverse), and holding both poles at once took a concrete *discriminator*
+("someone merely entering a place is ordinary, not a cue; act only when the scene hands
+you something to answer") **plus** feeding the gate the director's own *goals* so it
+judges against what the director is *for* (atmosphere), not a generic "intervene only if
+broken" bar. Verified E2E through the real orchestrator: a bare pulse drew no beat; an
+evocative exchange earned one grounded, in-tone omen. Now GUARDED by a behavioral
+*tension pair* (`director.restraint` + `director.gate-acts-on-cue`) — a collapse to
+always-act OR always-wait fails one of them. Cost note: on a "wait" the gate *saves* the
+full compose (a tiny decision call instead), so on a world that should mostly wait it is
+cheaper, not dearer. **The NPC `move` ceiling (B5) is a *typed* variant of this same
+machinery — deferred until wanted** (the binary gate does not fix a *selection* fault;
+see B5). **Scoped to the *activity* path:** a first cut gated the B9 lull too, but
+`decide` on a quiet lull scene judged 'wait' 8/8 — the model would silence the very
+liveliness floor the lull exists to be. So the gate governs only activity-driven beats
+and the lull stays a *deterministic* floor. (This retires the earlier hope, in the note
+just below, that a shared gate would make the lull judgment-based — measured false: on
+this model, a judgment-based lull is a dead lull.) The framework default stays **off**
+(nothing regresses); the **game now opts in** (`LOOM_DIRECTOR_ACT_GATE`, default on) —
+the capability is proven and, on a 'wait', cheaper than composing.
 
 **Update 2026-07-12 — reconciled with B9's lull.** The B9 lull trigger (a liveliness
 *floor* — stir a quiet room after N idle pulses) is the natural counter-force to this
@@ -386,11 +439,12 @@ is weighted/primed) and, structurally, the director's turn shape. Not a grammar
 issue (the empty turn is already valid and reachable); a *selection* issue.
 
 **Considerations for later:**
-- **A two-pass director turn** — a cheap, low-temp "is a beat warranted right
-  now?" gate before composing one. This is the *same* lever B5 wants (a
-  should-I-act? pass distinct from the act), and the TaleWeave spike's two-phase
-  plan→act split is the pattern. A shared "act gate" could serve both the NPC
-  `move` ceiling and the director's restraint.
+- ~~**A two-pass director turn**~~ — **DONE 2026-07-13** (`DirectorMind.decide`; see
+  the update above). A cheap, low-temp "is a beat warranted right now?" gate before
+  composing one — the TaleWeave two-phase plan→act split, generalized. Proven live to
+  restrain the director without collapsing it (bare 8/8 wait, evocative 8/8 act). The
+  NPC `move` ceiling (B5) would reuse the same machinery with a *typed* decision, not
+  this binary one — deferred until wanted.
 - **A cooldown / budget in the orchestrator** (`Director`), independent of the
   model — DONE 2026-07-12: `min_new_events` + `cooldown_pulses` require both M new
   chronicle events and N pulses since the last beat. Cheap, deterministic, tested.
@@ -399,9 +453,12 @@ issue (the empty turn is already valid and reachable); a *selection* issue.
 - **Salience for the director** — reuse the B4 idea: score whether the recent
   chronicle actually *calls* for a beat (a lull, a player stuck, a dramatic turn)
   rather than pulsing on any change.
-- Currently **not gated** by the behavioral harness — restraint is not a verified
-  working behavior, and the discipline is one scenario per *verified* behavior. Add
-  a `director.restraint` scenario once a lever above makes it real.
+- ~~Currently **not gated** by the behavioral harness~~ — **now gated (2026-07-13).**
+  The act-gate made restraint a verified behavior, so it entered the harness as a
+  *tension pair*: `director.restraint` (a bare scene → the gate waits) AND
+  `director.gate-acts-on-cue` (an evocative scene → the gate still acts). Testing
+  both poles is deliberate — a gate that always waits would pass the first alone and
+  read as "restraint working" when the director had simply gone dead.
 
 **Related:** Phase 3 (director), B5 (the same action-selection ceiling / two-pass
 lever), B4 (salience gate — choosing whether to engage).
