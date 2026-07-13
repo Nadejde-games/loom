@@ -55,7 +55,8 @@ class DirectorMind:
         self.name = name
 
     # ---- prompt ----
-    def _system_prompt(self, chronicle: str, snapshot: str) -> str:
+    def _system_prompt(self, chronicle: str, snapshot: str,
+                       foreshadow: bool = False) -> str:
         p = self.persona
         parts = [
             f"You are {self.name}, the unseen game-master of a living text world. "
@@ -76,8 +77,18 @@ class DirectorMind:
             parts.append("Beats you have recently set:\n"
                          + "\n".join(f"- {m.text}" for m in mems))
         parts.append("What has happened recently, oldest first:\n" + chronicle)
-        parts.append("The world right now (only places with someone present):\n"
-                     + snapshot)
+        label = ("The world right now (places with someone present, and any empty "
+                 "places just ahead of them):" if foreshadow
+                 else "The world right now (only places with someone present):")
+        parts.append(label + "\n" + snapshot)
+        if foreshadow:
+            parts.append(
+                "A place marked [ahead, empty] is next to the wanderers but has no "
+                "one in it yet — the way they may walk next. You may quietly "
+                "foreshadow there, rarely, to reward the step: prefer something "
+                "that lasts (a standing condition) over a one-off line, since no "
+                "one is there yet to hear a passing beat. Shaping the place the "
+                "wanderers are already in still comes first.")
         parts.append(self._action_instructions())
         return "\n\n".join(parts)
 
@@ -105,18 +116,32 @@ class DirectorMind:
         )
 
     # ---- turn ----
-    async def observe(self, chronicle: str, snapshot: str) -> Turn:
+    async def observe(self, chronicle: str, snapshot: str,
+                      lull: bool = False, foreshadow: bool = False) -> Turn:
         """Read the world and return a validated ``Turn`` — usually silent (an
         empty turn = watch and do nothing), occasionally one staged beat.
 
         Mirrors ``NpcMind.converse``: a constrained call (a malformed envelope is
         impossible at the token level), a tolerant parse, and one bounded retry
         feeding the exact validation error back before dropping anything invalid.
+
+        ``lull`` marks a beat prompted by the world having gone *quiet* (B9) rather
+        than by fresh activity — the nudge then asks for a gentler, lower-key touch,
+        since there is nothing that just happened to answer. ``foreshadow`` tells
+        the prompt the snapshot includes the empty rooms just ahead of the players,
+        which the director may shape before they arrive (B9).
         """
-        system = self._system_prompt(chronicle, snapshot)
-        nudge = ("A quiet moment passes over the world. Decide whether a single "
-                 "small beat would make it feel more alive right now; if not, do "
-                 "nothing.")
+        system = self._system_prompt(chronicle, snapshot, foreshadow=foreshadow)
+        if lull:
+            nudge = ("The scene has gone quiet — no one has stirred it for a "
+                     "while. If a single small, low-key beat would keep it from "
+                     "going lifeless, set it now; otherwise do nothing. Keep it "
+                     "gentle — a sound, a shift of light, a small sign — never a "
+                     "dramatic intrusion.")
+        else:
+            nudge = ("A quiet moment passes over the world. Decide whether a "
+                     "single small beat would make it feel more alive right now; "
+                     "if not, do nothing.")
         messages = [{"role": "user", "content": nudge}]
         schema = (self.registry.json_schema(self.offered)
                   if self.registry is not None else None)
@@ -159,14 +184,18 @@ class Director:
     A tick system (register via ``install``): every ``period_ticks`` ticks it
     considers a beat, but only if something has actually happened since its last
     beat and at least one player is present — otherwise it spends no model call.
-    Each beat runs on a background task so a slow reading never stalls the loop,
-    and it never overlaps itself. A broken beat is logged, never fatal; the loop's
-    own guard is the final backstop.
+    With the lull trigger enabled (B9, opt-in), it will *also* stir a quiet room
+    now and then — a gentle beat on a slow floor — so a still world does not go
+    dead between the sparser things that stir it (a player, the world-clock). Each
+    beat runs on a background task so a slow reading never stalls the loop, and it
+    never overlaps itself. A broken beat is logged, never fatal; the loop's own
+    guard is the final backstop.
     """
 
     def __init__(self, engine, mind: DirectorMind, *, period_ticks: int = 12,
                  name: str = "the Director", digest_lines: int = DIGEST_LINES,
-                 min_new_events: int = 3, cooldown_pulses: int = 2) -> None:
+                 min_new_events: int = 3, cooldown_pulses: int = 2,
+                 lull_pulses: int = 0, foreshadow: bool = False) -> None:
         self.engine = engine
         self.mind = mind
         self.period_ticks = max(1, period_ticks)
@@ -179,6 +208,18 @@ class Director:
         # last beat) AND enough breathing room (cooldown_pulses pulses since it).
         self.min_new_events = max(1, min_new_events)
         self.cooldown_pulses = max(1, cooldown_pulses)
+        # The lull trigger (B9), opt-in (0 = off). If the scene stays quiet for
+        # this many director pulses since the last beat — far longer than the
+        # cooldown — allow one gentle, low-key beat anyway, so a still room does not
+        # go dead. A liveliness *floor* that complements the activity *ceiling*
+        # (min_new_events / cooldown) above, on its own slow cadence. The game opts
+        # in (LOOM_DIRECTOR_LULL); off keeps the exact prior B8 restraint behaviour.
+        self.lull_pulses = max(0, lull_pulses)
+        # Off-screen staging (B9), opt-in: when set, the director's snapshot also
+        # carries the empty rooms just ahead of the players, and it may foreshadow
+        # into them (a standing condition that outlasts the walk). Off keeps the
+        # snapshot to occupied rooms only, exactly as before.
+        self.foreshadow = bool(foreshadow)
         self.actor = _DirectorActor(name=name)
         self._ticks = 0
         self._running = False
@@ -192,17 +233,19 @@ class Director:
 
     async def tick(self, dt: float) -> None:
         """The loop callback. Counts ticks; on the period, decides whether to run
-        a beat. Cheap: the model is only consulted when enough has changed, enough
-        time has passed, and someone is present to see the result."""
+        a beat. Cheap: the model is only consulted when a beat is warranted —
+        because enough has changed (the activity path) or the scene has gone quiet
+        long enough (the lull path) — and someone is present to see the result."""
         self._ticks += 1
         if self._ticks < self.period_ticks or self._running:
             return
         self._ticks = 0
         self._pulses_since_beat += 1        # a pulse: an opportunity to act
-        if not self._should_beat():
+        reason = self._beat_reason()
+        if reason is None:
             return
         self._running = True
-        task = asyncio.create_task(self._guarded_beat())
+        task = asyncio.create_task(self._guarded_beat(reason))
         # Track on the engine so shutdown can await/cancel in-flight work, mirroring
         # how NPC replies are tracked; harmless if the engine has no such set.
         tasks = getattr(self.engine, "_tasks", None)
@@ -210,32 +253,42 @@ class Director:
             tasks.add(task)
             task.add_done_callback(tasks.discard)
 
-    def _should_beat(self) -> bool:
+    def _beat_reason(self) -> str | None:
+        """Why (and whether) to beat this pulse: ``"activity"`` (enough new events
+        to warrant a beat), ``"lull"`` (the scene has stayed quiet long enough that
+        a gentle beat keeps it alive — opt-in via ``lull_pulses``), or ``None`` (do
+        nothing, spending no model call). Both paths still require an audience and
+        the cooldown's breathing room."""
         chron = getattr(self.engine, "chronicle", None)
         if chron is None:
-            return False
+            return None
         if not getattr(self.engine, "players", None):
-            return False            # no audience — no reason to spend a call
+            return None             # no audience — no reason to spend a call
         if self._pulses_since_beat < self.cooldown_pulses:
-            return False            # too soon since the last beat — let it breathe
-        if len(chron.since(self._last_seq)) < self.min_new_events:
-            return False            # too little has happened to warrant a beat
-        return True
+            return None             # too soon since the last beat — let it breathe
+        if len(chron.since(self._last_seq)) >= self.min_new_events:
+            return "activity"       # enough has happened to warrant a beat
+        # The lull path (B9), off unless lull_pulses > 0: the scene has gone quiet
+        # for long enough that a small low-key beat keeps it from going dead.
+        if self.lull_pulses and self._pulses_since_beat >= self.lull_pulses:
+            return "lull"
+        return None                 # too little has happened, and not yet a lull
 
-    async def _guarded_beat(self) -> None:
+    async def _guarded_beat(self, reason: str) -> None:
         try:
-            await self._run_beat()
+            await self._run_beat(reason)
         except Exception as exc:    # a bad beat must never break the loop
             print(f"[loom] director beat failed: {exc!r}")
         finally:
             self._running = False
 
-    async def _run_beat(self) -> None:
+    async def _run_beat(self, reason: str) -> None:
         chron = self.engine.chronicle
         acting_on = chron.seq       # what this beat is a response to
         digest = chron.render(self.digest_lines)
-        snapshot = self.engine.world_snapshot()
-        turn = await self.mind.observe(digest, snapshot)
+        snapshot = self.engine.world_snapshot(include_adjacent=self.foreshadow)
+        turn = await self.mind.observe(digest, snapshot, lull=(reason == "lull"),
+                                       foreshadow=self.foreshadow)
         # The director's "speech" is a private note, never broadcast; only its
         # validated actions touch the world, through the same seam as everyone.
         for intent in turn.actions:

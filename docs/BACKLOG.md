@@ -356,6 +356,15 @@ NPC actions were), so the director perceives conversation, not just movement.
 **Still open:** making the director *choose* wisely (not just be rate-limited) —
 the model-side two-pass "should I act?" pass below, shared with B5.
 
+**Update 2026-07-12 — reconciled with B9's lull.** The B9 lull trigger (a liveliness
+*floor* — stir a quiet room after N idle pulses) is the natural counter-force to this
+*ceiling*, and the two were built to *balance*, not fight: the ceiling is on
+activity-driven beats, the floor applies only in the *absence* of activity, and the
+lull is opt-in so this restraint behaviour is preserved exactly when off. The
+model-side act-gate below would upgrade *both* — restraint (usually "no") and the
+lull (occasionally "yes") are two answers to the same "is a beat warranted now?"
+question, so a shared gate closes this and makes the lull judgment-based at once.
+
 **Want:** the game-master director should intervene *sparingly* — most slow
 pulses the world needs nothing from it, and it should reply with an empty turn
 (watch and do nothing). The prompt says exactly this ("intervene sparingly; most
@@ -399,8 +408,20 @@ lever), B4 (salience gate — choosing whether to engage).
 
 ---
 
-## B9 — The director is reactive, not autonomous (no ambient life on its own)
+## B9 — The director is reactive, not autonomous (no ambient life on its own)  — RESOLVED 2026-07-12 (line drawn); idle-NPC autonomy moved to Phase 5
 *Noticed 2026-07-12 (playing the Phase 3 director).*
+
+**CLOSED 2026-07-12.** Four slices landed (world-clock, director lull, off-screen
+staging, weather; details below). The remaining thread — *purely unprompted* NPC
+initiative (idle-NPC autonomy) — was **decided into Phase 5** (2026-07-12): B9's thesis
+("the world feels alive when the player is idle") is already met, since an idle room now
+breathes (time turns, weather wanders, the director stirs on a lull) *and* the NPCs stir
+by **reacting** to all of it through the cascade. What's left is only unprompted
+initiative, whose *quality* depends on Phase 5 mind depth (reflection, evolving goals,
+plans) and the model-side act-gate (the local model over-acts, B5/B8), so a naive idle
+trigger now would risk a noisy/mechanical room. A thin "NPC lull-stir" mechanism (the
+NPC-side mirror of the director lull, reusing `_deliver_turn` + the cascade) remains a
+cheap drop-in if wanted, but it is a *refinement*, not a gap. See Phase 5 in `docs/PLAN.md`.
 
 **Frames the settled design decision (PLAN, Phase 3): the director shapes the
 *world*, not minds; NPCs react on their own.** This item is that principle's
@@ -421,6 +442,23 @@ player-driven — so a *still* room (no one typing, no director beat) still prod
 nothing. A **world-clock / lull** that writes to the chronicle on its own is the
 remaining work, plus (at scale, deferred) a cheap deterministic salience *pre-gate*
 before the model when a room is crowded.
+
+**Update 2026-07-12 (later) — the autonomous trigger has landed: the world-clock.**
+`loom/clock.py`'s `WorldClock` hangs off the loop and advances an abstract
+minute-of-day *decoupled from any player* (the DikuMUD weather-daemon shape); on
+crossing into a new `Phase` (a table the game authors in `world.json`'s `"clock"`
+block) it drives `engine.apply_time_of_day`, which upserts a **world-scope**
+condition (a new `Conditions.set_world` scope, folded into every place's look /
+`Scene` / snapshot) and, in each occupied room, lands one **deterministic** ambient
+beat + records it to the chronicle + `_spawn_reaction(…, "world", …)`. So a still
+world now turns to dusk on its own and the characters feel it, through the *same*
+reaction path — the beat is deterministic, the life is the minds. It *feeds* the B8
+restraint floor (a real new event) rather than fighting it. Off by default
+(`engine.attach_clock`); the game opts in. Gates: 290 offline (`tests/test_clock.py`
++ world-scope registry tests), 18 behavioral (`npc.reacts-to-nightfall`, a
+collapse-detector on a mild stimulus); verified live E2E (an idle player, the clock
+turned day→dusk, reticent Odd shrank into the shadows of his own volition).
+**Sub-gap 1 below is resolved;** what remains on B9 is the *director-side* follow-ons.
 
 **NPC-reaction design (directive, 2026-07-12): cascade is the feature; the limiter
 is engine-enforced *appropriateness*, not a count.** NPCs must be able to react to
@@ -448,28 +486,57 @@ never clears, and the director never speaks. Correct *as restraint* — but it m
 the world goes inert the moment you stop typing.
 
 **Two sub-gaps:**
-- **No autonomous event source.** Nothing advances the world without player
-  input — no world clock, no idle NPC activity, no scheduled beats. The chronicle
-  is the only trigger and it is entirely player-fed.
-- **The director can only stage into occupied rooms.** `world_snapshot()` shows
-  only rooms with someone present, so the director cannot foreshadow into a room
-  the player is about to enter, nor let a distant place stir off-screen.
+- ~~**No autonomous event source.**~~ **RESOLVED 2026-07-12 by the world-clock**
+  (`loom/clock.py`; see the update above). Time-of-day now advances on the loop with
+  no player input, writing a beat to the chronicle and turning a standing condition.
+  Its siblings on the same machinery are still open (idle-NPC activity; probabilistic
+  weather as a bounded random walk).
+- ~~**The director can only stage into occupied rooms.**~~ **RESOLVED 2026-07-12 by
+  off-screen staging.** `world_snapshot(include_adjacent=True)` now also lists the
+  *empty* rooms one exit from an occupied one, marked `[ahead, empty]`; `Director`
+  gains `foreshadow` (opt-in, `LOOM_DIRECTOR_FORESHADOW`) and the prompt invites
+  shaping a place ahead sparingly (preferring a *standing condition* that outlasts
+  the walk). Gates: 303 offline (`WorldSnapshotAdjacencyTests` +
+  `DirectorForeshadowTests`) + a `director.foreshadows` live scenario (a
+  collapse-detector; ~37% — foreshadowing is a *sometimes* touch). *Still deferred:*
+  the **non-adjacent** off-screen stir (a distant place the player is nowhere near)
+  needs a hear-from-afar propagation mechanism — a bigger step, not built.
 
 **Where it lands:** `loom/ai/director.py` (`Director` — a time/lull trigger beside
 the activity trigger; a snapshot that can include chosen empty rooms) and likely a
 small **world-clock** system on the game loop (`loop.py`) as an autonomous event
 source that writes to the chronicle.
 
-**Considerations for later:**
-- A **lull trigger**: if N pulses pass with players present but too few events to
-  clear the B8 floor, allow one *low-key* ambient beat anyway (a gentler budget
-  than the reactive one), so restraint doesn't tip into deadness. Note the direct
-  tension with B8 — the two must be balanced, not fought.
-- A **world clock**: scheduled or probabilistic environmental beats (time of day,
-  weather) recorded to the chronicle — turning "reactive" into "reactive to a
-  living world," which is the cleaner framing than the director inventing time.
-- **Idle NPC autonomy** (a larger step, overlaps Phase 5 minds): NPCs that act or
-  speak unprompted, which the director then perceives and shapes around.
+**Considerations for later (the remaining director-side follow-ons):**
+- ~~A **lull trigger**~~ — **DONE 2026-07-12.** Built deterministically on the
+  existing `Director`: `_beat_reason()` returns `"activity"` | `"lull"` | `None`; the
+  lull path fires after `lull_pulses` quiet pulses (≫ cooldown) with players present,
+  and `observe(lull=True)` swaps in a gentler nudge. **Opt-in** (`lull_pulses=0` = off,
+  so the B8 "quiet world never beats" guarantee is preserved exactly); the game turns
+  it on via `LOOM_DIRECTOR_LULL` (default 4). It is the deterministic B9 *floor* that
+  *balances* the B8 *ceiling* (they no longer fight). Gates: 295 offline
+  (`DirectorLullTests`) + a `director.lull-beat` live scenario (5/5); verified live
+  E2E (an idle player, no clock, nothing happening → the director stirred the quiet
+  room with gentle sensory beats). The model-side "should I act?" act-gate (B8/B5)
+  remains the separate open lever that would make the lull *judgment*-based rather
+  than timer-based.
+- ~~A **world clock**~~ — **DONE** (see the update above).
+- ~~probabilistic **weather**~~ — **DONE 2026-07-12.** `loom/weather.py`'s
+  `WeatherSystem`: a bounded random walk over a chain of sky-states (clear ↔ cloudy ↔
+  rain ↔ storm — DikuMUD's `weather.c` model), rolling every `period_pulses` with
+  probability `change_chance`, bounded at the ends. It rides the *same* engine bridge
+  as the clock — `apply_time_of_day` generalised to `apply_world_condition(tag, …)`, so
+  the clock (tag `"time"`) and weather (tag `"weather"`) coexist; `"clear"` carries an
+  empty condition, so it *lifts* the weather tag. Deterministic (injected seeded RNG,
+  pulse-counted). Opt-in: `engine.attach_weather(loop, states, …)` reading the
+  `"weather"` block; base engine has no weather. Gates: 313 offline
+  (`tests/test_weather.py`, scripted RNG) + no new behavioral scenario (weather stirs
+  the world exactly as the clock does → the reaction path, already `npc.reacts-to-world`;
+  full harness re-run 20/20 regardless).
+- ~~**Idle NPC autonomy**~~ — **moved to Phase 5 (2026-07-12), see the CLOSED note at
+  the top of B9.** NPCs that act or speak unprompted (DikuMUD `mobact.c`: a separate,
+  slower, per-mob-gated pulse). Its *mechanism* is a cheap NPC-side lull mirror; its
+  *quality* wants Phase 5's mind depth + act-gate, which is why it lands there.
 
 **Related:** Phase 3 (director), B8 (restraint — the counter-force to balance),
 Phase 5 (deeper minds / autonomy).

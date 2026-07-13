@@ -62,6 +62,46 @@ class ConditionsRegistryTests(unittest.TestCase):
         self.assertEqual(self.c.texts("clearing"), ["dark"])
 
 
+class WorldScopeConditionsTests(unittest.TestCase):
+    """World-wide conditions — the world-clock's time-of-day, held everywhere and
+    kept apart from any one place's standing conditions."""
+
+    def setUp(self):
+        self.c = Conditions()
+
+    def test_empty_by_default(self):
+        self.assertEqual(self.c.world_at(), [])
+        self.assertEqual(self.c.world_texts(), [])
+
+    def test_set_then_query(self):
+        self.c.set_world("time", "It is night.")
+        self.assertEqual(self.c.world_texts(), ["It is night."])
+        self.assertEqual(self.c.world_at(), [Condition("time", "It is night.")])
+
+    def test_same_tag_upserts(self):
+        self.c.set_world("time", "It is day.")
+        self.c.set_world("time", "It is night.")     # one time-of-day, not a pile
+        self.assertEqual(self.c.world_texts(), ["It is night."])
+
+    def test_set_strips_whitespace(self):
+        self.c.set_world("  time  ", "  night  ")
+        self.assertEqual(self.c.world_at()[0], Condition("time", "night"))
+
+    def test_clear_removes_and_reports(self):
+        self.c.set_world("time", "It is night.")
+        self.assertTrue(self.c.clear_world("time"))
+        self.assertEqual(self.c.world_texts(), [])
+        self.assertFalse(self.c.clear_world("time"))  # already gone
+
+    def test_world_and_location_scopes_are_independent(self):
+        self.c.set_world("time", "It is night.")
+        self.c.set("cave", "dark", "pitch black")
+        self.assertEqual(self.c.world_texts(), ["It is night."])
+        self.assertEqual(self.c.texts("cave"), ["pitch black"])
+        # A location query never leaks the world scope, and vice versa.
+        self.assertEqual(self.c.texts("time"), [])
+
+
 class WorldHasConditionsTests(unittest.TestCase):
     def test_world_owns_a_conditions_registry(self):
         world = World()

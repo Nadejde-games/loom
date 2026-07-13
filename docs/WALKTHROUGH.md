@@ -120,10 +120,10 @@ is *bound* to a character later, by the engine.
 ### `loom/loop.py` — the world's heartbeat
 `GameLoop` (`loom/loop.py:12`) calls each registered system every
 `tick_seconds`, forever (`run()`, `:22`). It's what makes the world *live* when
-nobody is typing. **Today no systems are attached** — it ticks emptily. That is
-deliberate: it's the hook where ambient events and the Phase-3 game-master's
-slow pulse will hang. Note `:29` — a system that throws is caught and logged so
-one bad system can't kill the loop.
+nobody is typing. **Two systems hang off it today** (`game/main.py`): the Phase-3
+game-master's slow pulse (`attach_director`) and the world-clock's autonomous
+time-of-day (`attach_clock`, B9). Note `:29` — a system that throws is caught and
+logged so one bad system can't kill the loop.
 
 ---
 
@@ -135,7 +135,7 @@ Only ~35 lines, and it shows how every piece snaps together:
 world, start = load_world(WORLD_FILE)      # data
 provider      = get_default_provider()     # which brain (env-selected)
 engine        = Engine(world, provider, …) # the Handler
-loop          = GameLoop(tick_seconds=5.0) # the heartbeat (idle for now)
+loop          = GameLoop(tick_seconds=5.0) # the heartbeat (director + world-clock hang off it)
 server        = GameServer(engine, …)      # transport, driven BY the engine
 await asyncio.gather(server.serve_forever(), loop.run())   # run both forever
 ```
@@ -380,22 +380,28 @@ The director is the unseen hand over the whole stage, on a slow pulse — where 
   broadcast. The turn is parsed by the shared `mind.parse_turn` (factored out of
   `NpcMind`) so every mind on the seam validates identically.
 - `ai/director.py`, `Director` — the orchestrator hung off the loop (§3) by
-  `engine.attach_director(loop, …)`. Every `period_ticks` it *considers* a beat,
-  but only if a player is present **and** restraint allows (B8): at least
+  `engine.attach_director(loop, …)`. Every `period_ticks` it *considers* a beat;
+  `_beat_reason()` returns `"activity"`, `"lull"`, or `None`. The **activity** path
+  fires only if a player is present **and** restraint allows (B8): at least
   `min_new_events` new chronicle events since its last beat *and* `cooldown_pulses`
-  pulses of breathing room — so most pulses cost nothing and it does nothing,
-  capping frequency in code no matter how eager the model is. Each beat runs on a
+  pulses of breathing room — so most pulses cost nothing, capping frequency no matter
+  how eager the model is. The **lull** path (B9, opt-in via `lull_pulses`) fires when
+  a room has stayed *quiet* for long enough — a liveliness *floor* beside that
+  *ceiling* — and swaps in a gentler nudge (`observe(lull=True)`) so a still room gets
+  a low-key beat, never a dramatic one. Each beat runs on a
   background task (non-blocking, non-overlapping); its validated actions execute
   through the same `engine._perform` as everyone. It acts *on* rooms, not from one:
   a bodiless `_DirectorActor` stub fills the seam's `actor`, and
   `engine.world_snapshot()` (rooms with someone present, keyed by location id, and
   any standing conditions *with their tags* — the handle it clears by) is the
-  still-frame that complements the chronicle.
+  still-frame that complements the chronicle. With `foreshadow` on (B9 off-screen
+  staging) the snapshot also carries the *empty* rooms one exit ahead, marked
+  `[ahead, empty]`, so the director can shape what the players will find before they
+  arrive (preferring a standing condition, which outlasts the walk).
 - **Reach:** the director narrates one-off beats (`stage_event`) and *shapes the
   world* with standing conditions (`set_condition` / `clear_condition`), held in
   `loom/world/conditions.py`. It shapes the world, not minds — NPCs perceive a
-  condition (via `Scene`) and are meant to react on their own (the NPC-autonomy
-  half is next; see `docs/BACKLOG.md` B9).
+  condition (via `Scene`) and react on their own (the reaction path, below).
 - **The perception pair the director reads:** the chronicle (*what changed*) + the
   snapshot (*how it stands now*). Assembled in `game/main.py`; the GM persona is
   authored as data (the `"director"` block in `world.json`, captured into
@@ -422,6 +428,34 @@ The director shapes the world, *not* minds — so the NPCs react to it on their 
 - **A capability, off by default.** `Engine(autonomous_reactions=…)` — the base
   default is `False` (so every prior test/scenario keeps its exact behaviour); the
   game turns it on in `game/main.py`. NPCs are *offered* reaction, never forced.
+
+### The world-clock — autonomous ambient life (B9)
+The reaction path and the director are both *player-driven* — they fire on a beat
+someone caused. The clock is the missing autonomous **event source**: it stirs a
+still world with no player present.
+- `loom/clock.py`, `WorldClock` — a loop system (mirroring `Director`'s shape:
+  `install(loop)` + a `tick(dt)` callback) that advances an abstract minute-of-day
+  by `dt * factor` game-minutes each pulse, **decoupled from player action** (the
+  classic MUD weather-daemon shape). Crossing into a new **`Phase`** (from a table
+  the game authors as data) lands that phase's standing condition and one ambient
+  beat. Tick-driven, not wall-clock, so it is deterministic and testable.
+- `engine.py`, `apply_time_of_day(tag, condition, ambient)` — the bridge the clock
+  calls on a boundary. It upserts a **world-scope** condition (folded into every
+  place's `look` / `Scene` / snapshot — `conditions.set_world`), then in each
+  *occupied* room (perceivable-only) broadcasts the beat, records it to the
+  chronicle (so the director may build on it under B8 restraint), and
+  `_spawn_reaction(…, "world", …)` — so the characters present answer the world's
+  own turn of their own volition, through the *same* reaction path above. The beat
+  text is **deterministic** (no model call); the *life* is the minds reacting to it.
+- **Off by default; the game opts in** via `engine.attach_clock(loop, phases, …)`,
+  reading the `"clock"` block authored in `world.json` (`factor`, `start_minute`,
+  the phase table). The base engine has no clock.
+- `loom/weather.py`, `WeatherSystem` — the clock's **sibling**: a *bounded random walk*
+  over a chain of sky-states (clear ↔ cloudy ↔ rain ↔ storm, DikuMUD's `weather.c`
+  model) that rolls every few pulses and, on a step, lands the new sky through the
+  *same* bridge — `apply_time_of_day` generalised to `apply_world_condition(tag, …)`,
+  so time-of-day (tag `"time"`) and weather (tag `"weather"`) coexist. Deterministic
+  (an injected seeded `random.Random`, pulse-counted); opt-in via `attach_weather`.
 
 ---
 
@@ -515,8 +549,10 @@ loom/                     the reusable, game-agnostic framework
   protocol.py             wire format: {"c":channel,"d":data} + newline
   session.py              one connected client; send_text/send_system
   server.py               async TCP server; drives any Handler
-  loop.py                 continuous tick loop; the director hangs off it (Phase 3)
-  engine.py               parses input, resolves nouns, routes acts through the seam, NPC dispatch, chronicle, attach_director, autonomous reactions (_react_to_event)
+  loop.py                 continuous tick loop; the director, the world-clock, and weather hang off it (Phase 3 / B9)
+  clock.py                WorldClock: an autonomous day-clock on the loop — turns time-of-day into a standing condition + ambient beat, no player needed (B9)
+  weather.py              WeatherSystem: the clock's sibling — a bounded random walk over sky-states, on the same apply_world_condition bridge (B9)
+  engine.py               parses input, resolves nouns, routes acts through the seam, NPC dispatch, chronicle, attach_director, autonomous reactions (_react_to_event), attach_clock / attach_weather / apply_world_condition
   action.py               ActionRegistry: schema + validation + json_schema + handlers (emote/move/give/take/drop/stage_event/set_condition/clear_condition)
   command.py              player-command parser (B1): verb table + DO/prep/IO grammar → a Parse; command_schema for B1b
   chronicle.py            bounded world event feed with a monotonic cursor — the director's turn-digest perception (Phase 3)
@@ -526,18 +562,18 @@ loom/                     the reusable, game-agnostic framework
   world/
     entity.py             Entity → Character → Npc / Player, and Item (held by a `holder`)
     location.py           Location: exits + occupants
-    conditions.py         Conditions: standing environmental state keyed by location (the director's world-shaping; Phase 3)
+    conditions.py         Conditions: standing environmental state — per-location (the director's world-shaping) and world-scope (the clock's time-of-day); Phase 3 / B9
     world.py              World state + queries: move/occupants + place_item/contents/scope + conditions
   ai/
     provider.py           LLMProvider + Fake / OpenAI-compat / Ollama / Anthropic
     memory.py             MemoryStream (append + recency; the substrate)
     mind.py               NpcMind: persona + memory + turn pipeline + Scene; converse + react (autonomous, B9); parse_turn (shared with the director)
     intent.py             free-text → one command via the command grammar (B1b fallback; world-free)
-    director.py           DirectorMind (game-master turn) + Director (slow, lazy, non-blocking cadence on the loop) — Phase 3
+    director.py           DirectorMind (game-master turn) + Director (slow, lazy cadence on the loop: activity beats + a quiet-room lull, B9) — Phase 3
 
 game/                     the first world built on Loom (content only)
-  main.py                 entry point: assemble + run server & loop
-  world/world.json        the cave, its NPCs (Odd, Wren), items (lantern, key, map), and the "director" persona block
+  main.py                 entry point: assemble + run server & loop (director + world-clock)
+  world/world.json        the cave, its NPCs (Odd, Wren), items (lantern, key, map), the "director" persona block, the "clock" time-of-day table, and the "weather" sky-chain
                           (one file today; point WORLD_FILE at world/ to split by region — the loader merges either form)
 
 client/

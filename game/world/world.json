@@ -7,6 +7,63 @@
       "let small signs draw wanderers onward, never forcing them"
     ]
   },
+  "clock": {
+    "factor": 2.0,
+    "start_minute": 1050,
+    "phases": [
+      {
+        "name": "dawn",
+        "start": 300,
+        "condition": "The sky is pale with early dawn, the hills grey and dew-cold.",
+        "ambient": "The dark thins to a grey dawn, and somewhere below a first bird tries its voice."
+      },
+      {
+        "name": "day",
+        "start": 420,
+        "condition": "Plain daylight lies over the hills.",
+        "ambient": "The sun clears the ridgeline, and the hills take on the flat, honest colors of day."
+      },
+      {
+        "name": "dusk",
+        "start": 1140,
+        "condition": "The light is failing, and long shadows pool between the stones.",
+        "ambient": "Dusk gathers in the valley, and the shadows run long and cold across the slope."
+      },
+      {
+        "name": "night",
+        "start": 1290,
+        "condition": "Night has fallen; the dark presses close, and the cold with it.",
+        "ambient": "Night comes down over the hills, and the cold deepens with the dark."
+      }
+    ]
+  },
+  "weather": {
+    "period_pulses": 24,
+    "change_chance": 0.4,
+    "start_index": 1,
+    "states": [
+      {
+        "name": "clear",
+        "condition": "",
+        "ambient": "The last cloud thins away, and the sky comes clear over the hills."
+      },
+      {
+        "name": "cloudy",
+        "condition": "Grey cloud lies low over the hills, and the light is flat and dull.",
+        "ambient": "Cloud draws grey across the sky, and the hills go dim beneath it."
+      },
+      {
+        "name": "rain",
+        "condition": "A steady cold rain is falling, dimpling every puddle.",
+        "ambient": "Rain begins to fall, soft and steady, pattering on the wet stone."
+      },
+      {
+        "name": "storm",
+        "condition": "A hard storm drives down, wind tearing at everything not rooted.",
+        "ambient": "The rain hardens to a driving storm, and the wind rises to a howl."
+      }
+    ]
+  },
   "locations": [
     {
       "id": "cave_mouth",

@@ -11,6 +11,8 @@ from .action import ActionRegistry, ActionContext, ActionIntent, default_registr
 from .salience import SalienceGate, SalienceContext, default_gate, is_addressed
 from .naming import resolve, Resolved, Ambiguous
 from .chronicle import Chronicle
+from .clock import WorldClock, Phase
+from .weather import WeatherSystem, Weather
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
 from .ai import intent
 from .ai.director import DirectorMind, Director
@@ -98,6 +100,14 @@ class Engine:
         # cadence as its perception of what has changed since it last looked.
         self.chronicle = Chronicle()
         self.director: Director | None = None
+        # The world's own clock, if a game attaches one (attach_clock; B9). It
+        # advances time-of-day on the loop whether or not a player is present, so a
+        # still world stirs on its own. None until wired — the base engine has no
+        # clock, exactly as it has no director.
+        self.clock: WorldClock | None = None
+        # The world's weather, if a game attaches one (attach_weather; B9) — the
+        # clock's sibling, a bounded random walk over sky-states on the same bridge.
+        self.weather: WeatherSystem | None = None
         # The action catalogue offered to NPCs — the shared registry minus the
         # player-only verbs and the director-only verbs. Both the prompt and the
         # constrained-decoding grammar are narrowed to this, so NPC behavior is
@@ -235,9 +245,12 @@ class Engine:
             await session.send_text("You are nowhere.")
             return
         lines = [f"== {loc.name} ==", loc.description]
-        # Standing conditions the director has set over this place read as part of
-        # it — appended after the base description at look-time, so a storm shows
-        # on every look until it lifts (not just when it began).
+        # Standing conditions read as part of the place, appended after the base
+        # description at look-time so they show on every look until they lift (not
+        # just when they began): first the world-wide ones (the clock's time of
+        # day), then any condition specific to this place (a storm the director set).
+        for cond in self.world.conditions.world_texts():
+            lines.append(cond)
         for cond in self.world.conditions.texts(loc.id):
             lines.append(cond)
         others = self.world.occupants(loc.id, exclude=player.id)
@@ -401,37 +414,69 @@ class Engine:
         others = [e.name for e in self.world.occupants(location_id, exclude=actor.id)]
         items = [i.name for i in self.world.contents(location_id)]
         inventory = [i.name for i in self.world.contents(actor.id)]
-        conditions = self.world.conditions.texts(location_id)
+        # World-wide conditions (the clock's time of day) plus this place's own —
+        # so a mind reacting "to the storm" or acting by nightfall perceives both.
+        conditions = (self.world.conditions.world_texts()
+                      + self.world.conditions.texts(location_id))
         return Scene(location=loc.name, description=loc.description,
                      exits=list(loc.exits.keys()), others=others, items=items,
                      inventory=inventory, conditions=conditions)
 
     # ---- the director (game-master) ----
-    def world_snapshot(self) -> str:
-        """A compact current-state view for the game-master director: only the
-        places with someone present — who is there, the exits, the floor items —
-        each keyed by its location *id* (the handle the director names in a
-        stage_event), with the human title alongside. The still-frame that
-        complements the chronicle's record of what changed."""
+    def _snapshot_detail(self, loc) -> str:
+        """The exits / floor items / standing conditions suffix for one place in the
+        director's snapshot — shared by the occupied places and the empty ones just
+        ahead of the players. Conditions are shown *with* their tags, since the tag
+        is the handle ``clear_condition`` needs (players/NPCs see only the text)."""
+        detail = ""
+        if loc.exits:
+            detail += "; exits: " + ", ".join(loc.exits.keys())
+        floor = [i.name for i in self.world.contents(loc.id)]
+        if floor:
+            detail += "; on the ground: " + ", ".join(floor)
+        conds = self.world.conditions.at(loc.id)
+        if conds:
+            detail += "; conditions: " + "; ".join(
+                f'{c.tag} ("{c.text}")' for c in conds)
+        return detail
+
+    def world_snapshot(self, include_adjacent: bool = False) -> str:
+        """A compact current-state view for the game-master director: the places
+        with someone present — who is there, the exits, the floor items, any
+        standing conditions — each keyed by its location *id* (the handle the
+        director names an action by), with the human title alongside. The
+        still-frame that complements the chronicle's record of what changed.
+
+        With ``include_adjacent`` (B9 off-screen staging), it also lists the *empty*
+        rooms one exit from an occupied one — where a wanderer may step next —
+        marked ``[ahead, empty]``, so the director can foreshadow into a place
+        before the player arrives (a standing condition there outlasts the walk)."""
         lines = []
-        for loc in self.world.locations.values():
+        # World-wide conditions (the clock's time of day) hold everywhere, so they
+        # head the snapshot — context for every place below, with their tags shown.
+        world_conds = self.world.conditions.world_at()
+        if world_conds:
+            lines.append("Everywhere: " + "; ".join(
+                f'{c.tag} ("{c.text}")' for c in world_conds))
+        occupied = [loc for loc in self.world.locations.values()
+                    if self.world.occupants(loc.id)]
+        for loc in occupied:
             occ = self.world.occupants(loc.id)
-            if not occ:
-                continue                       # no audience, nothing to shape here
             line = f"- {loc.id} ({loc.name}): " + ", ".join(e.name for e in occ)
-            if loc.exits:
-                line += "; exits: " + ", ".join(loc.exits.keys())
-            floor = [i.name for i in self.world.contents(loc.id)]
-            if floor:
-                line += "; on the ground: " + ", ".join(floor)
-            # Standing conditions the director itself set — shown *with* their tags,
-            # since the tag is the handle clear_condition needs (players and NPCs
-            # see only the text; only the director needs to clear by tag).
-            conds = self.world.conditions.at(loc.id)
-            if conds:
-                line += "; conditions: " + "; ".join(
-                    f'{c.tag} ("{c.text}")' for c in conds)
-            lines.append(line)
+            lines.append(line + self._snapshot_detail(loc))
+        if include_adjacent:
+            # Empty rooms one exit from an occupied one — the way the players may
+            # walk next. Deduped, and never a room that is itself occupied (it is
+            # already listed above). The director may quietly shape these ahead.
+            seen = {loc.id for loc in occupied}
+            for loc in occupied:
+                for dest in loc.exits.values():
+                    aloc = self.world.locations.get(dest)
+                    if aloc is None or dest in seen or self.world.occupants(dest):
+                        continue
+                    seen.add(dest)
+                    lines.append(f"- {aloc.id} ({aloc.name}) [ahead, empty]"
+                                 + self._snapshot_detail(aloc))
         return "\n".join(lines) if lines else "(no one is anywhere in the world)"
 
     def attach_director(self, loop, persona: dict | None = None,
@@ -439,7 +484,9 @@ class Engine:
                         period_ticks: int = 12,
                         name: str = "the Director",
                         min_new_events: int = 3,
-                        cooldown_pulses: int = 2) -> Director:
+                        cooldown_pulses: int = 2,
+                        lull_pulses: int = 0,
+                        foreshadow: bool = False) -> Director:
         """Give this world an unseen game-master and hang it off ``loop``.
 
         The director rides the same seam as everyone else, offered only its own
@@ -447,16 +494,98 @@ class Engine:
         variant (e.g. ``loom-gm``) for the GM's wider view; it defaults to the
         engine's provider. ``period_ticks`` is how many loop ticks pass between
         the director's slow pulses; ``min_new_events`` / ``cooldown_pulses`` hold
-        its intervention rate down (see ``Director``; BACKLOG B8). Returns the
-        ``Director`` (also on ``self.director``)."""
+        its intervention rate down (the activity *ceiling*; BACKLOG B8).
+        ``lull_pulses`` (0 = off) is the opt-in liveliness *floor* (B9): after that
+        many quiet pulses since its last beat the director stirs a still room with
+        one gentle beat. ``foreshadow`` (opt-in, B9) lets it also see and shape the
+        empty rooms just ahead of the players. Returns the ``Director`` (also on
+        ``self.director``)."""
         mind = DirectorMind(persona=persona, provider=provider or self.provider,
                             registry=self.actions, offered=self.director_actions,
                             name=name)
         self.director = Director(self, mind, period_ticks=period_ticks, name=name,
                                  min_new_events=min_new_events,
-                                 cooldown_pulses=cooldown_pulses)
+                                 cooldown_pulses=cooldown_pulses,
+                                 lull_pulses=lull_pulses, foreshadow=foreshadow)
         self.director.install(loop)
         return self.director
+
+    # ---- autonomous world-scope changes (clock, weather) ----
+    async def apply_world_condition(self, tag: str, condition_text: str,
+                                    ambient_text: str) -> None:
+        """Turn a standing *world-scope* condition and announce the change where it
+        is seen — the shared bridge the autonomous world systems drive through (the
+        ``WorldClock``'s time-of-day, the ``WeatherSystem``'s sky). A deterministic,
+        autonomous world beat with no model call (B9).
+
+        Upserts the world-wide ``tag`` condition (or lifts it if the new state has
+        no standing text — e.g. clear sky, or an untagged phase) so every place reads
+        it from now on. Then, in each place with someone present, it broadcasts the
+        one-shot ambient line, records it to the chronicle — so the director perceives
+        it and may build on it under its own restraint (B8) — and offers the
+        characters there a chance to react of their own volition. The source
+        ``"world"`` is no NPC, so the cascade's self-guard blocks no one; the reaction
+        is a no-op unless the game enabled autonomous_reactions."""
+        if condition_text:
+            self.world.conditions.set_world(tag, condition_text)
+        else:
+            self.world.conditions.clear_world(tag)
+        if not ambient_text:
+            return
+        for loc in self.world.locations.values():
+            if not self.world.occupants(loc.id):
+                continue                 # perceivable-only: no beat into an empty place
+            await self._broadcast(loc.id, "text", ambient_text)
+            self.chronicle.record(ambient_text, location_id=loc.id, kind="ambient")
+            self._spawn_reaction(loc.id, "world", ambient_text)
+
+    def attach_clock(self, loop, phases, *, factor: float = 1.0,
+                     start_minute: float | None = None,
+                     tag: str = "time") -> WorldClock:
+        """Give this world its own autonomous clock and hang it off ``loop`` (B9).
+
+        ``phases`` is the game's time-of-day table — a list of ``Phase`` or of the
+        plain dicts the loader captured in ``world.meta['clock']['phases']`` (keys:
+        ``name``, ``start``, and optional ``condition`` / ``ambient``). On each loop
+        pulse the clock advances ``factor`` game-minutes per real second; crossing
+        into a new phase lands that phase's standing condition and one ambient beat
+        — deterministically, no model call — which the reaction path and the
+        director then give life. Off by default: only a game that calls this has a
+        living clock. Returns the ``WorldClock`` (also on ``self.clock``)."""
+        specs = [p if isinstance(p, Phase)
+                 else Phase(name=p["name"], start=int(p["start"]),
+                            condition=p.get("condition", ""),
+                            ambient=p.get("ambient", ""))
+                 for p in phases]
+        self.clock = WorldClock(self, specs, factor=factor,
+                                start_minute=start_minute, tag=tag)
+        self.clock.install(loop)
+        return self.clock
+
+    def attach_weather(self, loop, states, *, period_pulses: int = 12,
+                       change_chance: float = 0.4, start_index: int = 0,
+                       tag: str = "weather", rng=None) -> WeatherSystem:
+        """Give this world a wandering sky and hang it off ``loop`` (B9) — the
+        clock's sibling.
+
+        ``states`` is the game's sky-chain — a list of ``Weather`` or of the plain
+        dicts the loader captured in ``world.meta['weather']['states']`` (keys:
+        ``name``, and optional ``condition`` / ``ambient``; empty ``condition`` =
+        clear). Every ``period_pulses`` loop pulses the sky *may* step one place along
+        the chain (probability ``change_chance``), landing the new state's standing
+        condition + ambient beat — deterministically, no model call — which the
+        reaction path and the director then give life. Pass a seeded ``rng`` for a
+        reproducible walk. Off by default; only a game that calls this has weather.
+        Returns the ``WeatherSystem`` (also on ``self.weather``)."""
+        specs = [s if isinstance(s, Weather)
+                 else Weather(name=s["name"], condition=s.get("condition", ""),
+                              ambient=s.get("ambient", ""))
+                 for s in states]
+        self.weather = WeatherSystem(self, specs, period_pulses=period_pulses,
+                                     change_chance=change_chance,
+                                     start_index=start_index, tag=tag, rng=rng)
+        self.weather.install(loop)
+        return self.weather
 
     async def _perform(self, location_id: str, actor, mind, intent,
                        exclude_session: str | None = None):

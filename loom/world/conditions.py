@@ -44,6 +44,13 @@ class Conditions:
     def __init__(self) -> None:
         # location id -> {tag -> text}, order-preserving on both levels.
         self._by_location: dict[str, dict[str, str]] = {}
+        # World-scope conditions: {tag -> text}, folded into *every* place. This is
+        # the region/world generalisation this registry was built for (see the
+        # module docstring) in its simplest form — one reserved scope that is
+        # "everywhere". A world-clock's time-of-day lives here (one entry, not one
+        # per room), and a look at any place reads it alongside that place's own
+        # standing conditions.
+        self._world: dict[str, str] = {}
 
     def set(self, location_id: str, tag: str, text: str) -> Condition:
         """Set — or replace — the condition ``tag`` at ``location_id``. Returns the
@@ -79,3 +86,32 @@ class Conditions:
         reads, tag-free (only the director needs the tag, to clear by it)."""
         at = self._by_location.get(location_id)
         return list(at.values()) if at else []
+
+    # ---- world scope: conditions that hold everywhere ----
+    def set_world(self, tag: str, text: str) -> Condition:
+        """Set — or replace — a world-wide condition ``tag`` (e.g. the time of day).
+        Upserts by tag exactly as the per-location ``set`` does, keeping insertion
+        order for stable rendering. Folded into every place's perception."""
+        tag = (tag or "").strip()
+        text = (text or "").strip()
+        self._world[tag] = text
+        return Condition(tag=tag, text=text)
+
+    def clear_world(self, tag: str) -> bool:
+        """Lift the world-wide condition ``tag``. Returns True if one was present
+        and removed, False if there was nothing to lift."""
+        tag = (tag or "").strip()
+        if tag not in self._world:
+            return False
+        del self._world[tag]
+        return True
+
+    def world_at(self) -> list[Condition]:
+        """The standing world-wide conditions, in the order they were set — each
+        with its tag (the clear handle) and its text."""
+        return [Condition(tag=t, text=x) for t, x in self._world.items()]
+
+    def world_texts(self) -> list[str]:
+        """Just the perceivable fragments that hold everywhere — read by every
+        place alongside its own standing conditions."""
+        return list(self._world.values())

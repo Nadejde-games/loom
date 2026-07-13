@@ -5,13 +5,19 @@ Last updated: 2026-07-12.
 
 ## Status snapshot — line drawn 2026-07-12
 
-Committed through `557b6e0`. **Phases 0–2 and the Phase 2 hardening are complete;
-the Phase 3 game-master director has its first working slice.** In one sentence:
-NPCs with persona + memory converse and *act* through a grammar-hardened action
-seam; players issue rich, phrasing-tolerant commands through that *same* seam; and
-an unseen director shapes ambient scene on a slow, restrained cadence — all on
-local GPU inference, all editable as world data. **267 offline tests + 17 live
-behavioral scenarios, both gates green.**
+Committed through `45742ee`; the world-clock and the director-lull slices (B9's
+autonomous trigger + its lull follow-on) are built and green on top, awaiting commit.
+**Phases 0–2 and the Phase 2 hardening are complete; the Phase 3 game-master director
+is well advanced** — it shapes the world (standing conditions), the characters react
+on their own (the reaction path), the world turns on its own clock even when no one is
+present, the director stirs even a *quiet* room on a lull, and it can foreshadow into
+the empty rooms just ahead of the players. In one sentence: NPCs with persona + memory
+converse and *act* through a grammar-hardened action seam; players issue rich,
+phrasing-tolerant commands through that *same* seam; an unseen director shapes ambient
+scene on a slow, restrained cadence — stirring a still room on a lull, foreshadowing
+the way ahead; and an autonomous world-clock turns time itself while the weather
+wanders — all on local GPU inference, all editable as world data. **313 offline tests
++ 20 live behavioral scenarios, both gates green.**
 
 The clean milestone: the director exists on the seam and is *usable* — restrained,
 grounded, persona-as-data. Open threads from here (detailed in the phase notes and
@@ -27,10 +33,17 @@ grounded, persona-as-data. Open threads from here (detailed in the phase notes a
   lever as the NPC `move` ceiling (B5).
 - **Autonomy** — NPC side **landed (2026-07-12): NPCs react to the world and to
   each other of their own volition** — a bounded cascade whose limiter is
-  engine-enforced *appropriateness*, not a depth cap (the reaction path). Director
-  side still open: ambient life in a *still* world — a world-clock / lull so the
-  world stirs with no player present (B9). The `loom-gm` wide-context variant is
-  wired but never exercised (B10).
+  engine-enforced *appropriateness*, not a depth cap (the reaction path). Director /
+  world side **landed too (2026-07-12): a world-clock** turns time-of-day on its own,
+  a **director lull trigger** stirs a *quiet* room with a gentle beat,
+  **off-screen staging** lets the director foreshadow into the empty rooms just ahead
+  of the players, and a **weather** system wanders the sky over its own random walk —
+  so a still world stirs with no player present, the characters feel it, and the way
+  ahead is shaped before they arrive. **B9 is closed (2026-07-12): the world and the
+  director are autonomous, and the characters feel both.** The one remaining thread —
+  *purely unprompted* NPC initiative (idle-NPC autonomy) — was decided into **Phase 5**
+  (its quality wants the mind depth that lives there). Also open: the `loom-gm`
+  wide-context variant, wired but never exercised (B10).
 - **Presentation debt** — fused speech+action rendering (B2), rich text (B3).
 - **Later phases** — loot forge (4), deeper memory + persistence (5; note: world,
   NPC/director memory, and the chronicle are all in-memory today and reset on
@@ -221,16 +234,18 @@ Built:
   table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
   map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
   constrained-decoding waist so the model *cannot* emit a non-command.
-- `tests/` — **267 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **313 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,
   the command parser + per-mind offered subset, the command grammar + intent
   parser, and — Phase 3 — the chronicle, the `stage_event` / `set_condition` /
-  `clear_condition` handlers, the conditions registry, the `DirectorMind` turn, the
-  `Director` cadence, and the autonomous-reaction cascade + its rails). No GPU
-  needed. **Plus a live behavioral harness** — see *Testing discipline* below — 17
-  scenarios green against `qwen3.5:35b-a3b`.
+  `clear_condition` handlers, the conditions registry (per-location and world-scope),
+  the `DirectorMind` turn, the `Director` cadence + the lull trigger + off-screen
+  staging (adjacent-room snapshot), the autonomous-reaction cascade + its rails, and
+  — B9 — the `WorldClock` advancement / boundaries / bridge and the `WeatherSystem`
+  bounded random walk). No GPU needed. **Plus a live behavioral harness** — see
+  *Testing discipline* below — 20 scenarios green against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
@@ -492,6 +507,142 @@ crux — a bounded, *not* depth-capped cascade.
   deterministic salience *pre-gate* before the model in a crowded room (deferred —
   unnecessary at 2–3 NPCs).
 
+**Built — the autonomous trigger: the world-clock (2026-07-12), both gates green.**
+The last gap in the pair. The reaction path and the director were both
+*player-driven* — they fire on a beat someone caused, so a *still* room (no one
+typing, no director pulse) produced nothing and the world went inert the moment you
+stopped. The clock is the missing autonomous **event source**. Prior art settled the
+shape first (DikuMUD's `weather.c` weather-daemon, LPMud `heart_beat`, Evennia's
+`TickerHandler` / Gametime, Inform's turn-clocked "every turn" as the *counter*-
+example): a real-time heartbeat **decoupled from player action**, advancing an
+explicit game-clock, changing **perceivable, persistent** world-state, narrated
+**deterministically**, broadcast **only where seen**.
+- **`loom/clock.py` — the `WorldClock`** (a new game-agnostic primitive): a loop
+  system mirroring `Director`'s shape (`install(loop)` + a `tick(dt)` callback) that
+  advances an abstract minute-of-day by `dt * factor` game-minutes each pulse,
+  *decoupled from any player*. On crossing into a new `Phase` (a table the game
+  supplies as data) it lands that phase's standing condition and one ambient beat.
+  Tick-driven, not wall-clock — deterministic and testable by injected pulses. It
+  knows nothing about "dusk"; the phase names, boundaries, text, and speed are all
+  content (the `"clock"` block in `world.json`).
+- **It reuses both slices at near-zero new seam.** A phase turning is a *world
+  change*, so it flows through the machinery already built: `engine.apply_time_of_day`
+  upserts a **world-scope** condition (the one small new world-model piece — the
+  region/world generalisation the conditions registry was designed for, folded into
+  every place's `look` / `Scene` / snapshot), then in each *occupied* room
+  (perceivable-only) broadcasts the beat, records it to the chronicle (so the
+  director may build on it under B8 restraint), and `_spawn_reaction(…, "world", …)`
+  — so the characters answer the world's own turn of their own volition, through the
+  *same* reaction path. The beat text is **deterministic** (no model call); the life
+  is the minds reacting. This *feeds* B8 restraint (a real new event) rather than
+  fighting it — the reason to build the clock before a director *lull* trigger.
+- **Off by default; the game opts in.** `engine.attach_clock(loop, phases, …)`
+  (`LOOM_CLOCK_FACTOR` overrides the authored speed); the base engine has no clock,
+  exactly as it has no director. So every prior test/scenario is unregressed.
+- **Gates.** Offline **290** (from 267): `tests/test_clock.py` — advancement,
+  boundary detection incl. the midnight wrap and a skipped-phase pulse, the silent
+  initial set, the deterministic condition turn, the perceivable-only ambient beat,
+  the reaction trigger + the disabled path, and the world-scope perception fold-in;
+  plus world-scope registry tests in `tests/test_conditions.py`. Live: a new
+  `npc.reacts-to-nightfall` scenario — an NPC reacts of its own volition to the
+  world's own turn — **18/18**, every prior scenario held. *Honest reading:*
+  nightfall is a deliberately *mild* stimulus (~28% for the wayfinder, to whom it is
+  routine, vs ~85% for a storm), so its threshold is a pure **collapse-detector**
+  (fails only if the world-scope beat stops reaching a mind at all), the rate
+  characterised not enforced. Verified live E2E on GPU: an idle player did nothing;
+  the clock turned day→dusk on its own, the standing condition and beat landed, and
+  reticent Odd — who ignores most things — felt it and answered with a *deed*
+  (shrinking into the shadows, watching the light fail). The world stirred with no
+  one touching it, and a character felt it, unpuppeted.
+**Built — the director lull trigger (2026-07-12), both gates green.** The clock made
+the *world* autonomous; this makes the *director* autonomous — it now stirs a *quiet*
+room, not only reacts to activity. Prior art surveyed first (Left 4 Dead's AI-director
+pacing state machine; drama-management's intervene-cost-vs-value; the tabletop DM's
+"pause"): a lull is a pacing state, and the quiet-time beat should be *gentle*.
+- **The mechanism, on the existing `Director`.** `_should_beat` became `_beat_reason`
+  → `"activity"` | `"lull"` | `None`. The activity path is unchanged (≥`min_new_events`
+  new events + `cooldown_pulses`); the **lull path** fires when the scene has stayed
+  quiet for `lull_pulses` pulses since the last beat (≫ the cooldown) — a liveliness
+  *floor* beside the activity *ceiling* (B8). A lull beat runs the same compose path
+  but `observe(lull=True)` swaps the nudge for a gentler one ("keep it gentle — a
+  sound, a shift of light, a small sign — never a dramatic intrusion"). It still needs
+  an audience and the cooldown's breathing room.
+- **Opt-in, so B8 restraint is preserved exactly.** `lull_pulses=0` (the base default)
+  = off → the "quiet world never beats" guarantee is untouched; the game opts in via
+  `attach_director(..., lull_pulses=…)` / `LOOM_DIRECTOR_LULL` (default 4). This is the
+  deliberate, deterministic B9 counter-force to B8 — the two *balance* (ceiling on
+  activity, floor in its absence) rather than fight; the model-side "should I act?"
+  act-gate (B8/B5) remains the open, separate lever that would make the lull
+  *judgment-based* rather than timer-based.
+- **Gates.** Offline **295** (from 290): `DirectorLullTests` — off-by-default silence,
+  the lull firing after its window, the gentler nudge carried to `observe`, the
+  activity path still firing first, and the audience requirement. Live: a new
+  `director.lull-beat` scenario — **5/5**, all 19 green. Verified live E2E on GPU: an
+  idle player, no clock, nothing happening — the director stirred the quiet room with
+  gentle sensory beats ("a draft from deep within shifts the dust… a faint scent of
+  wet stone"), exactly the low-key touch the nudge asks for.
+**Built — off-screen staging (2026-07-12), both gates green.** B9 sub-gap 2: the
+director could only see and shape *occupied* rooms, so it could not foreshadow into a
+room the player is about to enter. Prior art: DikuMUD adjacent-room echoes + Inform
+backdrops — adjacency is the natural scope for "just ahead."
+- **The mechanism.** `world_snapshot(include_adjacent=False)` gains an opt-in that
+  also lists the *empty* rooms one exit from an occupied one, marked `[ahead, empty]`
+  (with their exits, floor, and standing conditions) — the player's likely next step,
+  bounded, deduped, never a room that is itself occupied. `Director(foreshadow=…)`
+  passes it through, and `observe(foreshadow=True)` adds a prompt line inviting the
+  director to shape a place ahead **sparingly**, preferring a *standing condition*
+  (which outlasts the walk) over a one-off beat (which reaches no one in an empty
+  room). No seam change — `set_condition` / `stage_event` already take any valid
+  location; only the director's *view* and *prompt* changed.
+- **Opt-in, so the snapshot is byte-identical when off.** `foreshadow=False` (base
+  default); the game turns it on via `attach_director(..., foreshadow=…)` /
+  `LOOM_DIRECTOR_FORESHADOW`. The non-adjacent "a distant place stirs off-screen"
+  desire stays deferred (it needs a hear-from-afar propagation mechanism).
+- **Gates.** Offline **303** (from 295): `WorldSnapshotAdjacencyTests` (the ahead
+  room shown marked with its detail, hidden by default, never double-listed when
+  occupied, carrying its own condition) + `DirectorForeshadowTests` (the flag reaches
+  the prompt; off by default; a real `Director.tick` beat sees the room ahead). Live:
+  a new `director.foreshadows` scenario — **20/20**, all prior held. *Honest reading:*
+  foreshadowing is a *sometimes* touch (~37% — often the director correctly shapes the
+  occupied room instead), so its threshold is a **collapse-detector** (fails only if
+  the director never reaches the room ahead), the rate characterised not enforced.
+
+**Built — probabilistic weather (2026-07-12), both gates green.** The clock's sibling,
+and the last B9 slice. Prior art: DikuMUD's `weather.c` — a **bounded random walk** over
+a small chain of sky-states driven by a pressure model, so change reads with continuity,
+not as noise.
+- **`loom/weather.py` — the `WeatherSystem`** (a new game-agnostic loop primitive,
+  mirroring `WorldClock`): a chain of `Weather(name, condition, ambient)` states
+  (clear ↔ cloudy ↔ rain ↔ storm); every `period_pulses` pulses it *may* step one
+  place (probability `change_chance`), bounded at the ends. Deterministic and testable
+  — the walk is driven by an injected `random.Random` (seed it) and rolls are counted
+  in loop pulses, not wall-clock.
+- **It reuses the clock's bridge.** `apply_time_of_day` was generalised to
+  `apply_world_condition(tag, …)`, so the clock (tag `"time"`) and weather (tag
+  `"weather"`) both drive the same path — a world-scope condition turn + one
+  deterministic ambient beat where seen + a reaction — and *coexist* (a look reads both
+  "It is dusk." and "Rain begins to fall."). The `"clear"` state carries an empty
+  condition, so clearing weather *lifts* the tag rather than showing a line.
+- **Opt-in; the game supplies the sky.** `engine.attach_weather(loop, states, …)`
+  reading the `"weather"` block in `world.json`; the base engine has no weather.
+- **Gates.** Offline **313** (from 303): `tests/test_weather.py` — holding, the period
+  gate, bounded stepping at each end, the deterministic walk applying conditions + beats,
+  clear lifting the tag, the silent initial set, and clock/weather coexistence — all via
+  a scripted RNG. **No new behavioral scenario:** weather stirs the world exactly as the
+  clock does (a deterministic beat → the reaction path), and "an NPC reacts to a storm"
+  is already `npc.reacts-to-world`; the new part is the random walk, which is
+  deterministic and offline-proven. The full harness (20/20) was re-run regardless, per
+  the two-gate discipline.
+
+**The line, drawn under B9 (2026-07-12).** All four autonomy slices are in — the world
+turns and weathers on its own, the director stirs a quiet room and foreshadows the way
+ahead, and the characters feel all of it through the reaction cascade. The one remaining
+thread, **idle-NPC autonomy** (*purely unprompted* NPC initiative — mobact-style), was
+**decided into Phase 5**: its mechanism is a cheap NPC-side lull mirror, but its
+*quality* wants Phase 5's mind depth (reflection, evolving goals) and the model-side
+act-gate, so a naive version now would risk a noisy/mechanical room. Also deferred: the
+non-adjacent off-screen stir (needs hear-from-afar propagation).
+
 ### Phase 4 — Loot forge  ○
 Dynamic, context-aware item generation: the LLM authors name/lore/tags as
 schema-constrained JSON; numeric balance stays in code/tables. Tied to player
@@ -505,6 +656,14 @@ Player personality/history accretion on the same substrate as NPCs.
 chronicle are in-memory only — everything resets on restart. For a world that is
 meant to run *forever*, this is the phase where that stops being true. (`remember_fact`,
 the deferred Phase 2 action, lands here too, once memory has importance/retrieval.)
+**Idle-NPC autonomy lands here (moved from B9, 2026-07-12):** NPCs that act or speak
+*unprompted* during a lull — the NPC-side counterpart to the director lull. The
+*mechanism* is cheap (a slow, per-NPC-gated trigger offering a `NpcMind.stir` turn,
+reusing `_deliver_turn` + the reaction cascade), but its *quality* is what makes it a
+Phase-5 feature: an idle beat should flow from the NPC's evolving goals, mood, and
+reflected memory (else it reads as mechanical), and it needs the model-side act-gate
+(B5/B8) to hold the local model's over-action bias in check. Prior art: DikuMUD
+`mobact.c`; Stanford Generative Agents (daily plans) for the rich form.
 
 ### Phase 6 — Rich transport & multiplayer  ○
 WebSocket transport implementing the same `Handler` contract; emit `map` /
@@ -520,7 +679,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (267 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (313 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*
@@ -554,9 +713,10 @@ free of game-specific content.
 Unscheduled improvements noticed during review live in `docs/BACKLOG.md`. Open as
 of 2026-07-12: fused speech+action rendering (B2) · rich text formatting (B3) · the
 two-pass act-gate for the NPC `move` ceiling and director restraint (B5 / B8) ·
-world atlas (B7) · director autonomy / ambient life (B9) · exercising the `loom-gm`
-variant (B10). Done and folded in: B1 (command grammar), B4 (choice-to-react), B6
-(envelope leak, retired by constrained decoding). Promote an item into a phase with
+world atlas (B7) · exercising the `loom-gm` variant (B10). Done and folded in: B1
+(command grammar), B4 (choice-to-react), B6 (envelope leak, retired by constrained
+decoding), **B9 (director/world autonomy — world-clock, director lull, off-screen
+staging, weather; idle-NPC autonomy moved to Phase 5)**. Promote an item into a phase with
 a real design when the moment is right.
 
 ## How to run (current)

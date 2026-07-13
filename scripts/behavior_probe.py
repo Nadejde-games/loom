@@ -230,6 +230,8 @@ class DirectorScenario:
     check: Callable                 # Turn -> bool
     desc: str
     offered: tuple = ("stage_event",)  # the director-action subset this scenario tests
+    lull: bool = False              # drive the quiet-room (lull) nudge, not the activity one
+    foreshadow: bool = False        # include (and invite shaping) the rooms just ahead
     n: int = 5
     threshold: int = 3
     tags: tuple = ("director",)
@@ -241,6 +243,14 @@ def stages_in(location: str) -> Callable:
         return any(a.name == "stage_event"
                    and str(a.args.get("location")) == location
                    for a in turn.actions)
+    return check
+
+
+def acts_in(location: str) -> Callable:
+    """The director took *any* action targeting the given (real) location id — used
+    for foreshadowing, where either a standing condition or a beat set *ahead* counts."""
+    def check(turn):
+        return any(str(a.args.get("location")) == location for a in turn.actions)
     return check
 
 
@@ -283,6 +293,24 @@ DIRECTOR_WEATHER_DIGEST = (
     "- Wren the Wayfinder: Aye, the sky's gone the colour of slate.\n"
     "- Odd the Hermit glances up at the darkening clouds")
 
+# A *quiet* moment — a lone wanderer, nothing stirring since. This is what the lull
+# nudge reads: the scene has gone still, and a gentle beat keeps it from going dead.
+DIRECTOR_LULL_DIGEST = (
+    "- Wanderer-1 arrived in The Cave Mouth.\n"
+    "- Wanderer-1 looks slowly around the quiet clearing.")
+
+# The players are about to head *north* to the hill path — an empty room one exit
+# away. The foreshadow snapshot marks it [ahead, empty], so the director can shape
+# what they will find there before they arrive (off-screen staging, B9).
+DIRECTOR_AHEAD_DIGEST = (
+    "- Wanderer-1 arrived in The Cave Mouth.\n"
+    '- Wren the Wayfinder: The north path it is, then — follow me up the hill.\n'
+    '- Wanderer-1 said: "lead on, I\'m right behind you."')
+DIRECTOR_AHEAD_SNAPSHOT = (
+    "- cave_mouth (The Cave Mouth): Odd the Hermit, Wren the Wayfinder, "
+    "Wanderer-1; exits: north, down; on the ground: a rusty lantern\n"
+    "- hill_path (The Hill Path) [ahead, empty]; exits: south")
+
 DIRECTOR_SCENARIOS = [
     DirectorScenario(
         # Measured 7/8 and 6/6 grounded into cave_mouth, 0 envelope leaks. The
@@ -305,6 +333,32 @@ DIRECTOR_SCENARIOS = [
         n=5, threshold=3,
         desc="the director raises a standing condition over the room where "
              "players are, grounded and well-formed"),
+    DirectorScenario(
+        # The lull path (B9): given a still scene and the gentler lull nudge, the
+        # director offers one grounded, low-key beat rather than letting the room go
+        # dead. Threshold catches a *collapse* of the lull path (never stirring a
+        # quiet room, or staging into a room that doesn't exist), not the occasional
+        # abstain — the lull nudge deliberately still permits "do nothing".
+        name="director.lull-beat",
+        digest=DIRECTOR_LULL_DIGEST, snapshot=DIRECTOR_SNAPSHOT,
+        check=stages_in("cave_mouth"), offered=("stage_event",), lull=True,
+        n=5, threshold=3,
+        desc="the director stirs a quiet room with a gentle ambient beat "
+             "(the lull trigger)"),
+    DirectorScenario(
+        # Off-screen staging (B9): with the players about to walk north and the empty
+        # hill_path marked [ahead, empty], the director may foreshadow there — shape
+        # what they will find before they arrive. Offered both actions (foreshadowing
+        # prefers a *standing* condition, but a beat ahead counts too); the check is
+        # any action targeting hill_path. Threshold catches a *collapse* (the director
+        # never reaches the room ahead), not a rate — foreshadowing is a *sometimes*
+        # touch, and shaping the occupied room first is also correct.
+        name="director.foreshadows",
+        digest=DIRECTOR_AHEAD_DIGEST, snapshot=DIRECTOR_AHEAD_SNAPSHOT,
+        check=acts_in("hill_path"), offered=("stage_event", "set_condition"),
+        foreshadow=True, n=8, threshold=2,
+        desc="the director foreshadows into the empty room the players are about "
+             "to enter (off-screen staging)"),
 ]
 
 
@@ -316,7 +370,8 @@ async def run_director_scenario(provider, sc: DirectorScenario):
         mind = DirectorMind(persona=DIRECTOR_PERSONA, provider=provider,
                             registry=default_registry(), offered=list(sc.offered))
         try:
-            turn = await mind.observe(sc.digest, sc.snapshot)
+            turn = await mind.observe(sc.digest, sc.snapshot, lull=sc.lull,
+                                      foreshadow=sc.foreshadow)
             ok = bool(sc.check(turn))
         except Exception as exc:
             samples.append((False, f"ERROR: {exc!r}"))
@@ -353,6 +408,14 @@ def _set_storm(world):
                          "A cold rain lashes down and the wind rises to a howl.")
 
 
+def _set_nightfall(world):
+    """Put the world-clock's nightfall over everything (the world scope), so the
+    reacting NPC carries the new time-of-day in its Scene via the world-scope
+    fold-in — the autonomous-clock counterpart of _set_storm (B9)."""
+    world.conditions.set_world(
+        "time", "Night has fallen; the dark presses close, and the cold with it.")
+
+
 REACT_SCENARIOS = [
     ReactScenario(
         # Observed ~0.75-0.8 react rate (5/5, 3/5); n=6/threshold=3 tolerates that
@@ -373,6 +436,21 @@ REACT_SCENARIOS = [
               "and stares into the dark to the north.",
         check=speaks, n=8, threshold=2,
         desc="an NPC reacts of its own volition to another character's word and deed"),
+    ReactScenario(
+        # The world-clock's own turn (B9): a gentle, non-threatening world change,
+        # far milder than the storm above — measured ~28% for the wayfinder (3/8,
+        # then 2/10), to whom nightfall is routine, vs ~85% for the storm. At a rate
+        # this low a threshold *at* the rate would flake, so n=10/threshold=1 is a
+        # pure collapse-detector: it fails only if the world-scope beat stops
+        # reaching a mind at all (a perception/wiring regression driving the rate to
+        # zero). The ~28% rate is *characterised*, not enforced — a mild stimulus has
+        # a real ceiling. The autonomous trigger itself is proven offline (test_clock.py);
+        # this guards that its beat still reaches the mind live through the
+        # world-scope fold-in (_set_nightfall sets a world-scope condition).
+        name="npc.reacts-to-nightfall", npc_id="guide",
+        event="Night comes down over the hills, and the cold deepens with the dark.",
+        check=speaks, setup=_set_nightfall, n=10, threshold=1,
+        desc="an NPC reacts of its own volition to the world's own turn (nightfall)"),
     ReactScenario(
         # The restraint half (the high bar). The reticent hermit should usually let
         # a trivial ambient flicker pass. The local model under-weights 'do nothing'

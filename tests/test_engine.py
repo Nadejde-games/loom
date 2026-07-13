@@ -483,5 +483,52 @@ class EngineFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.calls, 0)              # model not consulted
 
 
+class WorldSnapshotAdjacencyTests(unittest.TestCase):
+    """B9 off-screen staging: world_snapshot(include_adjacent=True) surfaces the
+    *empty* rooms one exit from the players — where they may step next — so the
+    director can foreshadow there; off by default, the snapshot is unchanged."""
+
+    def _two_rooms(self):
+        from loom.world import Player
+        world = World()
+        world.add_location(Location(id="clearing", name="The Clearing",
+                                    description="Open grass.",
+                                    exits={"north": "grove"}))
+        world.add_location(Location(id="grove", name="The Grove",
+                                    description="Dark trees.",
+                                    exits={"south": "clearing"}))
+        world.add_entity(Player(id="p1", name="P", location_id="clearing"))
+        return Engine(world, FakeProvider(), start_location="clearing")
+
+    def test_default_hides_the_empty_room_ahead(self):
+        engine = self._two_rooms()
+        snap = engine.world_snapshot()
+        self.assertIn("clearing", snap)
+        self.assertNotIn("The Grove", snap)              # empty, unoccupied -> hidden
+        self.assertNotIn("ahead", snap)
+
+    def test_include_adjacent_shows_the_room_ahead_marked(self):
+        engine = self._two_rooms()
+        snap = engine.world_snapshot(include_adjacent=True)
+        self.assertIn("- clearing (The Clearing): P", snap)   # occupied, as before
+        self.assertIn("grove (The Grove) [ahead, empty]", snap)
+        self.assertIn("exits: south", snap)              # the ahead room's own detail
+
+    def test_occupied_adjacent_room_is_not_relisted_as_ahead(self):
+        from loom.world import Player
+        engine = self._two_rooms()
+        engine.world.add_entity(Player(id="p2", name="Q", location_id="grove"))
+        snap = engine.world_snapshot(include_adjacent=True)
+        self.assertIn("- grove (The Grove): Q", snap)    # occupied -> a normal line
+        self.assertNotIn("[ahead, empty]", snap)         # never both
+
+    def test_ahead_room_carries_its_standing_condition(self):
+        engine = self._two_rooms()
+        engine.world.conditions.set("grove", "mist", "A cold mist hangs here.")
+        snap = engine.world_snapshot(include_adjacent=True)
+        self.assertIn("grove (The Grove) [ahead, empty]", snap)
+        self.assertIn('mist ("A cold mist hangs here.")', snap)
+
+
 if __name__ == "__main__":
     unittest.main()

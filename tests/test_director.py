@@ -34,9 +34,13 @@ class CannedProvider:
         self.replies = list(replies) or [WATCH]
         self.calls = 0
         self.schemas = []
+        self.messages = []          # the messages handed to each call (nudge spy)
+        self.system_prompts = []    # the system prompt handed to each call
 
     async def complete(self, system, messages, schema=None):
         self.schemas.append(schema)
+        self.messages.append(messages)
+        self.system_prompts.append(system)
         reply = self.replies[min(self.calls, len(self.replies) - 1)]
         self.calls += 1
         return reply
@@ -78,12 +82,14 @@ def _mind(*replies):
                         registry=default_registry(), offered=["stage_event"])
 
 
-def _build(period=3, reply=STAGE, min_new_events=1, cooldown_pulses=1):
+def _build(period=3, reply=STAGE, min_new_events=1, cooldown_pulses=1,
+           lull_pulses=0):
     """A one-room world with a director attached, its own canned provider.
 
     Restraint defaults to permissive (1, 1) so the cadence-mechanics tests below
     exercise the timing wheel without the B8 rate-limit interfering; the restraint
-    suite sets stricter values explicitly."""
+    suite sets stricter values explicitly. ``lull_pulses`` defaults to 0 (off), so
+    every prior test keeps its exact behaviour; the lull suite sets it explicitly."""
     world = World()
     world.add_location(Location(id="room", name="Room", description="A bare room."))
     engine = Engine(world, FakeProvider(), start_location="room")
@@ -91,7 +97,8 @@ def _build(period=3, reply=STAGE, min_new_events=1, cooldown_pulses=1):
     director = engine.attach_director(FakeLoop(), provider=canned,
                                       period_ticks=period,
                                       min_new_events=min_new_events,
-                                      cooldown_pulses=cooldown_pulses)
+                                      cooldown_pulses=cooldown_pulses,
+                                      lull_pulses=lull_pulses)
     return engine, director, canned
 
 
@@ -268,7 +275,7 @@ class DirectorRestraintTests(unittest.TestCase):
     def test_quiet_world_never_beats(self):
         async def go():
             # A lone arrival (1 event) under a stricter event floor: the director
-            # stays its hand — no over-narration of an empty room.
+            # stays its hand — no over-narration of an empty room. (Lull off.)
             engine, director, canned = _build(period=1, min_new_events=5,
                                               cooldown_pulses=1)
             s = FakeSession()
@@ -277,6 +284,126 @@ class DirectorRestraintTests(unittest.TestCase):
                 await director.tick(1.0)
                 await _drain(engine)
             self.assertEqual(canned.calls, 0)
+        asyncio.run(go())
+
+
+class DirectorLullTests(unittest.TestCase):
+    """B9 lull trigger: opt-in (``lull_pulses`` > 0). The director stirs a *quiet*
+    room with one gentle beat once it has stayed quiet long enough — a liveliness
+    floor beside the activity ceiling — without touching the activity path or the
+    off-by-default restraint behaviour."""
+
+    def test_off_by_default_no_lull_however_long_it_stays_quiet(self):
+        async def go():
+            # No lull_pulses -> off. Many quiet pulses, still no beat (the B8 guard
+            # is preserved exactly; enabling the lull is what relaxes it).
+            engine, director, canned = _build(period=1, min_new_events=5,
+                                              cooldown_pulses=1)
+            s = FakeSession()
+            await engine.on_connect(s)
+            for _ in range(8):
+                await director.tick(1.0)
+                await _drain(engine)
+            self.assertEqual(canned.calls, 0)
+        asyncio.run(go())
+
+    def test_lull_stirs_a_quiet_world_after_its_window(self):
+        async def go():
+            # Below the event floor forever (quiet), but the lull window is 3.
+            engine, director, canned = _build(period=1, min_new_events=5,
+                                              cooldown_pulses=1, lull_pulses=3)
+            s = FakeSession()
+            await engine.on_connect(s)                     # 1 event, below the floor
+            await director.tick(1.0); await _drain(engine)  # pulses_since_beat -> 2
+            self.assertEqual(canned.calls, 0)               # not yet the lull window
+            await director.tick(1.0); await _drain(engine)  # -> 3 >= lull -> a beat
+            self.assertEqual(canned.calls, 1)
+            self.assertIn(STAGE_LINE, s.texts())            # a real gentle beat landed
+        asyncio.run(go())
+
+    def test_a_lull_beat_asks_for_a_gentle_touch(self):
+        async def go():
+            engine, director, canned = _build(period=1, min_new_events=5,
+                                              cooldown_pulses=1, lull_pulses=2)
+            s = FakeSession()
+            await engine.on_connect(s)
+            await director.tick(1.0); await _drain(engine)  # warmed 1 -> 2 -> lull beat
+            self.assertEqual(canned.calls, 1)
+            nudge = " ".join(m["content"] for m in canned.messages[-1])
+            self.assertIn("gone quiet", nudge)              # the gentler lull nudge
+        asyncio.run(go())
+
+    def test_activity_path_still_fires_before_the_lull_window(self):
+        async def go():
+            # Lull set high; enough events -> the activity path fires at once, and
+            # its nudge is the ordinary one, not the lull's.
+            engine, director, canned = _build(period=1, min_new_events=1,
+                                              cooldown_pulses=1, lull_pulses=99)
+            s = FakeSession()
+            await engine.on_connect(s)                      # 1 event >= floor(1)
+            await director.tick(1.0); await _drain(engine)
+            self.assertEqual(canned.calls, 1)
+            nudge = " ".join(m["content"] for m in canned.messages[-1])
+            self.assertNotIn("gone quiet", nudge)
+        asyncio.run(go())
+
+    def test_lull_still_needs_an_audience(self):
+        async def go():
+            # No player present: the lull never fires, however long it stays quiet.
+            engine, director, canned = _build(period=1, min_new_events=5,
+                                              cooldown_pulses=1, lull_pulses=2)
+            for _ in range(6):
+                await director.tick(1.0); await _drain(engine)
+            self.assertEqual(canned.calls, 0)
+        asyncio.run(go())
+
+
+class DirectorForeshadowTests(unittest.TestCase):
+    """B9 off-screen staging: the foreshadow flag surfaces the empty rooms just
+    ahead of the players and tells the director it may shape them; off by default,
+    so the prompt and snapshot are unchanged when it is not enabled."""
+
+    def test_off_by_default(self):
+        engine, director, canned = _build()
+        self.assertFalse(director.foreshadow)
+
+    def test_default_prompt_has_no_foreshadow_guidance(self):
+        mind = _mind(WATCH)
+        asyncio.run(mind.observe("- x", "- room (Room): Wren"))
+        system = mind.provider.system_prompts[-1]
+        self.assertIn("only places with someone present", system)
+        self.assertNotIn("[ahead, empty]", system)
+
+    def test_foreshadow_prompt_invites_shaping_ahead(self):
+        mind = _mind(WATCH)
+        asyncio.run(mind.observe(
+            "- x", "- room (Room): Wren\n- grove (Grove) [ahead, empty]",
+            foreshadow=True))
+        system = mind.provider.system_prompts[-1]
+        self.assertIn("[ahead, empty]", system)          # the guidance references it
+        self.assertIn("foreshadow", system.lower())
+        self.assertNotIn("only places with someone present", system)
+
+    def test_foreshadow_director_reads_the_room_ahead(self):
+        # A two-room world, a player in one; with foreshadow on, the director's beat
+        # sees the empty room ahead in the snapshot handed to its mind.
+        async def go():
+            world = World()
+            world.add_location(Location(id="here", name="Here", description="x",
+                                        exits={"north": "there"}))
+            world.add_location(Location(id="there", name="There", description="y",
+                                        exits={"south": "here"}))
+            engine = Engine(world, FakeProvider(), start_location="here")
+            canned = CannedProvider(WATCH)
+            director = engine.attach_director(FakeLoop(), provider=canned,
+                                              period_ticks=1, min_new_events=1,
+                                              cooldown_pulses=1, foreshadow=True)
+            s = FakeSession()
+            await engine.on_connect(s)                    # a player stands in "here"
+            await director.tick(1.0)
+            await _drain(engine)
+            self.assertGreaterEqual(canned.calls, 1)
+            self.assertIn("there (There) [ahead, empty]", canned.system_prompts[-1])
         asyncio.run(go())
 
 
