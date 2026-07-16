@@ -46,13 +46,26 @@ pip install -e .
 
 With the venv active, `PYTHONPATH` is not needed.
 
-**Terminal 1 — start the server.** Local inference on Ollama (the default game
-setup):
+**Terminal 1 — start the server.** Local inference on vLLM (point it at your
+running server; `qwen-local` here is the `--served-model-name`):
+
+```bash
+source .venv/bin/activate
+LOOM_PROVIDER=vllm LOOM_VLLM_MODEL=qwen-local python game/main.py
+#   LOOM_VLLM_HOST=http://localhost:8000   # (default)
+#   LOOM_VLLM_API_KEY=...                   # only if vLLM was started with --api-key
+```
+
+Or on Ollama:
 
 ```bash
 source .venv/bin/activate
 LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b python game/main.py
 ```
+
+Both are the same OpenAI-compatible path — they differ only by `base_url` + model
+name. A local backend shared with another workload can be slow to first token;
+replies run off the game loop, so the world never stalls.
 
 Or run it fully offline with the deterministic `FakeProvider` (no model, no key):
 
@@ -76,7 +89,10 @@ Try: `look`, `say hello`, `go north`, `go south`, `help`, `quit`.
 
 ```bash
 LOOM_PROVIDER=fake                                       # deterministic, offline (default)
-LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b   # local inference
+LOOM_PROVIDER=vllm LOOM_VLLM_MODEL=qwen-local            # local inference via vLLM
+   LOOM_VLLM_HOST=http://localhost:8000                  # (default)
+   LOOM_VLLM_API_KEY=...                                 # (optional; only if started with --api-key)
+LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b   # local inference via Ollama
    LOOM_OLLAMA_HOST=http://localhost:11434               # (default)
 LOOM_PROVIDER=anthropic ANTHROPIC_API_KEY=...            # Claude
 ```
