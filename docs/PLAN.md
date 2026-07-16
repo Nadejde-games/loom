@@ -787,8 +787,18 @@ Provider ping: python scripts/try_provider.py   (shows speech + validated action
 ### Choosing the AI provider (env)
 ```
 LOOM_PROVIDER=fake                                   # deterministic, offline (default)
-LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b   # local inference
+LOOM_PROVIDER=vllm  LOOM_VLLM_MODEL=qwen-local       # local inference via vLLM
+   LOOM_VLLM_HOST=http://localhost:8000              # (default)
+   LOOM_VLLM_API_KEY=...                             # (optional; only if vLLM was started with --api-key)
+LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b   # local inference via Ollama
    LOOM_OLLAMA_HOST=http://localhost:11434           # (default)
 LOOM_PROVIDER=anthropic ANTHROPIC_API_KEY=...        # Claude
 ```
-Same envs apply to `game/main.py` and `scripts/try_provider.py`.
+Same envs apply to `game/main.py` and `scripts/try_provider.py`. Both local backends
+are the OpenAI-compatible waist the design always anticipated — `VLLMProvider` is the
+sibling of `OllamaProvider`, differing only in defaults and the thinking-suppression
+quirk (Qwen3.x reasons into `content` unless told not to; both send
+`reasoning_effort: "none"`). vLLM honors the standard `response_format` grammar the
+action seam emits, so constrained decoding carries over unchanged. Note: a vLLM shared
+with another workload can be slow to first token; the engine runs replies off the loop,
+so latency never stalls the world.

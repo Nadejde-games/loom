@@ -12,7 +12,7 @@ import re
 import unittest
 
 from loom.action import ActionRegistry, ActionSpec, Param, default_registry
-from loom.ai.provider import OpenAICompatibleProvider
+from loom.ai.provider import OpenAICompatibleProvider, VLLMProvider, OllamaProvider
 
 
 def run(coro):
@@ -168,6 +168,51 @@ class ProviderForwardingTests(unittest.TestCase):
         cp = CapturingProvider()
         run(cp.complete("sys", [{"role": "user", "content": "hi"}]))
         self.assertNotIn("response_format", cp.captured)
+
+
+class _CapturingVLLM(VLLMProvider):
+    """A VLLMProvider whose POST is captured, not sent — to prove its config on
+    the wire without a live server."""
+    def _post(self, payload):
+        self.captured = payload
+        return {"choices": [{"message": {"content": '{"speech":"","actions":[]}'}}]}
+
+
+class VLLMProviderTests(unittest.TestCase):
+    """The vLLM backend is a thin config over the OpenAI waist: thinking suppressed
+    by default, constrained decoding inherited unchanged (vLLM honors the standard
+    response_format the base emits), and auth optional."""
+
+    def test_defaults_and_reasoning_off(self):
+        p = _CapturingVLLM()
+        self.assertEqual(p.name, "vllm:qwen-local")
+        self.assertEqual(p.url, "http://localhost:8000/v1/chat/completions")
+        run(p.complete("sys", [{"role": "user", "content": "hi"}]))
+        # Thinking is suppressed by default (Qwen3.x reasons into content otherwise).
+        self.assertEqual(p.captured["reasoning_effort"], "none")
+
+    def test_think_true_omits_reasoning_effort(self):
+        p = _CapturingVLLM(think=True)
+        run(p.complete("sys", [{"role": "user", "content": "hi"}]))
+        self.assertNotIn("reasoning_effort", p.captured)
+
+    def test_inherits_standard_constrained_decoding(self):
+        p = _CapturingVLLM()
+        schema = {"type": "object"}
+        run(p.complete("sys", [{"role": "user", "content": "hi"}], schema=schema))
+        rf = p.captured["response_format"]
+        self.assertEqual(rf["type"], "json_schema")
+        self.assertTrue(rf["json_schema"]["strict"])
+        self.assertIs(rf["json_schema"]["schema"], schema)
+
+    def test_no_auth_header_without_api_key(self):
+        # A vLLM started without --api-key needs no token; none is sent by default.
+        p = _CapturingVLLM()
+        self.assertIsNone(p.api_key)
+
+    def test_ollama_and_vllm_carry_distinct_names(self):
+        self.assertEqual(OllamaProvider(model="m").name, "ollama:m")
+        self.assertEqual(VLLMProvider(model="m").name, "vllm:m")
 
 
 if __name__ == "__main__":

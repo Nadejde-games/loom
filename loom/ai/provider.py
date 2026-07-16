@@ -239,6 +239,45 @@ class OllamaProvider(OpenAICompatibleProvider):
         self.name = f"ollama:{model}"
 
 
+class VLLMProvider(OpenAICompatibleProvider):
+    """Local inference via a vLLM OpenAI-compatible server (``/v1``).
+
+    The sibling of ``OllamaProvider`` for the other local backend the swappable
+    design always anticipated — same OpenAI waist, only the quirks differ:
+
+    * **Thinking off by default.** Qwen3.x defaults to reasoning, and with no
+      ``--reasoning-parser`` on the server the chain-of-thought lands *inline in
+      ``content``* and (on a small token budget) crowds out the actual answer —
+      the same failure the Ollama provider guards against. We send
+      ``reasoning_effort: "none"`` (verified to suppress it on this build; the
+      Qwen template's ``chat_template_kwargs: {"enable_thinking": false}`` is an
+      equivalent lever). Pass ``think=True`` to allow deliberation.
+    * **Constrained decoding is standard.** vLLM honors the OpenAI
+      ``response_format: {json_schema, strict}`` the base ``_schema_payload``
+      already emits (verified end-to-end on the turn envelope), so — unlike some
+      backends — it needs no override here; the action seam's grammar guarantee
+      carries over unchanged.
+    * **Auth optional.** A vLLM started without ``--api-key`` needs no token; pass
+      one (or ``LOOM_VLLM_API_KEY``) only if the server requires it.
+
+    The default ``timeout`` is generous because a shared/loaded server (vLLM may
+    be serving another workload) can be slow to first token; the engine runs
+    replies off the loop, so latency never stalls the world.
+    """
+
+    def __init__(self, model: str = "qwen-local",
+                 host: str = "http://localhost:8000",
+                 think: bool = False, api_key: str | None = None,
+                 timeout: float = 180.0, **kw):
+        extra = dict(kw.pop("extra_body", None) or {})
+        if not think:
+            extra.setdefault("reasoning_effort", "none")
+        super().__init__(base_url=host.rstrip("/") + "/v1", model=model,
+                         api_key=api_key, timeout=timeout, extra_body=extra, **kw)
+        self.host = host
+        self.name = f"vllm:{model}"
+
+
 class AnthropicProvider:
     """Real Claude. Requires the ``anthropic`` package and an API key."""
 
@@ -274,16 +313,25 @@ class AnthropicProvider:
 def get_default_provider() -> LLMProvider:
     """Resolve a provider from the environment (explicit, no network probing):
 
-    * LOOM_PROVIDER = fake | ollama | anthropic   — force a choice.
-    * else LOOM_OLLAMA_MODEL set                   — use local Ollama.
-    * else ANTHROPIC_API_KEY set                   — use Claude.
-    * else                                         — FakeProvider.
+    * LOOM_PROVIDER = fake | ollama | vllm | anthropic  — force a choice.
+    * else LOOM_VLLM_MODEL set                           — use local vLLM.
+    * else LOOM_OLLAMA_MODEL set                         — use local Ollama.
+    * else ANTHROPIC_API_KEY set                         — use Claude.
+    * else                                               — FakeProvider.
 
+    vLLM tuning:  LOOM_VLLM_MODEL (default qwen-local), LOOM_VLLM_HOST
+                  (default http://localhost:8000), LOOM_VLLM_API_KEY (optional).
     Ollama tuning: LOOM_OLLAMA_MODEL (default qwen3.5:35b-a3b), LOOM_OLLAMA_HOST.
     """
     choice = os.environ.get("LOOM_PROVIDER", "").strip().lower()
     if choice == "fake":
         return FakeProvider()
+    if choice == "vllm" or (not choice and os.environ.get("LOOM_VLLM_MODEL")):
+        return VLLMProvider(
+            model=os.environ.get("LOOM_VLLM_MODEL", "qwen-local"),
+            host=os.environ.get("LOOM_VLLM_HOST", "http://localhost:8000"),
+            api_key=os.environ.get("LOOM_VLLM_API_KEY") or None,
+        )
     if choice == "ollama" or (not choice and os.environ.get("LOOM_OLLAMA_MODEL")):
         return OllamaProvider(
             model=os.environ.get("LOOM_OLLAMA_MODEL", "qwen3.5:35b-a3b"),

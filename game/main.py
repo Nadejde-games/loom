@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 import os
 from loom import GameServer, GameLoop, Engine
-from loom.ai import get_default_provider, OllamaProvider
+from loom.ai import get_default_provider, OllamaProvider, VLLMProvider
 from loom.content import load_world
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -19,13 +19,22 @@ WORLD_FILE = os.path.join(HERE, "world", "world.json")
 def _director_provider():
     """A larger-context model variant for the game-master, when configured.
 
-    Set ``LOOM_GM_MODEL`` (e.g. ``loom-gm``, built from
-    ops/modelfiles/loom-gm.Modelfile) to give the director its own wide-context
-    model; otherwise it shares the engine's provider.
+    Set ``LOOM_GM_MODEL`` to give the director its own model variant; otherwise it
+    shares the engine's provider (the common case — the director then runs on
+    whatever backend the engine chose). When a GM model *is* named, it is built on
+    the same backend as the engine so the two stay on one server: vLLM if the game
+    is on vLLM (``LOOM_PROVIDER=vllm`` / ``LOOM_VLLM_MODEL``), else Ollama (e.g.
+    ``loom-gm`` from ops/modelfiles/loom-gm.Modelfile).
     """
     gm_model = os.environ.get("LOOM_GM_MODEL")
     if not gm_model:
         return None
+    choice = os.environ.get("LOOM_PROVIDER", "").strip().lower()
+    if choice == "vllm" or (not choice and os.environ.get("LOOM_VLLM_MODEL")):
+        return VLLMProvider(
+            model=gm_model,
+            host=os.environ.get("LOOM_VLLM_HOST", "http://localhost:8000"),
+            api_key=os.environ.get("LOOM_VLLM_API_KEY") or None)
     return OllamaProvider(
         model=gm_model,
         host=os.environ.get("LOOM_OLLAMA_HOST", "http://localhost:11434"))
