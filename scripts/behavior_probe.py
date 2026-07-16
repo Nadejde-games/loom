@@ -305,6 +305,35 @@ def sets_condition_in(location: str) -> Callable:
     return check
 
 
+def spawns_item_in(location: str) -> Callable:
+    """The director brought a real object into the given (real) location — a valid
+    spawn_item with a non-empty name and appearance line (the thing is grounded and
+    announced, the reach half of proving the new capability)."""
+    def check(turn):
+        return any(a.name == "spawn_item"
+                   and str(a.args.get("location")) == location
+                   and str(a.args.get("name", "")).strip()
+                   and str(a.args.get("text", "")).strip()
+                   for a in turn.actions)
+    return check
+
+
+def offers_quest_in(location: str, destinations: tuple) -> Callable:
+    """The director set a well-formed quest before the players in the given (real)
+    location, pointing at a *real* onward place — a valid offer_quest with non-empty
+    title/summary/line and a destination among ``destinations`` (the real ids the
+    snapshot exposed, so the goal is grounded, not hallucinated)."""
+    def check(turn):
+        return any(a.name == "offer_quest"
+                   and str(a.args.get("location")) == location
+                   and str(a.args.get("title", "")).strip()
+                   and str(a.args.get("summary", "")).strip()
+                   and str(a.args.get("text", "")).strip()
+                   and str(a.args.get("destination", "")) in destinations
+                   for a in turn.actions)
+    return check
+
+
 DIRECTOR_PERSONA = {
     "tone": "a hushed, folkloric wilderness where small omens carry weight and "
             "the land seems half-awake",
@@ -355,6 +384,29 @@ DIRECTOR_AHEAD_SNAPSHOT = (
     "Wanderer-1; exits: north, down; on the ground: a rusty lantern\n"
     "- hill_path (The Hill Path) [ahead, empty]; exits: south")
 
+# A moment inviting a *thing* — the wanderer is searching, and Wren points at the
+# ground. The reach action spawn_item: the director may bring a small object into
+# the room for them to find. Same real location id for grounding.
+DIRECTOR_SPAWN_DIGEST = (
+    "- Wanderer-1 arrived in The Cave Mouth.\n"
+    '- Wanderer-1 said: "there must be something useful left lying around this old '
+    'place — let me look."\n'
+    "- Wren the Wayfinder: Keep your eyes on the ground here — these hills hide "
+    "small things for those who look.\n"
+    "- Odd the Hermit watches the stranger search, saying nothing")
+
+# A moment inviting a *purpose* — the wanderer asks where to go, and the guide names
+# the hill. The reach action offer_quest: the director may set a gentle goal pointing
+# at hill_path (the empty room just ahead, so the snapshot must expose its id — the
+# foreshadow snapshot does). The offer targets the occupied room; the goal points on.
+DIRECTOR_QUEST_DIGEST = (
+    "- Wanderer-1 arrived in The Cave Mouth.\n"
+    '- Wanderer-1 said: "I don\'t know where to go from here. Is there anywhere '
+    'worth heading?"\n'
+    "- Wren the Wayfinder: The hill path to the north climbs to an old lookout — "
+    "worth the walk, if you've the legs for it.\n"
+    "- Odd the Hermit: Aye. There's something up that path, if you care to find it.")
+
 DIRECTOR_SCENARIOS = [
     DirectorScenario(
         # Measured 7/8 and 6/6 grounded into cave_mouth, 0 envelope leaks. The
@@ -403,6 +455,33 @@ DIRECTOR_SCENARIOS = [
         foreshadow=True, n=8, threshold=2,
         desc="the director foreshadows into the empty room the players are about "
              "to enter (off-screen staging)"),
+    DirectorScenario(
+        # Reach, slice 1: given a searching wanderer and a hint, the director brings a
+        # real object into the room they are in — grounded (a location that exists) and
+        # well-formed (a name and appearance line). Proves spawn_item the way
+        # sets-a-scene proved stage_event. Threshold is a collapse-detector (the director
+        # never spawns, or spawns into a room that doesn't exist), not a rate — the offer
+        # subset is spawn_item only, so the question is whether it acts well when invited.
+        name="director.spawns-item",
+        digest=DIRECTOR_SPAWN_DIGEST, snapshot=DIRECTOR_SNAPSHOT,
+        check=spawns_item_in("cave_mouth"), offered=("spawn_item",),
+        n=5, threshold=3,
+        desc="the director spawns a real, well-formed object into the room where "
+             "players are (reach: spawn_item)"),
+    DirectorScenario(
+        # Reach, slice 2: given a wanderer asking where to go, the director sets a gentle
+        # quest pointing at a *real* onward place. Needs foreshadow on so the snapshot
+        # exposes the destination id (hill_path) — you cannot send someone to a place you
+        # cannot see; in live play foreshadow is on by default. The offer targets the
+        # occupied cave_mouth; the goal points to hill_path. Threshold is a
+        # collapse-detector (the director never offers, or names a place not shown), not
+        # a rate — offering a quest is a *sometimes*, deliberate touch.
+        name="director.offers-quest",
+        digest=DIRECTOR_QUEST_DIGEST, snapshot=DIRECTOR_AHEAD_SNAPSHOT,
+        check=offers_quest_in("cave_mouth", ("hill_path",)),
+        offered=("offer_quest",), foreshadow=True, n=8, threshold=3,
+        desc="the director offers a grounded quest pointing at a real onward room "
+             "(reach: offer_quest)"),
 ]
 
 

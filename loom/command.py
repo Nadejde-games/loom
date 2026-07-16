@@ -125,6 +125,7 @@ def default_verbs() -> dict:
     say = Verb("say", "text", target="say")
     go = Verb("go", "query", target="go", dobj=Slot("direction", RAW))
     inv = Verb("inventory", "query", target="inventory")
+    quests = Verb("quests", "query", target="quests")
     who = Verb("who", "query", target="who")
     hlp = Verb("help", "query", target="help")
     quit_ = Verb("quit", "query", target="quit")
@@ -138,6 +139,7 @@ def default_verbs() -> dict:
         "say": say,
         "go": go, "move": go, "walk": go,
         "inventory": inv, "inv": inv, "i": inv,
+        "quests": quests, "quest": quests, "journal": quests, "log": quests,
         "who": who,
         "help": hlp, "?": hlp, "commands": hlp,
         "quit": quit_, "exit": quit_,

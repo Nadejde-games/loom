@@ -1,8 +1,9 @@
 """Container for all world state, plus simple spatial queries."""
 from __future__ import annotations
-from .entity import Entity, Character, Item
+from .entity import Entity, Character, Item, Player
 from .location import Location
 from .conditions import Conditions
+from ..quest import QuestBook
 
 
 class World:
@@ -24,6 +25,15 @@ class World:
         # lifted. Held here at the world level, not on Location, so region-wide
         # weather and a world-clock extend the same shape later (see conditions.py).
         self.conditions = Conditions()
+        # Per-player quest log — a director-offered goal, tracked and readable. A
+        # world-held, per-key state primitive on the same footing as ``conditions``:
+        # empty until the director offers a quest (offer_quest), read by the player's
+        # ``quests`` command, completed by a deterministic engine check (arrival).
+        self.quests = QuestBook()
+        # Monotonic counter behind ``fresh_id`` — the source of unique, deterministic
+        # ids for entities spawned at runtime (a director's spawned item), so they
+        # never collide with authored ids and tests stay reproducible.
+        self._id_counter = 0
 
     # --- mutation ---
     def add_location(self, loc: Location) -> None:
@@ -63,6 +73,30 @@ class World:
         if loc is not None:
             loc.occupants.discard(entity_id)
 
+    def fresh_id(self, prefix: str = "e") -> str:
+        """A unique, deterministic id for an entity spawned at runtime — a thing the
+        director brings into being (spawn_item), not authored in world data. Monotonic
+        per world, so ids never collide and offline tests are reproducible; skips any
+        id already taken, in case authored content shares the prefix."""
+        while True:
+            self._id_counter += 1
+            candidate = f"{prefix}_{self._id_counter}"
+            if candidate not in self.entities and candidate not in self.locations:
+                return candidate
+
+    def spawn_item(self, name: str, description: str = "",
+                   holder_id: str | None = None, portable: bool = True) -> Item:
+        """Mint and place a new ``Item``, returning it. The World-layer creator behind
+        the director's ``spawn_item`` action (so ``loom/action.py`` never imports the
+        world model): the item gets a fresh id, is indexed onto its holder via
+        ``add_entity`` (a location = the floor, a character = an inventory), and is a
+        real, persistent, perceivable thing from that moment — nothing spawn-specific
+        downstream. Placing lore-authored, balanced loot is Phase 4; this is the plumbing."""
+        item = Item(id=self.fresh_id("item"), name=name, description=description,
+                    holder=holder_id, portable=portable)
+        self.add_entity(item)
+        return item
+
     def place_item(self, item_id: str, holder_id: str) -> bool:
         """Re-home an item to a new holder — a location, a character, or a
         container item. The single mutator behind take, drop, and give: each is
@@ -98,6 +132,13 @@ class World:
             return []
         return [self.entities[i] for i in loc.occupants
                 if i in self.entities and i != exclude]
+
+    def players_in(self, location_id: str) -> list[Player]:
+        """The connected players present in a location — the audience a
+        location-addressed director action (offer_quest) reaches. Only ``Player``s
+        (session-bound), never NPCs: a quest is a goal for someone playing, and it is
+        written into that player's own log."""
+        return [e for e in self.occupants(location_id) if isinstance(e, Player)]
 
     def location_of(self, entity_id: str) -> Location | None:
         ent = self.entities.get(entity_id)

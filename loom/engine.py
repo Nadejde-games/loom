@@ -13,6 +13,7 @@ from .naming import resolve, Resolved, Ambiguous
 from .chronicle import Chronicle
 from .clock import WorldClock, Phase
 from .weather import WeatherSystem, Weather
+from .quest import COMPLETE
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
 from .ai import intent
 from .ai.director import DirectorMind, Director
@@ -30,8 +31,14 @@ PLAYER_ONLY_ACTIONS = ("take_item", "drop_item")
 # per-mind subset lever PLAYER_ONLY_ACTIONS uses. Excluded from the NPC catalogue
 # below so a character can never stage an ambient beat or change the weather.
 # stage_event narrates a one-off beat; set_condition/clear_condition raise and
-# lift a *standing* condition (a storm, nightfall) that persists in perception.
-DIRECTOR_ONLY_ACTIONS = ("stage_event", "set_condition", "clear_condition")
+# lift a *standing* condition (a storm, nightfall) that persists in perception;
+# spawn_item brings a real object into a room; offer_quest sets a gentle,
+# per-player goal (tracked in world.quests, completed by the arrival hook below).
+# nudge_npc — writing a goal/memory into a character — is deliberately NOT here:
+# our director shapes the world, not minds (see the Phase 3 design decision); it
+# stays a framework-optional action, unregistered and so offered to no one.
+DIRECTOR_ONLY_ACTIONS = ("stage_event", "set_condition", "clear_condition",
+                         "spawn_item", "offer_quest")
 
 # Autonomous-reaction rails (BACKLOG B9). NPCs react to what happens around them of
 # their own volition, and to each other — a cascade. The limiter is engine-enforced
@@ -235,6 +242,8 @@ class Engine:
             await self._go(session, player, p.dobj)
         elif t == "inventory":
             await self._inventory(session, player)
+        elif t == "quests":
+            await self._quests(session, player)
         elif t == "who":
             here = ", ".join(e.name for e in
                              self.world.occupants(player.location_id, exclude=player.id))
@@ -691,6 +700,9 @@ class Engine:
         self.chronicle.record(f"{player.name} goes {direction} to "
                               f"{dest.name if dest else dest_id}.",
                               location_id=dest_id, kind="move")
+        # Reaching a place completes any reach-quest aimed here (the deterministic
+        # completion check, bound to this arrival — the only path a player moves).
+        await self._check_arrival_quests(session, player, dest_id)
 
     async def _examine(self, session: Session, player, phrase: str) -> None:
         """look at / examine a specific thing in scope — a read-only description."""
@@ -818,6 +830,31 @@ class Engine:
         await session.send_text("You are carrying: "
                                 + ", ".join(i.name for i in held) + ".")
 
+    async def _quests(self, session: Session, player) -> None:
+        """The player's quest journal (a read-only query, no seam) — what the
+        director has set before them and what they have seen through. Empty until a
+        quest is offered; a completed one stays, marked, as a record of the doing."""
+        entries = self.world.quests.for_player(player.id)
+        if not entries:
+            await session.send_text("You are pursuing nothing in particular.")
+            return
+        lines = ["== Your journal =="]
+        for q in entries:
+            mark = "✓" if q.status == COMPLETE else "•"
+            tail = "  (done)" if q.status == COMPLETE else ""
+            lines.append(f"{mark} {q.title} — {q.summary}{tail}")
+        await session.send_text("\n".join(lines))
+
+    async def _check_arrival_quests(self, session: Session, player,
+                                    location_id: str) -> None:
+        """The deterministic quest-completion check, bound to the player-arrival
+        seam event: reaching a place completes any active ``reach`` quest aimed
+        there, and the player is told. Idempotent (an already-done quest never
+        re-fires), so wandering back through the destination does nothing."""
+        done = self.world.quests.complete_reached(player.id, location_id)
+        for q in done:
+            await session.send_system(f'✓ Quest complete: "{q.title}".')
+
     @staticmethod
     def _which(match) -> str:
         names = ", ".join(getattr(e, "name", "?") for e in match.candidates)
@@ -834,5 +871,5 @@ class Engine:
                 "  go <dir> — or just n/s/e/w/u/d\n"
                 "  take <item> [from <who>] (get/grab/pick up) · drop <item> (put down)\n"
                 "  give <item> to <who> (hand) · inventory (i)\n"
-                "  say <words> · who · help · quit\n"
+                "  say <words> · who · quests (journal) · help · quit\n"
                 "Phrasing is flexible, and \"the\"/\"a\" are fine.")

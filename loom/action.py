@@ -497,6 +497,86 @@ def _clear_condition(ctx: ActionContext) -> ActionResult:
     )
 
 
+def _spawn_item(ctx: ActionContext) -> ActionResult:
+    """Bring a small object into a room — the game-master's first *creative* touch,
+    where its siblings only narrate or set a mood.
+
+    The location-addressed shape of ``stage_event``, but world-mutating like
+    ``set_condition``: it makes a real, persistent ``Item`` that then lies on the
+    room's floor for anyone present to see, examine, and pick up (it is portable and
+    perceived through the very same paths every authored item is — ``look``, an NPC's
+    ``Scene``, the take/give seam), and it announces the thing's appearance once to
+    the room. The schema guarantees the strings; this handler is the gate — the named
+    place must exist and the name and appearance line be non-empty — and the World
+    layer mints the id and places the item (so this module never imports the world
+    model). Authoring *balanced, lore-rich* loot is Phase 4; here the director simply
+    names a concrete thing and where it appears."""
+    world = ctx.world
+    location_id = str(ctx.args["location"]).strip()
+    name = str(ctx.args["name"]).strip()
+    description = str(ctx.args["description"]).strip()
+    text = str(ctx.args["text"]).strip()
+    if location_id not in getattr(world, "locations", {}):
+        raise ActionError(f'no such location "{location_id}" to spawn an item in')
+    if not name:
+        raise ActionError("spawn_item needs a non-empty item name")
+    if not text:
+        raise ActionError("spawn_item needs a non-empty line for its appearance")
+    item = world.spawn_item(name, description, holder_id=location_id)
+    return ActionResult(
+        broadcasts=[(location_id, text)],
+        actor_memory=f'I brought {item.name} into {location_id}: "{text}"',
+    )
+
+
+def _offer_quest(ctx: ActionContext) -> ActionResult:
+    """Set a gentle quest before the players in a place — the game-master's reach into
+    *purpose*, where the world stops being only a mood and becomes something to pursue.
+
+    The director shapes the *world*, never a mind: a quest is written into a *player's*
+    own log (a goal to draw them onward), never into a character. Location-addressed
+    like every director action — it offers to whoever is present in the named room —
+    and it announces the pull of it once to that room (an omen the characters there may
+    answer of their own volition, through the reaction path). The schema guarantees the
+    strings; this handler is the gate: the offering place and the ``destination`` must
+    both exist, the title/summary/line be non-empty, and at least one *player* be
+    present to receive it (a quest offered to no one is a no-op — refused, dropped). The
+    QuestBook de-dupes by title, so a repeat offer to a player who already holds it is
+    skipped; if every present player already holds it, nothing was offered and the
+    action is refused. Completion is the engine's deterministic check when a player
+    reaches the destination — never claimed, never model-judged."""
+    world = ctx.world
+    location_id = str(ctx.args["location"]).strip()
+    title = str(ctx.args["title"]).strip()
+    summary = str(ctx.args["summary"]).strip()
+    destination = str(ctx.args["destination"]).strip()
+    text = str(ctx.args["text"]).strip()
+    locations = getattr(world, "locations", {})
+    if location_id not in locations:
+        raise ActionError(f'no such location "{location_id}" to offer a quest in')
+    if destination not in locations:
+        raise ActionError(f'no such destination "{destination}" for the quest to seek')
+    if not title:
+        raise ActionError("offer_quest needs a short non-empty title")
+    if not summary:
+        raise ActionError("offer_quest needs a non-empty summary of what to seek")
+    if not text:
+        raise ActionError("offer_quest needs a non-empty line to announce it")
+    players = world.players_in(location_id)
+    if not players:
+        raise ActionError(f'no player is present in "{location_id}" to receive a quest')
+    giver = getattr(ctx.actor, "name", "")
+    offered = [world.quests.offer(p.id, title=title, summary=summary, giver=giver,
+                                  destination=destination) for p in players]
+    if not any(offered):
+        raise ActionError(f'every player in "{location_id}" already holds "{title}"')
+    return ActionResult(
+        broadcasts=[(location_id, text)],
+        actor_memory=f'I set a quest "{title}" (reach {destination}) '
+                     f'for those in {location_id}: "{text}"',
+    )
+
+
 def default_registry() -> ActionRegistry:
     """A registry preloaded with the built-in actions every world gets."""
     reg = ActionRegistry()
@@ -620,5 +700,65 @@ def default_registry() -> ActionRegistry:
                                "will read it"),
         },
         handler=_clear_condition,
+    ))
+    reg.register(ActionSpec(
+        name="spawn_item",
+        description=('as the unseen game-master, bring a small object into a place '
+                     '— a real thing that then lies there for anyone to find, '
+                     'examine, and pick up. Name the place by its id, give the item '
+                     'a short name and a sentence describing it, and a line '
+                     'announcing its appearance as those present will read it, e.g. '
+                     'location "clearing", name "a weathered iron key", description '
+                     '"A heavy key, red with rust, its teeth worn smooth.", text '
+                     '"Something glints in the leaf-litter — a small iron key, '
+                     'half-buried.". Use it sparingly, to reward attention or seed a '
+                     'small mystery; the thing is real and persists until taken.'),
+        params={
+            "location": Param("str", required=True,
+                              desc="the id of the place the object appears in, as "
+                                   "shown in your view of the world"),
+            "name": Param("str", required=True,
+                          desc='a short name for the object, as it will read in the '
+                               'room, e.g. "a weathered iron key"'),
+            "description": Param("str", required=True,
+                                 desc="a sentence describing the object, read when "
+                                      "someone examines it"),
+            "text": Param("str", required=True,
+                          desc="the line announcing its appearance, as those present "
+                               "will read it"),
+        },
+        handler=_spawn_item,
+    ))
+    reg.register(ActionSpec(
+        name="offer_quest",
+        description=('as the unseen game-master, set a gentle quest before the '
+                     'players in a place — a purpose to draw them onward, never a '
+                     'command. Name the place they are in by its id, give the quest '
+                     'a short title and a one-sentence summary of what they might '
+                     'seek, the id of the place they should make for (destination), '
+                     'and a line announcing the pull of it as those present will '
+                     'read it, e.g. location "cave_mouth", title "The Signal-Fire", '
+                     'summary "They say an old signal-fire on the hill has not been '
+                     'lit in years — perhaps it is worth the climb.", destination '
+                     '"hill_path", text "A quiet certainty settles: something on the '
+                     'hill path is waiting to be found.". The quest completes on its '
+                     'own when a player reaches the destination. Offer one only when '
+                     'the moment genuinely invites it.'),
+        params={
+            "location": Param("str", required=True,
+                              desc="the id of the place the players are in, as shown "
+                                   "in your view of the world"),
+            "title": Param("str", required=True,
+                           desc="a short title for the quest, as it reads in the log"),
+            "summary": Param("str", required=True,
+                             desc="one sentence on what the players might seek and why"),
+            "destination": Param("str", required=True,
+                                 desc="the id of the place they should reach to "
+                                      "complete it, as shown in your view of the world"),
+            "text": Param("str", required=True,
+                          desc="the line announcing the quest's pull, as those "
+                               "present will read it"),
+        },
+        handler=_offer_quest,
     ))
     return reg

@@ -530,5 +530,80 @@ class WorldSnapshotAdjacencyTests(unittest.TestCase):
         self.assertIn('mist ("A cold mist hangs here.")', snap)
 
 
+class EngineQuestTests(unittest.IsolatedAsyncioTestCase):
+    """The reach-quest loop end to end through the engine: a director offer lands
+    in a player's log via the seam, the ``quests`` query reads it, and reaching the
+    destination completes it deterministically with a notice."""
+
+    async def _connect(self, engine):
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()                                  # drop the banner/look
+        return s, engine.players[s.id]
+
+    async def test_reach_quest_completes_on_arrival_with_notice(self):
+        engine = build_two_room_engine()                # a (north→b); start in a
+        s, player = await self._connect(engine)
+        engine.world.quests.offer(player.id, title="The Far Room",
+                                  summary="Room B is worth the walk.",
+                                  destination="b")
+        await engine.on_input(s, "north")               # walk into B — the arrival hook
+        # The completion notice reached the player on the system channel.
+        systems = [d for (c, d) in s.sent if c == Channel.SYSTEM]
+        self.assertTrue(any("Quest complete" in d and "The Far Room" in d
+                            for d in systems))
+        self.assertEqual(engine.world.quests.for_player(player.id)[0].status,
+                         "complete")
+
+    async def test_arrival_elsewhere_does_not_complete(self):
+        engine = build_two_room_engine()
+        s, player = await self._connect(engine)
+        engine.world.quests.offer(player.id, title="Go", summary="s",
+                                  destination="b")
+        # No movement toward b: a look does not complete anything.
+        await engine.on_input(s, "look")
+        self.assertEqual(engine.world.quests.for_player(player.id)[0].status,
+                         "active")
+
+    async def test_quests_query_renders_empty_active_and_done(self):
+        engine = build_two_room_engine()
+        s, player = await self._connect(engine)
+        # Empty journal.
+        await engine.on_input(s, "quests")
+        self.assertIn("nothing in particular", s.texts())
+        # An active quest shows its title + summary.
+        s.sent.clear()
+        engine.world.quests.offer(player.id, title="The Far Room",
+                                  summary="Room B is worth the walk.",
+                                  destination="b")
+        await engine.on_input(s, "quests")
+        out = s.texts()
+        self.assertIn("The Far Room", out)
+        self.assertIn("Room B is worth the walk.", out)
+        self.assertNotIn("(done)", out)
+        # After arrival it reads as done.
+        await engine.on_input(s, "north")
+        s.sent.clear()
+        await engine.on_input(s, "journal")             # a synonym for quests
+        self.assertIn("(done)", s.texts())
+
+    async def test_offer_quest_through_the_seam_writes_the_player_log(self):
+        # Drive offer_quest the way the real director does — a validated intent
+        # through _perform with the bodiless director actor — and prove it lands.
+        from loom.action import ActionIntent
+        from loom.ai.director import _DirectorActor
+        engine = build_two_room_engine()
+        s, player = await self._connect(engine)
+        intent = ActionIntent(name="offer_quest", args={
+            "location": "a", "title": "The Far Room",
+            "summary": "Room B is worth the walk.", "destination": "b",
+            "text": "A quiet pull settles over you."})
+        await engine._perform(None, _DirectorActor(), None, intent)
+        # The omen reached the room, and the goal reached the player's log.
+        self.assertIn("A quiet pull settles over you.", s.texts())
+        log = engine.world.quests.for_player(player.id)
+        self.assertEqual([q.title for q in log], ["The Far Room"])
+
+
 if __name__ == "__main__":
     unittest.main()

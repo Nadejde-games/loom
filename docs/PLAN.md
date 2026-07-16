@@ -1,34 +1,38 @@
 # Project plan — Loom engine & the forever game
 
 Living document. The reference for where we are and where we're going.
-Last updated: 2026-07-12.
+Last updated: 2026-07-14.
 
-## Status snapshot — line drawn 2026-07-12
+## Status snapshot — line drawn 2026-07-14
 
-Committed through `45742ee`; the world-clock and the director-lull slices (B9's
-autonomous trigger + its lull follow-on) are built and green on top, awaiting commit.
+Committed through `e94a218` (the act-gate, B8/B5); the Phase 3 *reach* slice
+(spawn_item + the quest subsystem) is built and green on top, awaiting commit.
 **Phases 0–2 and the Phase 2 hardening are complete; the Phase 3 game-master director
-is well advanced** — it shapes the world (standing conditions), the characters react
-on their own (the reaction path), the world turns on its own clock even when no one is
-present, the director stirs even a *quiet* room on a lull, and it can foreshadow into
-the empty rooms just ahead of the players. In one sentence: NPCs with persona + memory
+is done** — it shapes the world (standing conditions, and now *spawns things* and
+*offers quests*), the characters react on their own (the reaction path), the world
+turns on its own clock even when no one is present, the director stirs even a *quiet*
+room on a lull, foreshadows the rooms ahead, and judges whether the moment wants a
+beat before paying for one (the act-gate). In one sentence: NPCs with persona + memory
 converse and *act* through a grammar-hardened action seam; players issue rich,
 phrasing-tolerant commands through that *same* seam; an unseen director shapes ambient
-scene on a slow, restrained cadence — stirring a still room on a lull, foreshadowing
-the way ahead; and an autonomous world-clock turns time itself while the weather
-wanders — all on local GPU inference, all editable as world data. **332 offline tests
-+ 27 live behavioral scenarios, both gates green.**
+scene and now real events — a thing appears, a quest pulls onward — on a slow,
+restrained, self-judging cadence; and an autonomous world-clock turns time itself while
+the weather wanders — all on local GPU inference, all editable as world data. **357
+offline tests + 29 live behavioral scenarios, both gates green.**
 
-The clean milestone: the director exists on the seam and is *usable* — restrained,
-grounded, persona-as-data. Open threads from here (detailed in the phase notes and
-`docs/BACKLOG.md`):
-- **Director reach** — the director shapes the *world*, not minds. **First slice
-  landed (2026-07-12): standing environmental conditions** — `set_condition` /
-  `clear_condition` raise and lift a persistent, perceivable condition (a storm,
-  nightfall) that colors a place until the director lifts it. Still to come:
-  `spawn_item`, and quests (`offer_quest` + tracking). NPCs stay autonomous and
-  react on their own; `nudge_npc` is a framework option disabled for our game (see
-  the Phase 3 design decision).
+The clean milestone: the director is *complete* on the seam — restrained, self-judging,
+grounded, persona-as-data, and now reaching from atmosphere into events (a thing
+appears; a goal pulls a wanderer onward). Open threads from here (detailed in the phase
+notes and `docs/BACKLOG.md`):
+- **Director reach** — the director shapes the *world*, not minds. **DONE
+  (2026-07-14).** Standing environmental conditions landed 2026-07-12
+  (`set_condition` / `clear_condition`); **`spawn_item`** (a real, persistent,
+  perceivable object dropped into a room) and **`offer_quest`** (a real per-player
+  quest subsystem — `loom/quest.py`: a `QuestBook` log, a player `quests`/`journal`
+  command, and deterministic *reach*-completion bound to the player-arrival seam
+  event) landed 2026-07-14. NPCs stay autonomous and react on their own; `nudge_npc`
+  (writing a goal/memory into a character) stays a framework-optional action,
+  **unregistered and disabled for our game** (see the Phase 3 design decision).
 - **Director judgment** — the model-side two-pass "should I act?" **landed
   (2026-07-13, B8)**: a cheap low-temp wait/act gate before the compose. Its
   authoritative-action variant **also fixed the NPC `move` ceiling (B5)** — a willing
@@ -236,7 +240,7 @@ Built:
   table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
   map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
   constrained-decoding waist so the model *cannot* emit a non-command.
-- `tests/` — **332 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **357 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,
@@ -248,9 +252,11 @@ Built:
   — B9 — the `WorldClock` advancement / boundaries / bridge and the `WeatherSystem`
   bounded random walk, and — B8/B5 — the director's act-gate (decision + activity-only
   scoping, lull left ungated) and the NPC two-pass act-gate (authoritative action,
-  blended speech, silence preserved)). No GPU needed. **Plus a live behavioral
-  harness** — see
-  *Testing discipline* below — 27 scenarios green against `qwen3.5:35b-a3b`.
+  blended speech, silence preserved), and — the reach slice — `World.fresh_id` /
+  `spawn_item`, the `spawn_item` / `offer_quest` handlers, the `QuestBook` subsystem
+  (offer / de-dupe / reach-completion / idempotence), the arrival-completion hook, and
+  the `quests` query render). No GPU needed. **Plus a live behavioral harness** — see
+  *Testing discipline* below — 29 scenarios green against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a
   compliant persona and a scene — a valid `move` bound to a real exit ~1 s warm.
@@ -339,7 +345,7 @@ run on the real Ollama `/v1` path — the constrained turn envelope compiles and
 returns conformant, and the `envelope.well-formed` harness scenario (5/5) confirms
 a constrained turn cannot reproduce the B6 malformation.
 
-### Phase 3 — Game-master director  ▶ in progress (restraint, autonomy & judgment landed; only *reach* — quests/`spawn_item` — remains, 2026-07-13)
+### Phase 3 — Game-master director  ✓ (2026-07-14 — restraint, autonomy, judgment, and reach all landed; only the ops thread B10 remains)
 A world-observing "director" agent on a slow cadence (hangs off the game loop),
 injecting events/quests and adjusting the world to player behaviour, while
 characters stay in-role. Emits only tool-call actions (Phase 2). Runs on its own
@@ -403,13 +409,43 @@ the catalogue out on it.
   (2026-07-13, the act-gate below).
 - **The line, drawn here:** the director MVP is complete — bodiless actor on the
   seam, constrained, restrained (B8), grounded, persona authored as world data.
-  Of *reach*, *judgment*, and *autonomy*, judgment and autonomy have since landed;
-  only reach (quests / `spawn_item`) remains:
-  - **Reach** (still open) — the director shapes the *world*, not minds (see the
-    design decision below): standing conditions **landed** (a storm rolls in, night
-    falls); still to come are `spawn_item` and `offer_quest` as a real subsystem
-    (state + tracking + per-player log). `nudge_npc` (writing a goal/memory into a
-    character) stays a framework option, **disabled for this game**.
+  Of *reach*, *judgment*, and *autonomy*, **all three have now landed**; only the
+  ops thread (B10) remains:
+  - **Reach** — **DONE (2026-07-14).** The director shapes the *world*, not minds
+    (see the design decision below). Standing conditions landed 2026-07-12 (a storm
+    rolls in, night falls); **`spawn_item`** and **`offer_quest`** landed 2026-07-14:
+    - **`spawn_item(location, name, description, text)`** — the director brings a
+      real, persistent, portable `Item` into a room (minted by the new
+      `World.spawn_item` / `World.fresh_id`, so `loom/action.py` never imports the
+      world model) and announces its appearance. It is perceived and taken through
+      the *same* paths every authored item is — nothing spawn-specific downstream.
+      Deliberately dumb: naming a concrete thing, not *authoring* balanced lore-rich
+      loot (that is Phase 4, the loot forge).
+    - **`offer_quest(location, title, summary, destination, text)`** — a real
+      subsystem, not a narrated line: **`loom/quest.py`** (a `Quest` + `QuestBook`,
+      a world-model primitive on the same footing as `conditions`) holds a
+      **per-player log**; a new player **`quests`/`journal`** command reads it; and
+      completion is a **deterministic engine check bound to a seam event** — reaching
+      the objective place — never player-claimed nor model-adjudicated, the shape the
+      MUD/IF prior art (CircleMUD mob-procs, LPMud solved-flags, Evennia/WoW logs,
+      Inform scenes) settled on. The offer is location-addressed like every director
+      action (it reaches the *players* present, via `World.players_in`) and writes a
+      goal into a **player's** log, never a character's mind.
+    - `nudge_npc` (writing a goal/memory into a character) stays a framework-optional
+      action, **unregistered and disabled for this game** — our director speaks to
+      the world; our characters answer for themselves.
+    - Both gates green: offline 332→357 (the quest subsystem, both handlers,
+      `fresh_id`/`spawn_item`, the arrival-completion hook, the `quests` render); live
+      27→29 (`director.spawns-item`, `director.offers-quest`), every neighbour held —
+      the enlarged director catalogue collapsed no prior selection. Verified live E2E
+      on GPU: a model-authored spawn dropped a real item on the floor, and a
+      model-authored quest completed when the player walked to the destination it
+      named (`✓ Quest complete`), idempotently and for multiple matching quests at
+      once. *Honest limit:* offered its full catalogue, the model still tends to emit
+      more than one action in a single beat (pre-existing — the turn envelope always
+      allowed an array; the "one beat at a time" is a prompt request the grammar does
+      not enforce). Harmless (each action validates independently) but a candidate
+      for a future one-beat cap.
   - **Judgment** — **DONE 2026-07-13** (B8, `DirectorMind.decide`, `act_gate`): a
     cheap, low-temp, constrained wait/act pass before the compose, layered after the
     deterministic ceiling/floor and scoped to the activity path (the lull stays a
@@ -690,7 +726,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (332 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (357 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*
@@ -723,7 +759,7 @@ versioning for save data · cost & latency budgets for AI calls · keeping `loom
 free of game-specific content.
 
 Unscheduled improvements noticed during review live in `docs/BACKLOG.md`. Open as
-of 2026-07-13: fused speech+action rendering (B2) · rich text formatting (B3) · world
+of 2026-07-14: fused speech+action rendering (B2) · rich text formatting (B3) · world
 atlas (B7) · exercising the `loom-gm` variant (B10). Done and folded in: B1 (command
 grammar), B4 (choice-to-react), **B5 (NPC `move` ceiling — the two-pass act-gate,
 2026-07-13: authoritative-action decision, 8/8 gated vs ~70% blended, no regressions,
@@ -731,6 +767,8 @@ game default on)**, B6 (envelope leak, retired by constrained decoding), **B8
 (director restraint — the model-side act-gate, 2026-07-13: proven live to restrain
 without collapsing, game default on)**, **B9 (director/world autonomy — world-clock,
 director lull, off-screen staging, weather; idle-NPC autonomy moved to Phase 5)**.
+**Phase 3 closed 2026-07-14** with the director's *reach* (`spawn_item` + the
+`offer_quest` quest subsystem); only B10 (an ops/measurement thread) remains on it.
 Promote an item into a phase with a real design when the moment is right.
 
 ## How to run (current)

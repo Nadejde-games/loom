@@ -7,7 +7,7 @@ from loom.action import (
     ActionRegistry, ActionSpec, ActionContext, ActionError, Param,
     default_registry,
 )
-from loom.world import World, Location, Npc, Item
+from loom.world import World, Location, Npc, Item, Player
 
 
 class _Actor:
@@ -92,9 +92,12 @@ class RegistryTests(unittest.TestCase):
         self.assertIn("stage_event", reg)
         self.assertIn("set_condition", reg)
         self.assertIn("clear_condition", reg)
+        self.assertIn("spawn_item", reg)
+        self.assertIn("offer_quest", reg)
         self.assertEqual(reg.names(),
                          ["emote", "move", "give_item", "take_item", "drop_item",
-                          "stage_event", "set_condition", "clear_condition"])
+                          "stage_event", "set_condition", "clear_condition",
+                          "spawn_item", "offer_quest"])
 
     def test_describe_lists_move(self):
         text = default_registry().describe()
@@ -518,6 +521,124 @@ class ClearConditionHandlerTests(unittest.TestCase):
         self.assertEqual(world.conditions.texts("a"), ["rain"])
 
 
+class SpawnItemHandlerTests(unittest.TestCase):
+    """spawn_item: the director brings a real object into a room. It mutates world
+    state (a new, portable Item on the floor) and announces the thing's appearance
+    once to the room — the location-addressed shape of stage_event, world-changing
+    like set_condition."""
+
+    def setUp(self):
+        self.spec = default_registry().get("spawn_item")
+        self.actor = type("D", (), {"id": "director", "name": "the Director"})()
+
+    def _run(self, world, **args):
+        return self.spec.handler(ActionContext(world, self.actor, args))
+
+    def test_creates_a_floor_item_and_announces_it(self):
+        world = _two_room_world()
+        line = "Something glints in the moss — a small iron key."
+        res = self._run(world, location="a", name="a small iron key",
+                        description="A key, red with rust.", text=line)
+        # Announced once to the room, no room-wide narration (director is bodiless).
+        self.assertEqual(res.broadcasts, [("a", line)])
+        self.assertEqual(res.narration, "")
+        # A real, portable item now lies on that room's floor.
+        floor = world.contents("a")
+        self.assertEqual([i.name for i in floor], ["a small iron key"])
+        self.assertTrue(floor[0].portable)
+        self.assertEqual(floor[0].description, "A key, red with rust.")
+
+    def test_ids_are_fresh_and_do_not_collide(self):
+        world = _two_room_world()
+        self._run(world, location="a", name="thing one", description="d", text="t")
+        self._run(world, location="a", name="thing two", description="d", text="t")
+        ids = [i.id for i in world.contents("a")]
+        self.assertEqual(len(ids), len(set(ids)))        # unique
+        for i in ids:
+            self.assertIn(i, world.entities)             # indexed on the world
+
+    def test_unknown_location_raises_and_spawns_nothing(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="nowhere", name="x", description="d", text="t")
+        self.assertEqual(world.contents("nowhere"), [])
+
+    def test_empty_name_raises(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="a", name="  ", description="d", text="t")
+        self.assertEqual(world.contents("a"), [])
+
+    def test_empty_text_raises(self):
+        world = _two_room_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="a", name="x", description="d", text="  ")
+        self.assertEqual(world.contents("a"), [])
+
+
+def _quest_world():
+    """Room A (north→B) with a player standing in A — the audience an offer needs."""
+    world = _two_room_world()
+    world.add_entity(Player(id="player:1", name="Wanderer", location_id="a"))
+    return world
+
+
+class OfferQuestHandlerTests(unittest.TestCase):
+    """offer_quest: the director sets a per-player goal before whoever is present,
+    and announces its pull once to the room. It writes into a *player's* log (never
+    a mind), requires a present player and a real destination, and de-dupes by title."""
+
+    def setUp(self):
+        self.spec = default_registry().get("offer_quest")
+        self.actor = type("D", (), {"id": "director", "name": "the Director"})()
+
+    def _run(self, world, **args):
+        return self.spec.handler(ActionContext(world, self.actor, args))
+
+    def test_offers_to_present_player_and_announces(self):
+        world = _quest_world()
+        line = "A quiet certainty settles over you."
+        res = self._run(world, location="a", title="The Far Room",
+                        summary="Room B is said to be worth the walk.",
+                        destination="b", text=line)
+        self.assertEqual(res.broadcasts, [("a", line)])
+        log = world.quests.for_player("player:1")
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0].title, "The Far Room")
+        self.assertEqual(log[0].destination, "b")
+        self.assertEqual(log[0].giver, "the Director")
+        self.assertEqual(log[0].status, "active")
+
+    def test_no_player_present_raises_and_offers_nothing(self):
+        world = _two_room_world()                        # Odd is an NPC, not a player
+        with self.assertRaises(ActionError):
+            self._run(world, location="a", title="T", summary="S",
+                      destination="b", text="t")
+        self.assertEqual(world.quests.for_player("odd"), [])
+
+    def test_unknown_destination_raises(self):
+        world = _quest_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="a", title="T", summary="S",
+                      destination="nowhere", text="t")
+        self.assertEqual(world.quests.for_player("player:1"), [])
+
+    def test_duplicate_title_for_same_player_is_refused(self):
+        world = _quest_world()
+        self._run(world, location="a", title="T", summary="S",
+                  destination="b", text="t")
+        with self.assertRaises(ActionError):            # every present player has it
+            self._run(world, location="a", title="T", summary="S2",
+                      destination="b", text="t2")
+        self.assertEqual(len(world.quests.for_player("player:1")), 1)
+
+    def test_empty_title_raises(self):
+        world = _quest_world()
+        with self.assertRaises(ActionError):
+            self._run(world, location="a", title="  ", summary="S",
+                      destination="b", text="t")
+
+
 class DescribeSubsetTests(unittest.TestCase):
     def test_describe_narrows_to_named_actions(self):
         text = default_registry().describe(["emote", "move"])
@@ -530,7 +651,8 @@ class DescribeSubsetTests(unittest.TestCase):
     def test_describe_none_lists_all(self):
         text = default_registry().describe()
         for name in ("emote(", "move(", "give_item(", "take_item(", "drop_item(",
-                     "stage_event("):
+                     "stage_event(", "set_condition(", "clear_condition(",
+                     "spawn_item(", "offer_quest("):
             self.assertIn(name, text)
 
     def test_unknown_names_are_skipped(self):
