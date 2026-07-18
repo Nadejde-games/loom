@@ -14,6 +14,8 @@ from .chronicle import Chronicle
 from .clock import WorldClock, Phase
 from .weather import WeatherSystem, Weather
 from .quest import COMPLETE
+from .compose import compose_beat
+from .style import Style, span, styled, join_styled
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
 from .ai import intent
 from .ai.director import DirectorMind, Director
@@ -261,24 +263,30 @@ class Engine:
         if not loc:
             await session.send_text("You are nowhere.")
             return
-        lines = [f"== {loc.name} ==", loc.description]
+        # Built as a styled line (B3): the place heading, the occupants, the floor
+        # items, and the exits carry their semantic roles; a plain terminal reads
+        # the same prose (loom.style.plain flattens it byte-for-byte).
+        parts: list = [span(f"== {loc.name} ==", Style.PLACE), "\n", loc.description]
         # Standing conditions read as part of the place, appended after the base
         # description at look-time so they show on every look until they lift (not
         # just when they began): first the world-wide ones (the clock's time of
         # day), then any condition specific to this place (a storm the director set).
         for cond in self.world.conditions.world_texts():
-            lines.append(cond)
+            parts += ["\n", cond]
         for cond in self.world.conditions.texts(loc.id):
-            lines.append(cond)
+            parts += ["\n", cond]
         others = self.world.occupants(loc.id, exclude=player.id)
         if others:
-            lines.append("You see: " + ", ".join(o.name for o in others) + ".")
+            parts += ["\n", "You see: ",
+                      *join_styled([o.name for o in others], Style.NAME), "."]
         here_items = self.world.contents(loc.id)
         if here_items:
-            lines.append("Items here: " + ", ".join(i.name for i in here_items) + ".")
+            parts += ["\n", "Items here: ",
+                      *join_styled([i.name for i in here_items], Style.ITEM), "."]
         if loc.exits:
-            lines.append("Exits: " + ", ".join(loc.exits.keys()) + ".")
-        await session.send_text("\n".join(lines))
+            parts += ["\n", "Exits: ",
+                      *join_styled(list(loc.exits.keys()), Style.EXIT), "."]
+        await session.send_text(styled(*parts))
 
     async def _say(self, session: Session, player, words: str) -> None:
         if not words:
@@ -340,26 +348,59 @@ class Engine:
         self._spawn_reaction(location_id, npc.id, observed)
 
     async def _deliver_turn(self, location_id: str, npc, mind, turn) -> str:
-        """Deliver a validated turn to the room — broadcast its speech, chronicle
-        it, execute its validated actions — and return a one-line description of
-        what was observed (the speech, plus any action narration), which a reaction
-        can cascade from. Empty string if the turn was silent. Shared by the
-        player-triggered reply path and the autonomous reaction cascade, so a turn
-        is delivered identically however it arose."""
+        """Deliver a validated turn to the room — compose its speech and deeds into
+        the line(s) the room reads, chronicle it, execute its validated actions —
+        and return a one-line description of what was observed (the speech, plus any
+        action narration), which a reaction can cascade from. Empty string if the
+        turn was silent. Shared by the player-triggered reply path and the
+        autonomous reaction cascade, so a turn is delivered identically however it
+        arose.
+
+        Rendering fuses the speech with the deeds performed *in this room* into one
+        beat (B2: ``Odd shakes his head slowly and says, "..."``); a deed that shows
+        in another room — a move's arrival at its destination — is broadcast there on
+        its own, since that room never heard the speech. Only the room broadcast is
+        composed: the structured turn, the chronicle, the actor's memory, and the
+        observed string are all unchanged."""
         observed: list[str] = []
         if turn.speech:
-            await self._broadcast(location_id, "text", f"{npc.name}: {turn.speech}")
             # NPC dialogue is salient world activity — the director should perceive
-            # what characters say, not only what they physically do.
+            # what characters say, not only what they physically do. Chronicled as
+            # the plain spoken line, independent of how the room renders the beat.
             self.chronicle.record(f"{npc.name}: {turn.speech}",
                                   location_id=location_id, kind="speech")
             observed.append(f'{npc.name} said: "{turn.speech}"')
         # Validated intents only — the mind has already checked them against the
-        # registry; the engine executes and narrates the outcome to the room.
+        # registry. Execute each without broadcasting (broadcast=False) and collect
+        # its visible lines split by room: deeds shown here fuse with the speech;
+        # deeds shown elsewhere (a move's arrival) go to their own room, unfused.
+        home_deeds: list[str] = []
+        away_lines: list = []
         for intent in turn.actions:
-            result = await self._perform(location_id, npc, mind, intent)
-            if result is not None and result.narration:
+            result = await self._perform(location_id, npc, mind, intent,
+                                         broadcast=False)
+            if result is None:
+                continue
+            if result.narration:
                 observed.append(result.narration)
+            for room, line in self._resolve_lines(location_id, npc, result):
+                if room == location_id:
+                    home_deeds.append(line)
+                else:
+                    away_lines.append((room, line))
+        # The beat for this room: speech woven with the deeds shown here, as a
+        # styled line (B3). A silent-but-acting turn keeps each deed as its own line;
+        # a deed shown in another room (a move's arrival) is styled the same way.
+        if turn.speech:
+            beat = compose_beat(npc.name, turn.speech, home_deeds)
+            if beat:
+                await self._broadcast(location_id, "text", beat)
+        else:
+            for deed in home_deeds:
+                await self._broadcast(location_id, "text",
+                                      compose_beat(npc.name, "", [deed]))
+        for room, line in away_lines:
+            await self._broadcast(room, "text", compose_beat(npc.name, "", [line]))
         return " ".join(observed)
 
     def _spawn_reaction(self, location_id: str, source_id: str,
@@ -608,8 +649,25 @@ class Engine:
         self.weather.install(loop)
         return self.weather
 
+    def _resolve_lines(self, location_id: str, actor, result) -> list:
+        """The room-addressed lines an executed action makes visible: a
+        ``(location_id, text)`` for each. The single definition of *what shows
+        where* — used both to broadcast directly (players, the director) and, for
+        an NPC turn, to hand the lines to the composition layer that fuses them with
+        speech (B2). Narration shows where the actor now is (a move may have
+        relocated it); explicit ``broadcasts`` name their own room."""
+        lines: list = []
+        if result.narration:
+            where = getattr(actor, "location_id", None) or location_id
+            lines.append((where, result.narration))
+        for target, line in result.broadcasts:
+            if target and line:
+                lines.append((target, line))
+        return lines
+
     async def _perform(self, location_id: str, actor, mind, intent,
-                       exclude_session: str | None = None):
+                       exclude_session: str | None = None,
+                       broadcast: bool = True):
         """Execute one validated intent and narrate its outcome. Returns the
         ActionResult, or None if the action was unknown or its handler failed
         (e.g. a give whose item/recipient didn't resolve) — the player-side
@@ -619,6 +677,12 @@ class Engine:
         ``exclude_session`` skips one session in the room broadcasts — used for a
         player actor, who has already received a tailored second-person line and
         should not also hear the room's third-person narration of their own act.
+
+        ``broadcast`` (default True) sends the action's room line(s) here, as
+        players and the director do. An NPC turn passes ``broadcast=False`` and
+        renders the lines itself — fusing them with the speech into one beat (B2)
+        via ``_resolve_lines`` — so the world change, memory, chronicle, and any
+        director cascade still happen here; only the room broadcast is deferred.
         """
         spec = self.actions.get(intent.name)
         if spec is None:      # defense in depth; the mind should never send this
@@ -631,18 +695,13 @@ class Engine:
             return None
         if mind is not None and result.actor_memory:
             mind.memory.add(result.actor_memory, kind="action")
-        if result.narration:
-            # Narrate where the actor now is — an action (e.g. move) may have
-            # relocated it; emote leaves it put.
-            where = getattr(actor, "location_id", None) or location_id
-            await self._broadcast(where, "text", result.narration,
-                                  exclude=exclude_session)
-        # Room-targeted lines: an action that touches more than one room (move's
-        # departure + arrival) names each room explicitly. Correct for multiplayer
-        # — each room hears only its own line.
-        for target, line in result.broadcasts:
-            if target and line:
-                await self._broadcast(target, "text", line, exclude=exclude_session)
+        # The action's room line(s), each aimed at the room it shows in — narration
+        # where the actor now is (emote stays put; move relocated it), plus the
+        # explicit multi-room broadcasts (move's departure + arrival). Broadcast now
+        # unless the caller is composing them into a fused beat itself.
+        if broadcast:
+            for room, line in self._resolve_lines(location_id, actor, result):
+                await self._broadcast(room, "text", line, exclude=exclude_session)
         # Record the beat for the chronicle — the perception feed the director
         # reads. Use the room-visible narration, or a move's first broadcast line.
         beat = result.narration or (result.broadcasts[0][1]

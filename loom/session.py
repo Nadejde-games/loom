@@ -21,7 +21,10 @@ class Session:
         self.writer.write(Message(channel, data).to_bytes())
         await self.writer.drain()
 
-    async def send_text(self, text: str) -> None:
+    async def send_text(self, text) -> None:
+        # ``text`` is a plain string or a *styled line* — a list of semantic spans
+        # (B3). The wire payload is polymorphic (protocol.py); a plain terminal
+        # flattens a styled line to prose, a rich client themes it.
         await self.send(Channel.TEXT, text)
 
     async def send_system(self, text: str) -> None:

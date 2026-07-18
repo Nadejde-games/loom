@@ -1,12 +1,13 @@
 # Project plan — Loom engine & the forever game
 
 Living document. The reference for where we are and where we're going.
-Last updated: 2026-07-14.
+Last updated: 2026-07-18.
 
 ## Status snapshot — line drawn 2026-07-14
 
-Committed through `e94a218` (the act-gate, B8/B5); the Phase 3 *reach* slice
-(spawn_item + the quest subsystem) is built and green on top, awaiting commit.
+Committed through the vLLM backend (`98b2341`) + its README (`5ad200a`), with the
+Phase 3 *reach* (spawn_item + the quest subsystem, `eeee5ca`) beneath; the **B2**
+fused rendering and the **B3** rich-text foundation land in this commit.
 **Phases 0–2 and the Phase 2 hardening are complete; the Phase 3 game-master director
 is done** — it shapes the world (standing conditions, and now *spawns things* and
 *offers quests*), the characters react on their own (the reaction path), the world
@@ -17,7 +18,8 @@ converse and *act* through a grammar-hardened action seam; players issue rich,
 phrasing-tolerant commands through that *same* seam; an unseen director shapes ambient
 scene and now real events — a thing appears, a quest pulls onward — on a slow,
 restrained, self-judging cadence; and an autonomous world-clock turns time itself while
-the weather wanders — all on local GPU inference, all editable as world data. **357
+the weather wanders — all on local GPU inference, all editable as world data. NPC
+speech and deeds now render as **one styled beat** to the room. **391
 offline tests + 29 live behavioral scenarios, both gates green.**
 
 The clean milestone: the director is *complete* on the seam — restrained, self-judging,
@@ -50,7 +52,9 @@ notes and `docs/BACKLOG.md`):
   *purely unprompted* NPC initiative (idle-NPC autonomy) — was decided into **Phase 5**
   (its quality wants the mind depth that lives there). Also open: the `loom-gm`
   wide-context variant, wired but never exercised (B10).
-- **Presentation debt** — fused speech+action rendering (B2), rich text (B3).
+- **Presentation** — fused speech+action rendering **(B2 — done 2026-07-17)** and
+  rich text **(B3 — the route-(b) semantic-styling foundation + the perception
+  surface landed 2026-07-18; the remaining surfaces are incremental)**.
 - **Later phases** — loot forge (4), deeper memory + persistence (5; note: world,
   NPC/director memory, and the chronicle are all in-memory today and reset on
   restart), rich transport + multiplayer (6), authoring tools incl. the world
@@ -240,7 +244,7 @@ Built:
   table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
   map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
   constrained-decoding waist so the model *cannot* emit a non-command.
-- `tests/` — **357 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **391 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,
@@ -255,7 +259,10 @@ Built:
   blended speech, silence preserved), and — the reach slice — `World.fresh_id` /
   `spawn_item`, the `spawn_item` / `offer_quest` handlers, the `QuestBook` subsystem
   (offer / de-dupe / reach-completion / idempotence), the arrival-completion hook, and
-  the `quests` query render). No GPU needed. **Plus a live behavioral harness** — see
+  the `quests` query render, and — **B2/B3** — the styled composition layer
+  (`compose_beat` fusing speech + deeds into one beat, the execute-from-render split)
+  plus the semantic-styling vocabulary, the polymorphic wire payload, and the client's
+  themed rendering + plain degrade). No GPU needed. **Plus a live behavioral harness** — see
   *Testing discipline* below — 29 scenarios green against `qwen3.5:35b-a3b`.
 - Verified live on GPU: `qwen3.5:35b-a3b` returns clean speech + a validated
   emote ~0.6 s warm (emote broadcasts over the socket end-to-end), and — given a

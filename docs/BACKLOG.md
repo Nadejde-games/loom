@@ -80,8 +80,24 @@ fixed first-word verb + rest, exact-match dispatch).
 
 ---
 
-## B2 — Fuse an NPC's speech and action into a single line
+## B2 — Fuse an NPC's speech and action into a single line  — DONE 2026-07-17
 *Noticed 2026-07-10.*
+
+**Status (2026-07-17): shipped.** A single composition layer (`loom/compose.py`,
+`compose_beat`) turns a validated `Turn` into one room beat — action-first,
+speech-attribution style: `Odd shakes his head slowly and says, "…"`. The
+structured `Turn`, the chronicle, the actor's memory, and the reaction cascade's
+`observed` string are all unchanged — **only the room broadcast is composed**. The
+engine splits execute-from-render (`_perform(broadcast=False)` + a shared
+`_resolve_lines`): deeds shown in the actor's own room fuse with the speech, while a
+deed shown *elsewhere* — a move's arrival at its destination — is broadcast there on
+its own, since that room never heard the speech (multiplayer-correct). Graceful
+templates for the four cases (action+speech, speech-only, action-only, and many
+actions with the repeated name elided) plus the director's bodiless voice. Verified
+live on qwen3.6/vLLM — a guide asked to lead rendered *"Wren leaves, heading north
+and says, 'I'd be delighted to show you the way!'"* in the origin, and only the bare
+arrival in the room ahead. Offline +11 (`tests/test_compose.py`). The composed line
+is also the unit **B3** styles. *(Design note below kept as the record.)*
 
 **Status (2026-07-12): still open, and now more pressing.** The Phase 3 director
 adds a *third* rendered form — an unattributed ambient line — beside the NPC's
@@ -117,8 +133,27 @@ room.
 
 ---
 
-## B3 — Rich text formatting (color, italics, bold)
+## B3 — Rich text formatting (color, italics, bold)  — SLICE 1 LANDED 2026-07-18
 *Noticed 2026-07-10.*
+
+**Status (2026-07-18): route (b) foundation + first surface shipped; remaining
+surfaces incremental.** Chosen route is **(b)** — semantic styled segments —
+realised as a *polymorphic* `text` payload: `d` is a plain string (as before) OR a
+styled line, a list of `{"t","s"}` spans. New `loom/style.py` holds the semantic
+vocabulary (`name`/`speech`/`emote`/`item`/`exit`/`place`/`danger`) and the pure
+`span`/`styled`/`join_styled`/`plain` helpers. The engine tags *semantic roles
+only*; the **client owns the theme** — `client/terminal.py` maps role→ANSI and
+degrades to plain on `NO_COLOR`, a non-TTY, or an unknown role. Styling is **opt-in
+per line**, so plain lines and simpler clients keep working untouched, and `plain()`
+flattens a styled line for the chronicle and logs. First styled surface: the
+**perception output** — the B2 composed beat (name · gesture · speech) and `look`
+(place · occupants · items · exits). The envelope is unchanged; the polymorphic
+payload is documented in `protocol.py`. Offline +15 (`tests/test_style.py` + style
+assertions in `tests/test_compose.py`); the flatten kept every substring assertion
+green. **Next slices (all plain and working today):** the player action lines
+(take/drop/give), the director's ambient beats, `examine`/`inventory`/`quests`/
+`help`, and system notices; `danger` has a role reserved but no emitter yet. Pairs
+with Phase 6 (rich transport & clients).
 
 **Want:** rich formatting on emitted text — colors, italics, bold — to
 **highlight different things** (character names, speech, emotes, items, exits,

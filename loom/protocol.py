@@ -13,6 +13,20 @@ transport-agnostic: the same bytes work over TCP today and WebSocket later.
 
 This deliberately borrows the proven MUD pattern (GMCP's text-plus-structured
 side-channels) while dropping the 1990s telnet wire framing.
+
+The ``text`` channel's payload is polymorphic (B3, rich formatting): ``d`` is
+either a plain string (as above) OR a *styled line* — a list of semantic spans::
+
+    {"c": "text", "d": [{"t": "Odd", "s": "name"},
+                        {"t": " shakes his head and says, ", "s": "emote"},
+                        {"t": "\\"The hills know my name.\\"", "s": "speech"}]}
+
+Each span is ``{"t": <text>, "s": <role>}`` (the role omitted for default text).
+The engine tags *semantic* roles (``name``/``speech``/``emote``/``item``/``exit``…,
+see ``loom.style``); the client owns the theme that maps a role to colour. A plain
+or ``NO_COLOR`` client joins the ``t`` fields back to prose (``loom.style.plain``),
+so styling never breaks a simpler reader — and unstyled lines still ride as plain
+strings, so the change is opt-in per line.
 """
 from __future__ import annotations
 import json

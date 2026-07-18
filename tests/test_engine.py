@@ -9,6 +9,7 @@ from loom.world import World, Location, Npc, Item
 from loom.engine import Engine
 from loom.ai import FakeProvider
 from loom.protocol import Channel
+from loom.style import plain
 
 
 class FakeSession:
@@ -31,7 +32,9 @@ class FakeSession:
         self.closed = True
 
     def texts(self):
-        return "\n".join(d for (c, d) in self.sent if c == Channel.TEXT)
+        # A text payload may be a plain string or a styled line (B3); flatten either
+        # to prose so substring assertions read the words regardless of styling.
+        return "\n".join(plain(d) for (c, d) in self.sent if c == Channel.TEXT)
 
 
 def build_engine():
@@ -92,16 +95,22 @@ class EngineActionTests(unittest.IsolatedAsyncioTestCase):
         while engine._tasks:
             await asyncio.gather(*list(engine._tasks), return_exceptions=True)
 
-    async def test_say_triggers_speech_and_emote(self):
+    async def test_say_fuses_speech_and_emote_into_one_beat(self):
+        # B2: speech + deed land as ONE line (deed first, then the attribution),
+        # not a separate "Odd:" line and a separate emote line.
         engine = build_engine()
         s = FakeSession()
         await engine.on_connect(s)
         await engine.on_input(s, "say dance with me")
         await self._drain(engine)
 
-        out = s.texts()
-        self.assertIn("Odd:", out)                       # spoke
-        self.assertIn("Odd regards", out)                # emoted (room narration)
+        texts = [plain(d) for (c, d) in s.sent if c == Channel.TEXT]
+        fused = [t for t in texts if "and says," in t]
+        self.assertEqual(len(fused), 1)                  # one beat, not two lines
+        line = fused[0]
+        self.assertIn("Odd regards", line)               # the deed, action-first
+        self.assertIn("There is more", line)             # the speech, same line
+        self.assertFalse(any(t.startswith("Odd:") for t in texts))  # no bare speech line
         self.assertTrue(any(m.kind == "action"
                             for m in engine.minds["odd"].memory.entries))
 
@@ -144,12 +153,16 @@ class EngineActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("odd", engine.world.locations["b"].occupants)
         self.assertNotIn("odd", engine.world.locations["a"].occupants)
 
-        # Origin sees the departure only; destination sees the arrival only.
+        # B2 two-room split: the origin sees the departure FUSED with the speech
+        # (one beat, the trailing period dropped for the join); the destination sees
+        # only the bare arrival — the speech never leaks to a room that never heard
+        # it. Multiplayer-correct.
         origin, dest = s1.texts(), s2.texts()
-        self.assertIn("Odd leaves, heading north.", origin)
+        self.assertIn("Odd leaves, heading north and says,", origin)  # fused beat
         self.assertNotIn("arrives", origin)
         self.assertIn("Odd arrives from the south.", dest)
         self.assertNotIn("leaves", dest)
+        self.assertNotIn("says,", dest)              # the spoken line stayed in origin
 
         # The actor remembers having moved.
         self.assertTrue(any(m.kind == "action"

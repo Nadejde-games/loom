@@ -110,4 +110,8 @@ python scripts/try_provider.py          # ping the active provider: speech + val
 The talking-NPC vertical slice runs end to end on local GPU inference, and NPCs
 can now *act*: a mind returns a validated turn (speech + schema-checked actions),
 the engine executes only what validates and narrates it to the room. First
-built-in action is `emote`. See `docs/PLAN.md` for the roadmap.
+built-in action is `emote`. An NPC's speech and deed render as **one composed beat**
+(`Odd shakes his head slowly and says, "…"`), carried as semantically **styled
+spans** on the wire — a rich client themes them (names, speech, items, exits), a
+plain or `NO_COLOR` terminal reads the same prose. See `docs/PLAN.md` for the
+roadmap.

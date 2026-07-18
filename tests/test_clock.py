@@ -9,6 +9,7 @@ import asyncio
 import json
 import unittest
 
+from loom.style import plain
 from loom.world import World, Location, Npc, Player
 from loom.engine import Engine
 from loom.clock import WorldClock, Phase, MINUTES_PER_DAY
@@ -254,7 +255,7 @@ class _FakeSession:
         self.closed = True
     def texts(self):
         from loom.protocol import Channel
-        return "\n".join(d for (c, d) in self.sent if c == Channel.TEXT)
+        return "\n".join(plain(d) for (c, d) in self.sent if c == Channel.TEXT)
 
 
 if __name__ == "__main__":

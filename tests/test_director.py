@@ -5,6 +5,7 @@ overlaps itself. All deterministic — canned providers, no GPU, no network."""
 import asyncio
 import unittest
 
+from loom.style import plain
 from loom.world import World, Location
 from loom.engine import Engine
 from loom.ai import FakeProvider
@@ -73,7 +74,7 @@ class FakeSession:
         self.closed = True
 
     def texts(self):
-        return "\n".join(d for (c, d) in self.sent if c == Channel.TEXT)
+        return "\n".join(plain(d) for (c, d) in self.sent if c == Channel.TEXT)
 
 
 class FakeLoop:
