@@ -639,7 +639,7 @@ Phase 5 (deeper minds / autonomy).
 *Noticed 2026-07-12 (Phase 3 director follow-up).*
 
 **Want:** run the director on its own large-context model variant
-(`ops/modelfiles/loom-gm.Modelfile` — `qwen3.5:27b` + `PARAMETER num_ctx 32768`)
+(`ops/modelfiles/loom-gm.Modelfile` — `qwen3.6:27b` + `PARAMETER num_ctx 32768`)
 as designed, and verify it end-to-end: that a wider baked context actually improves
 the director's beats, and that the KV-cache VRAM budget ("one card") holds on the
 2× RTX 6000 Ada alongside the NPC model. The plumbing exists (`LOOM_GM_MODEL` →
