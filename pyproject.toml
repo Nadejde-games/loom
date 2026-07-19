@@ -3,13 +3,31 @@ name = "loom-engine"
 version = "0.0.1"
 description = "A framework for AI-driven, text-first, server-client game worlds."
 requires-python = ">=3.11"
-dependencies = []
 
-# The core is dependency-free and runs offline via the FakeProvider.
+# Dependency policy (see docs/DEPENDENCIES.md): not "zero deps" but a small,
+# deliberate budget. A dependency earns its place only if it is cheap and common —
+# a small, stable, boring API with a shallow (ideally empty) sub-dependency tree,
+# no compiled/native extension in the core, and no plausible version conflict with
+# a host app — AND it replaces meaningfully more hand-rolled code than it costs.
+# Held to strictly for `loom/` (a library: its deps become its consumers' pins),
+# loosely for `game/` (the application). The core still runs fully offline on the
+# FakeProvider. Current budget:
+dependencies = [
+    "httpx>=0.27",        # HTTP client for the OpenAI-compatible providers — native
+                          # async + connection pooling (a real latency win on remote
+                          # backends); pure-Python dep tree, no native extension.
+    "json-repair>=0.30",  # tolerant recovery of a JSON turn-envelope from a messy
+                          # model reply — purpose-built, zero sub-deps; retires the
+                          # hand-rolled brace-repair (and its B6-class failure mode).
+]
+
 # Install this extra to enable real Claude-driven NPCs:
 #   pip install -e ".[anthropic]"
+# python-dotenv (loading a repo-root .env in game/main.py) is an application
+# convenience, so it lives under the `game` extra, not the core budget above.
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
+game = ["python-dotenv>=1.0"]
 
 [build-system]
 requires = ["setuptools>=61"]

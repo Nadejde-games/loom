@@ -7,10 +7,10 @@ Two things live here:
 - **`game/`** — the first world built on Loom. Content and configuration only.
 - **`client/`** — a minimal reference terminal client.
 
-The framework core is **dependency-free** and runs offline: with no API key it
-drives NPCs through a deterministic `FakeProvider`. Set `ANTHROPIC_API_KEY`
-(and `pip install -e ".[anthropic]"`) and every NPC upgrades to Claude with no
-code change.
+The framework core keeps a **small, deliberate dependency budget** (see
+`docs/DEPENDENCIES.md`) and runs offline: with no API key it drives NPCs through a
+deterministic `FakeProvider`. Set `ANTHROPIC_API_KEY` (and `pip install -e
+".[anthropic]"`) and every NPC upgrades to Claude with no code change.
 
 ## Architecture in one screen
 
@@ -56,6 +56,17 @@ LOOM_PROVIDER=vllm LOOM_VLLM_MODEL=qwen-local python game/main.py
 #   LOOM_VLLM_API_KEY=...                   # only if vLLM was started with --api-key
 ```
 
+Or hosted, via OpenRouter (no local GPU needed). Put your key in a `.env` at the
+repo root — `OPENROUTER_API_KEY=sk-or-...` — and it is loaded automatically:
+
+```bash
+source .venv/bin/activate
+LOOM_PROVIDER=openrouter python game/main.py
+#   NPCs default to qwen/qwen3.6-35b-a3b; the game-master director to qwen/qwen3.6-27b.
+#   LOOM_OPENROUTER_MODEL=qwen/qwen3.6-27b   # override the NPC model
+#   LOOM_GM_MODEL=qwen/qwen3.6-35b-a3b       # override the director model
+```
+
 Or on Ollama:
 
 ```bash
@@ -63,7 +74,7 @@ source .venv/bin/activate
 LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b python game/main.py
 ```
 
-Both are the same OpenAI-compatible path — they differ only by `base_url` + model
+All are the same OpenAI-compatible path — they differ only by `base_url` + model
 name. A local backend shared with another workload can be slow to first token;
 replies run off the game loop, so the world never stalls.
 
@@ -92,6 +103,10 @@ LOOM_PROVIDER=fake                                       # deterministic, offlin
 LOOM_PROVIDER=vllm LOOM_VLLM_MODEL=qwen-local            # local inference via vLLM
    LOOM_VLLM_HOST=http://localhost:8000                  # (default)
    LOOM_VLLM_API_KEY=...                                 # (optional; only if started with --api-key)
+LOOM_PROVIDER=openrouter                                 # hosted inference via OpenRouter
+   OPENROUTER_API_KEY=sk-or-...                          # required (auto-loaded from .env)
+   LOOM_OPENROUTER_MODEL=qwen/qwen3.6-35b-a3b            # NPC model (default)
+   LOOM_GM_MODEL=qwen/qwen3.6-27b                        # director model (default on OpenRouter)
 LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b   # local inference via Ollama
    LOOM_OLLAMA_HOST=http://localhost:11434               # (default)
 LOOM_PROVIDER=anthropic ANTHROPIC_API_KEY=...            # Claude

@@ -8,8 +8,11 @@ The mind proposes; the engine disposes.
 This module is game-agnostic and dependency-free. The engine registers the
 built-in actions; a game — or the game-master (Phase 3) and loot forge (Phase 4)
 — registers more against the same ``ActionRegistry`` without editing ``loom/``.
-Validation is a few lines of stdlib type-checking, deliberately not pydantic or
-jsonschema, so the core keeps zero dependencies.
+Validation is a few lines of stdlib type-checking, deliberately *not* pydantic or
+jsonschema: it sits on the security seam (the golden rule) where reading every line
+is a feature, its errors are model-facing strings that drive the validate→retry
+loop, and jsonschema would pull a native extension into the core for no gain (see
+docs/DEPENDENCIES.md). One of the few places the hand-roll is the right call.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field

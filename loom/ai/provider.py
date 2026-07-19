@@ -4,22 +4,24 @@ which concrete model answers is a swappable detail.
 Providers that ship here:
   * FakeProvider            — offline, deterministic, zero deps or API key.
   * OpenAICompatibleProvider — any server exposing /v1/chat/completions
-                               (Ollama, vLLM, SGLang, TGI, OpenAI). Stdlib-only.
+                               (Ollama, vLLM, SGLang, TGI, OpenAI, OpenRouter).
   * OllamaProvider          — local inference via Ollama (a thin subclass).
   * AnthropicProvider       — real Claude, imported lazily.
 
 Design note: OpenAI-compatible is the portable waist. Ollama for dev now,
-vLLM/SGLang for scale later, differ only by base_url + model name — no client
-change. So we deliberately talk the OpenAI chat schema, not vendor extensions.
+vLLM/SGLang/OpenRouter for scale later, differ only by base_url + model name — no
+client change. So we deliberately talk the OpenAI chat schema, not vendor extensions.
+
+HTTP goes through ``httpx`` (a core dependency; see docs/DEPENDENCIES.md) — native
+async and connection pooling, a real latency win on remote backends where each call
+would otherwise pay a fresh TLS handshake. It is imported lazily, so the offline
+``FakeProvider`` path never needs it.
 """
 from __future__ import annotations
 import asyncio
 import json
 import os
 import re
-import time
-import urllib.error
-import urllib.request
 from typing import Protocol, runtime_checkable
 
 
@@ -117,9 +119,9 @@ class FakeProvider:
 class OpenAICompatibleProvider:
     """Client for any OpenAI-compatible ``/v1/chat/completions`` endpoint.
 
-    Dependency-free: the blocking POST runs in a worker thread so the call
-    stays awaitable without freezing the event loop. Transient failures
-    (429/503/529, connection resets) are retried with linear backoff.
+    Async and pooled via httpx: a shared ``AsyncClient`` per provider keeps
+    connections alive across turns (no fresh TLS handshake each call). Transient
+    failures (429/503/529, connection resets) are retried with linear backoff.
     """
 
     def __init__(self, base_url: str, model: str, api_key: str | None = None,
@@ -139,6 +141,7 @@ class OpenAICompatibleProvider:
         self.strip_think = strip_think
         self.retries = max(1, retries)
         self.name = f"openai-compat:{model}"
+        self._client = None   # lazy httpx.AsyncClient, reused for connection pooling
 
     def _schema_payload(self, schema: dict) -> dict:
         """Payload fields that constrain generation to ``schema``, in the OpenAI
@@ -172,8 +175,7 @@ class OpenAICompatibleProvider:
         }
         if schema is not None:
             payload.update(self._schema_payload(schema))
-        loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, self._post, payload)
+        data = await self._post(payload)
         try:
             text = data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
@@ -182,34 +184,43 @@ class OpenAICompatibleProvider:
             text = _strip_think(text)
         return text.strip()
 
-    def _post(self, payload: dict) -> dict:
-        body = json.dumps(payload).encode("utf-8")
+    def _get_client(self):
+        """The shared ``httpx.AsyncClient`` for this provider, created on first use
+        so its connection pool is reused across calls (keep-alive — no fresh TLS
+        handshake per turn) and the offline ``FakeProvider`` never imports httpx."""
+        if self._client is None:
+            import httpx   # lazy: only when this provider actually reaches a server
+            self._client = httpx.AsyncClient(timeout=self.timeout)
+        return self._client
+
+    async def _post(self, payload: dict) -> dict:
+        """POST the chat request and return the decoded JSON. Async and pooled via
+        httpx; retries the transient statuses (429/503/529) and transport errors
+        with linear backoff, then raises ``ProviderError``. The overridable seam the
+        capturing test doubles replace to assert the wire payload without a network."""
+        import httpx
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
-        last: Exception | None = None
+        client = self._get_client()
+        last: object = None
         for attempt in range(self.retries):
-            req = urllib.request.Request(self.url, data=body, headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
-            except urllib.error.HTTPError as exc:
-                if exc.code in (429, 503, 529) and attempt < self.retries - 1:
-                    last = exc
-                    time.sleep(0.5 * (attempt + 1))
-                    continue
-                detail = ""
-                try:
-                    detail = exc.read().decode("utf-8", "replace")[:200]
-                except Exception:
-                    pass
-                raise ProviderError(f"HTTP {exc.code} from {self.url}: {detail}") from exc
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+                resp = await client.post(self.url, json=payload, headers=headers)
+            except httpx.HTTPError as exc:       # transport: connect/read/timeout
                 last = exc
                 if attempt < self.retries - 1:
-                    time.sleep(0.5 * (attempt + 1))
+                    await asyncio.sleep(0.5 * (attempt + 1))
                     continue
                 raise ProviderError(f"cannot reach {self.url}: {exc}") from exc
+            if resp.status_code in (429, 503, 529) and attempt < self.retries - 1:
+                last = f"HTTP {resp.status_code}"
+                await asyncio.sleep(0.5 * (attempt + 1))
+                continue
+            if resp.status_code >= 400:
+                raise ProviderError(
+                    f"HTTP {resp.status_code} from {self.url}: {resp.text[:200]}")
+            return resp.json()
         raise ProviderError(f"request failed after {self.retries} tries: {last}")
 
 
@@ -278,6 +289,44 @@ class VLLMProvider(OpenAICompatibleProvider):
         self.name = f"vllm:{model}"
 
 
+class OpenRouterProvider(OpenAICompatibleProvider):
+    """Hosted inference via OpenRouter's OpenAI-compatible endpoint (``/v1``).
+
+    The remote sibling of ``VLLMProvider`` on the same swappable waist — the game
+    runs identically whether a model answers from the local vLLM box or from a
+    hosted provider behind OpenRouter; only the ``base_url``, the auth, and a couple
+    of quirks differ. Lets the game reach models the local GPUs cannot hold (and
+    serves as a zero-ops fallback when the workstation is busy).
+
+    * **Model is an OpenRouter slug**, e.g. ``qwen/qwen3.6-35b-a3b`` (our NPC tier)
+      or ``qwen/qwen3.6-27b`` (the denser game-master tier) — not a local tag.
+    * **Thinking off by default.** Qwen3.x reasons by default and, on a small token
+      budget, the chain-of-thought crowds out the answer — the same failure the
+      local providers guard. OpenRouter's portable lever is ``reasoning:{enabled:
+      false}`` (verified live to yield ``reasoning_tokens: 0`` and a clean envelope);
+      ``think=True`` re-enables deliberation (e.g. a planning game-master).
+    * **Constrained decoding is standard.** OpenRouter forwards the OpenAI
+      ``response_format: {json_schema, strict}`` the base ``_schema_payload`` already
+      emits (verified end-to-end on the turn envelope), so the action seam's grammar
+      guarantee carries over unchanged — no override needed.
+    * **Auth required.** A Bearer key (``OPENROUTER_API_KEY``); unlike a keyless
+      local vLLM, a remote call must authenticate.
+    """
+
+    BASE_URL = "https://openrouter.ai/api/v1"
+
+    def __init__(self, model: str = "qwen/qwen3.6-35b-a3b",
+                 api_key: str | None = None, host: str | None = None,
+                 think: bool = False, timeout: float = 120.0, **kw):
+        extra = dict(kw.pop("extra_body", None) or {})
+        if not think:
+            extra.setdefault("reasoning", {"enabled": False})
+        super().__init__(base_url=(host or self.BASE_URL).rstrip("/"), model=model,
+                         api_key=api_key or os.environ.get("OPENROUTER_API_KEY"),
+                         timeout=timeout, extra_body=extra, **kw)
+        self.name = f"openrouter:{model}"
+
+
 class AnthropicProvider:
     """Real Claude. Requires the ``anthropic`` package and an API key."""
 
@@ -313,14 +362,17 @@ class AnthropicProvider:
 def get_default_provider() -> LLMProvider:
     """Resolve a provider from the environment (explicit, no network probing):
 
-    * LOOM_PROVIDER = fake | ollama | vllm | anthropic  — force a choice.
+    * LOOM_PROVIDER = fake | ollama | vllm | openrouter | anthropic — force a choice.
     * else LOOM_VLLM_MODEL set                           — use local vLLM.
+    * else LOOM_OPENROUTER_MODEL set                     — use hosted OpenRouter.
     * else LOOM_OLLAMA_MODEL set                         — use local Ollama.
     * else ANTHROPIC_API_KEY set                         — use Claude.
     * else                                               — FakeProvider.
 
     vLLM tuning:  LOOM_VLLM_MODEL (default qwen-local), LOOM_VLLM_HOST
                   (default http://localhost:8000), LOOM_VLLM_API_KEY (optional).
+    OpenRouter tuning: LOOM_OPENROUTER_MODEL (default qwen/qwen3.6-35b-a3b),
+                  OPENROUTER_API_KEY (or LOOM_OPENROUTER_API_KEY), LOOM_OPENROUTER_HOST.
     Ollama tuning: LOOM_OLLAMA_MODEL (default qwen3.5:35b-a3b), LOOM_OLLAMA_HOST.
     """
     choice = os.environ.get("LOOM_PROVIDER", "").strip().lower()
@@ -331,6 +383,13 @@ def get_default_provider() -> LLMProvider:
             model=os.environ.get("LOOM_VLLM_MODEL", "qwen-local"),
             host=os.environ.get("LOOM_VLLM_HOST", "http://localhost:8000"),
             api_key=os.environ.get("LOOM_VLLM_API_KEY") or None,
+        )
+    if choice == "openrouter" or (not choice and os.environ.get("LOOM_OPENROUTER_MODEL")):
+        return OpenRouterProvider(
+            model=os.environ.get("LOOM_OPENROUTER_MODEL", "qwen/qwen3.6-35b-a3b"),
+            host=os.environ.get("LOOM_OPENROUTER_HOST") or None,
+            api_key=(os.environ.get("LOOM_OPENROUTER_API_KEY")
+                     or os.environ.get("OPENROUTER_API_KEY") or None),
         )
     if choice == "ollama" or (not choice and os.environ.get("LOOM_OLLAMA_MODEL")):
         return OllamaProvider(

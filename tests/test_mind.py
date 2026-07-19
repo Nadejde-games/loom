@@ -68,6 +68,16 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(turn.speech, "Careful.")
         self.assertEqual([a.name for a in turn.actions], ["emote"])
 
+    def test_unclosed_object_is_recovered(self):
+        # The B6 shape: a missing closing brace. The old hand-rolled extractor
+        # (raw_decode / rfind '}') could not recover this and leaked the raw text
+        # as speech; json_repair reconstructs the envelope, speech and action intact.
+        reply = ('{"speech":"Hi.","actions":'
+                 '[{"name":"emote","args":{"text":"nods"}]}')
+        turn = run(mind(ScriptedProvider([reply])).converse("W", "hello"))
+        self.assertEqual(turn.speech, "Hi.")
+        self.assertEqual([a.name for a in turn.actions], ["emote"])
+
     def test_actions_capped(self):
         many = ",".join(['{"name":"emote","args":{"text":"nods"}}'] * 5)
         reply = '{"speech":"Hi.","actions":[' + many + ']}'

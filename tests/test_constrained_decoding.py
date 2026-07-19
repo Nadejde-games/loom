@@ -12,7 +12,8 @@ import re
 import unittest
 
 from loom.action import ActionRegistry, ActionSpec, Param, default_registry
-from loom.ai.provider import OpenAICompatibleProvider, VLLMProvider, OllamaProvider
+from loom.ai.provider import (OpenAICompatibleProvider, VLLMProvider,
+                              OllamaProvider, OpenRouterProvider)
 
 
 def run(coro):
@@ -149,7 +150,7 @@ class CapturingProvider(OpenAICompatibleProvider):
         super().__init__(base_url="http://unused/v1", model="m")
         self.captured = None
 
-    def _post(self, payload):
+    async def _post(self, payload):
         self.captured = payload
         return {"choices": [{"message": {"content": '{"speech":"","actions":[]}'}}]}
 
@@ -173,7 +174,7 @@ class ProviderForwardingTests(unittest.TestCase):
 class _CapturingVLLM(VLLMProvider):
     """A VLLMProvider whose POST is captured, not sent — to prove its config on
     the wire without a live server."""
-    def _post(self, payload):
+    async def _post(self, payload):
         self.captured = payload
         return {"choices": [{"message": {"content": '{"speech":"","actions":[]}'}}]}
 
@@ -213,6 +214,52 @@ class VLLMProviderTests(unittest.TestCase):
     def test_ollama_and_vllm_carry_distinct_names(self):
         self.assertEqual(OllamaProvider(model="m").name, "ollama:m")
         self.assertEqual(VLLMProvider(model="m").name, "vllm:m")
+
+
+class _CapturingOpenRouter(OpenRouterProvider):
+    """An OpenRouterProvider whose POST is captured, not sent — to prove its config
+    on the wire (base_url, auth, reasoning lever, constraint) without a live call."""
+    async def _post(self, payload):
+        self.captured = payload
+        return {"choices": [{"message": {"content": '{"speech":"","actions":[]}'}}]}
+
+
+class OpenRouterProviderTests(unittest.TestCase):
+    """The OpenRouter backend is a thin config over the OpenAI waist: the hosted
+    ``/api/v1`` base, a Bearer key, thinking suppressed by OpenRouter's portable
+    ``reasoning:{enabled:false}`` lever, and constrained decoding inherited unchanged."""
+
+    def test_defaults_url_name_and_reasoning_off(self):
+        p = _CapturingOpenRouter(api_key="k")
+        self.assertEqual(p.name, "openrouter:qwen/qwen3.6-35b-a3b")
+        self.assertEqual(p.url,
+                         "https://openrouter.ai/api/v1/chat/completions")
+        run(p.complete("sys", [{"role": "user", "content": "hi"}]))
+        # Thinking suppressed by default via OpenRouter's reasoning toggle.
+        self.assertEqual(p.captured["reasoning"], {"enabled": False})
+
+    def test_think_true_omits_reasoning(self):
+        p = _CapturingOpenRouter(api_key="k", think=True)
+        run(p.complete("sys", [{"role": "user", "content": "hi"}]))
+        self.assertNotIn("reasoning", p.captured)
+
+    def test_inherits_standard_constrained_decoding(self):
+        p = _CapturingOpenRouter(api_key="k")
+        schema = {"type": "object"}
+        run(p.complete("sys", [{"role": "user", "content": "hi"}], schema=schema))
+        rf = p.captured["response_format"]
+        self.assertEqual(rf["type"], "json_schema")
+        self.assertTrue(rf["json_schema"]["strict"])
+        self.assertIs(rf["json_schema"]["schema"], schema)
+
+    def test_api_key_becomes_a_bearer_header(self):
+        # A remote call must authenticate — the key rides as a Bearer token.
+        p = _CapturingOpenRouter(api_key="sk-or-test")
+        self.assertEqual(p.api_key, "sk-or-test")
+
+    def test_backends_carry_distinct_names(self):
+        self.assertEqual(OpenRouterProvider(model="x", api_key="k").name,
+                         "openrouter:x")
 
 
 if __name__ == "__main__":

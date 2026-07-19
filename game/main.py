@@ -7,29 +7,54 @@ from __future__ import annotations
 import asyncio
 import os
 from loom import GameServer, GameLoop, Engine
-from loom.ai import get_default_provider, OllamaProvider, VLLMProvider
+from loom.ai import (get_default_provider, OllamaProvider, VLLMProvider,
+                     OpenRouterProvider)
 from loom.content import load_world
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(HERE)
 # A single file today; point this at the "world" directory to split by region
 # later — load_world merges either form (see loom/content.py).
 WORLD_FILE = os.path.join(HERE, "world", "world.json")
+
+# Load a repo-root .env (e.g. OPENROUTER_API_KEY) so a secret need not be exported
+# by hand; a value already in the real environment always wins (override=False).
+# python-dotenv is an application dependency (the `game` extra) — see
+# docs/DEPENDENCIES.md; the .env is git-ignored, so the key never enters the repo.
+# Degrade gracefully if the extra isn't installed: a real env var still works.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(REPO_ROOT, ".env"), override=False)
+except ImportError:
+    pass
 
 
 def _director_provider():
     """A larger-context model variant for the game-master, when configured.
 
-    Set ``LOOM_GM_MODEL`` to give the director its own model variant; otherwise it
-    shares the engine's provider (the common case — the director then runs on
-    whatever backend the engine chose). When a GM model *is* named, it is built on
-    the same backend as the engine so the two stay on one server: vLLM if the game
-    is on vLLM (``LOOM_PROVIDER=vllm`` / ``LOOM_VLLM_MODEL``), else Ollama (e.g.
+    The director is built on the *same backend* as the engine so the two stay on
+    one server/account. On OpenRouter it defaults to the denser game-master tier
+    (``qwen/qwen3.6-27b``) even when ``LOOM_GM_MODEL`` is unset — the two-tier setup
+    the user chose (NPCs on 3.6-35b-a3b, the GM on 3.6-27b); on the local backends it
+    returns ``None`` unless ``LOOM_GM_MODEL`` names a variant (then the director
+    simply shares the engine provider). Set ``LOOM_GM_MODEL`` to override the slug on
+    any backend: vLLM (``LOOM_PROVIDER=vllm``), OpenRouter, else Ollama (e.g.
     ``loom-gm`` from ops/modelfiles/loom-gm.Modelfile).
     """
     gm_model = os.environ.get("LOOM_GM_MODEL")
+    choice = os.environ.get("LOOM_PROVIDER", "").strip().lower()
+    on_openrouter = (choice == "openrouter"
+                     or (not choice and os.environ.get("LOOM_OPENROUTER_MODEL")))
+    if on_openrouter:
+        # On the hosted backend the GM tier is a real default, not opt-in: NPCs on
+        # 3.6-35b-a3b, the game-master on the denser 3.6-27b (LOOM_GM_MODEL overrides).
+        return OpenRouterProvider(
+            model=gm_model or "qwen/qwen3.6-27b",
+            host=os.environ.get("LOOM_OPENROUTER_HOST") or None,
+            api_key=(os.environ.get("LOOM_OPENROUTER_API_KEY")
+                     or os.environ.get("OPENROUTER_API_KEY") or None))
     if not gm_model:
         return None
-    choice = os.environ.get("LOOM_PROVIDER", "").strip().lower()
     if choice == "vllm" or (not choice and os.environ.get("LOOM_VLLM_MODEL")):
         return VLLMProvider(
             model=gm_model,

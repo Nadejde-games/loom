@@ -19,7 +19,8 @@ phrasing-tolerant commands through that *same* seam; an unseen director shapes a
 scene and now real events — a thing appears, a quest pulls onward — on a slow,
 restrained, self-judging cadence; and an autonomous world-clock turns time itself while
 the weather wanders — all on local GPU inference, all editable as world data. NPC
-speech and deeds now render as **one styled beat** to the room. **391
+speech and deeds now render as **one styled beat** to the room, and the same engine
+runs on local GPUs (vLLM/Ollama) or hosted (OpenRouter) on one env switch. **397
 offline tests + 29 live behavioral scenarios, both gates green.**
 
 The clean milestone: the director is *complete* on the seam — restrained, self-judging,
@@ -244,7 +245,7 @@ Built:
   table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
   map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
   constrained-decoding waist so the model *cannot* emit a non-command.
-- `tests/` — **391 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **397 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,
@@ -797,15 +798,25 @@ LOOM_PROVIDER=fake                                   # deterministic, offline (d
 LOOM_PROVIDER=vllm  LOOM_VLLM_MODEL=qwen-local       # local inference via vLLM
    LOOM_VLLM_HOST=http://localhost:8000              # (default)
    LOOM_VLLM_API_KEY=...                             # (optional; only if vLLM was started with --api-key)
+LOOM_PROVIDER=openrouter                             # hosted inference via OpenRouter
+   OPENROUTER_API_KEY=sk-or-...                      # required (auto-loaded from a repo-root .env)
+   LOOM_OPENROUTER_MODEL=qwen/qwen3.6-35b-a3b        # NPC model (default)
+   LOOM_GM_MODEL=qwen/qwen3.6-27b                    # director model (default on OpenRouter)
 LOOM_PROVIDER=ollama LOOM_OLLAMA_MODEL=qwen3.5:35b-a3b   # local inference via Ollama
    LOOM_OLLAMA_HOST=http://localhost:11434           # (default)
 LOOM_PROVIDER=anthropic ANTHROPIC_API_KEY=...        # Claude
 ```
-Same envs apply to `game/main.py` and `scripts/try_provider.py`. Both local backends
-are the OpenAI-compatible waist the design always anticipated — `VLLMProvider` is the
-sibling of `OllamaProvider`, differing only in defaults and the thinking-suppression
-quirk (Qwen3.x reasons into `content` unless told not to; both send
-`reasoning_effort: "none"`). vLLM honors the standard `response_format` grammar the
-action seam emits, so constrained decoding carries over unchanged. Note: a vLLM shared
-with another workload can be slow to first token; the engine runs replies off the loop,
-so latency never stalls the world.
+Same envs apply to `game/main.py` and `scripts/try_provider.py`. All three model
+backends are the OpenAI-compatible waist the design always anticipated —
+`VLLMProvider` and `OpenRouterProvider` are siblings of `OllamaProvider`, differing
+only in `base_url`, auth, and the thinking-suppression quirk (Qwen3.x reasons into
+`content` unless told not to; the local backends send `reasoning_effort: "none"`,
+OpenRouter uses its portable `reasoning: {enabled: false}` lever). All honor the
+standard `response_format` grammar the action seam emits, so constrained decoding
+carries over unchanged. **OpenRouter** (hosted) reaches models the local GPUs cannot
+hold and needs no running server — the two-tier default is NPCs on
+`qwen/qwen3.6-35b-a3b`, the game-master director on the denser `qwen/qwen3.6-27b`
+(`_director_provider` sets that even with `LOOM_GM_MODEL` unset). The key is read from
+a git-ignored `.env` at the repo root by `python-dotenv` (the `game` extra) in `game/main.py`.
+Note: a vLLM shared with another workload can be slow to first token; the engine runs
+replies off the loop, so latency never stalls the world.

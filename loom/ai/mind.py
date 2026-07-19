@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from json_repair import repair_json
 from ..world.entity import Npc
 from ..action import ActionRegistry, ActionIntent
 from .provider import LLMProvider
@@ -78,41 +79,36 @@ def _extract_json(text: str) -> dict | None:
     """Best-effort: pull a single JSON object out of a model reply.
 
     Handles a bare object, a ```json fenced block, an object embedded in stray
-    prose, and — importantly — trailing junk after the object (models
-    occasionally append a stray brace or a stray word). Returns None when
-    nothing object-shaped can be recovered; the caller then degrades to
-    treating the whole reply as speech.
+    prose, and the malformations a model emits under load — trailing junk, a stray
+    appended brace, an unclosed object (the B6 shape). Grammar-constrained decoding
+    makes a malformed envelope impossible on backends that support it; this is the
+    defense-in-depth for those that don't (and the ``FakeProvider`` path).
+
+    The fast path is a strict parse (the well-formed, constrained case, no repair);
+    only a reply that actually *looks like* a JSON object (contains ``{``) falls
+    through to ``json_repair``, so genuine prose still yields ``None`` and the caller
+    degrades to treating the whole reply as speech rather than a repaired object.
     """
     if not text:
         return None
     s = _strip_fences(text)
     try:
-        obj = json.loads(s)
+        obj = json.loads(s)                      # fast path: already well-formed
         if isinstance(obj, dict):
             return obj
     except (ValueError, TypeError):
         pass
     start = s.find("{")
-    if start == -1:
+    if start == -1:                              # no object at all -> speech
         return None
-    # Parse one JSON object from the first '{' and ignore anything after it
-    # (e.g. the stray '}' Qwen3.5 sometimes appends).
+    # Tolerant recovery of the object from the first '{' (json_repair fixes the
+    # stray-brace / unclosed / trailing-junk shapes). Returns None on anything not
+    # object-shaped, preserving the degrade-to-speech contract.
     try:
-        obj, _ = json.JSONDecoder().raw_decode(s, start)
-        if isinstance(obj, dict):
-            return obj
-    except (ValueError, TypeError):
-        pass
-    # Last resort: span to the final '}'.
-    end = s.rfind("}")
-    if end > start:
-        try:
-            obj = json.loads(s[start:end + 1])
-            if isinstance(obj, dict):
-                return obj
-        except (ValueError, TypeError):
-            return None
-    return None
+        obj = repair_json(s[start:], return_objects=True)
+    except Exception:
+        return None
+    return obj if isinstance(obj, dict) and obj else None
 
 
 def parse_turn(registry: ActionRegistry | None, raw: str) -> tuple[str, list, list]:
