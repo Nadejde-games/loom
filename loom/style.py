@@ -26,6 +26,8 @@ class Style:
     ITEM = "item"        # an object in the world
     EXIT = "exit"        # a way out of a place
     PLACE = "place"      # a location's name / heading
+    QUEST = "quest"      # a quest / goal title
+    AMBIENT = "ambient"  # the world's own unattributed voice (director, weather, clock)
     DANGER = "danger"    # a warning / hostile beat
 
 

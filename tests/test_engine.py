@@ -618,5 +618,97 @@ class EngineQuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([q.title for q in log], ["The Far Room"])
 
 
+class EngineStylingTests(unittest.IsolatedAsyncioTestCase):
+    """B3: the remaining surfaces carry semantic styling. Each flattens to the same
+    prose (so every substring assertion elsewhere is unchanged), but a rich client
+    can colour names, items, quests, the player's own words, and the world's ambient
+    voice. These assert the semantic spans are present."""
+
+    async def _drain(self, engine):
+        while engine._tasks:
+            await asyncio.gather(*list(engine._tasks), return_exceptions=True)
+
+    @staticmethod
+    def _first_styled(sent):
+        return next(d for (c, d) in sent if c == Channel.TEXT and isinstance(d, list))
+
+    @staticmethod
+    def _spans(payload):
+        return [(sp.get("s"), sp["t"]) for sp in payload]
+
+    async def test_say_echo_styles_the_words_as_speech(self):
+        engine = build_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "say hello there")
+        echo = self._first_styled(s.sent)
+        self.assertIn(("speech", '"hello there"'), self._spans(echo))
+        self.assertIn("You say:", plain(echo))
+        await self._drain(engine)
+
+    async def test_inventory_styles_items(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        await engine.on_input(s, "take lantern")
+        s.sent.clear()
+        await engine.on_input(s, "inventory")
+        inv = self._first_styled(s.sent)
+        self.assertIn(("item", "a rusty lantern"), self._spans(inv))
+
+    async def test_who_styles_only_names(self):
+        engine = build_two_npc_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "who")
+        who = self._first_styled(s.sent)
+        self.assertEqual({r for r, _ in self._spans(who) if r}, {"name"})
+        self.assertIn("Odd the Hermit", plain(who))
+
+    async def test_take_ack_styles_the_item(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.on_input(s, "take lantern")
+        ack = self._first_styled(s.sent)
+        self.assertIn(("item", "a rusty lantern"), self._spans(ack))
+        self.assertIn("You take", plain(ack))
+
+    async def test_give_ack_styles_item_and_recipient(self):
+        engine = build_item_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        await engine.on_input(s, "take lantern")
+        s.sent.clear()
+        await engine.on_input(s, "give lantern to Wren")
+        roles = {r: t for r, t in self._spans(self._first_styled(s.sent)) if r}
+        self.assertEqual(roles.get("item"), "a rusty lantern")
+        self.assertEqual(roles.get("name"), "Wren")
+
+    async def test_quests_styles_the_title(self):
+        engine = build_two_room_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        engine.world.quests.offer(engine.players[s.id].id, title="The Far Room",
+                                  summary="Room B is worth the walk.", destination="b")
+        s.sent.clear()
+        await engine.on_input(s, "quests")
+        journal = self._first_styled(s.sent)
+        self.assertIn(("quest", "The Far Room"), self._spans(journal))
+
+    async def test_world_beat_is_ambient(self):
+        # A clock/weather turning speaks in the world's own voice — styled AMBIENT.
+        engine = build_engine()
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        await engine.apply_world_condition("weather", "", "A cold wind rises.")
+        beat = self._first_styled(s.sent)
+        self.assertIn(("ambient", "A cold wind rises."), self._spans(beat))
+
+
 if __name__ == "__main__":
     unittest.main()

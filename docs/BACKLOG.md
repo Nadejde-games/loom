@@ -133,11 +133,27 @@ room.
 
 ---
 
-## B3 — Rich text formatting (color, italics, bold)  — SLICE 1 LANDED 2026-07-18
+## B3 — Rich text formatting (color, italics, bold)  — DONE 2026-07-19
 *Noticed 2026-07-10.*
 
-**Status (2026-07-18): route (b) foundation + first surface shipped; remaining
-surfaces incremental.** Chosen route is **(b)** — semantic styled segments —
+**Status (2026-07-19): all player-facing surfaces styled.** The remaining slices
+landed: player action **acks** (take/drop/give — items as `item`, characters as
+`name`, keyed by each verb slot's scope), the **`say` echo** (the player's own words
+as `speech`), **`inventory`** (items), **`who`** (names), the **quests journal**
+(titles in a new `quest` role), and — the "third rendered form" B2 flagged — the
+**world's own ambient voice** in a new `ambient` role (dim-italic): the director's
+bodiless beats (`_perform` for the director actor) and the clock/weather turnings
+(`apply_world_condition`), so atmosphere reads distinctly from a character speaking.
+Vocabulary grew by `quest` + `ambient` (the `Style` set is designed to grow; the
+client theme gains a colour for each). Deliberately left plain: `examine` and `help`
+(freeform prose / a static reference, no entities to tag), and the third-person
+*room* narration of a player's own item-actions (bystanders see plain; an NPC's is
+already name-styled via `compose_beat`). `danger` stays a reserved role with no
+emitter until the game has a hostile beat to raise it. Offline +7 styling assertions
+(`tests/test_engine.py::EngineStylingTests`). Pairs with Phase 6 (rich clients).
+
+**Status (2026-07-18): route (b) foundation + first surface shipped.** Chosen route
+is **(b)** — semantic styled segments —
 realised as a *polymorphic* `text` payload: `d` is a plain string (as before) OR a
 styled line, a list of `{"t","s"}` spans. New `loom/style.py` holds the semantic
 vocabulary (`name`/`speech`/`emote`/`item`/`exit`/`place`/`danger`) and the pure

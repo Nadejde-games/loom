@@ -5,6 +5,7 @@ particular world — a game may subclass this or register extra commands.
 from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
+from string import Formatter
 from .session import Session
 from .world import World, Player, Npc
 from .action import ActionRegistry, ActionContext, ActionIntent, default_registry
@@ -247,9 +248,13 @@ class Engine:
         elif t == "quests":
             await self._quests(session, player)
         elif t == "who":
-            here = ", ".join(e.name for e in
-                             self.world.occupants(player.location_id, exclude=player.id))
-            await session.send_text("Here: " + (here or "no one but you"))
+            names = [e.name for e in
+                     self.world.occupants(player.location_id, exclude=player.id)]
+            if names:
+                await session.send_text(
+                    styled("Here: ", *join_styled(names, Style.NAME)))
+            else:
+                await session.send_text("Here: no one but you")
         elif t == "help":
             await session.send_text(self._help())
         elif t == "quit":
@@ -292,7 +297,7 @@ class Engine:
         if not words:
             await session.send_text('Say what? (try: say hello)')
             return
-        await session.send_text(f'You say: "{words}"')
+        await session.send_text(styled("You say: ", span(f'"{words}"', Style.SPEECH)))
         self.chronicle.record(f'{player.name} said: "{words}"',
                               location_id=player.location_id, kind="speech")
         # Each NPC in the room *may* hear and answer. A cheap salience gate runs
@@ -594,10 +599,11 @@ class Engine:
             self.world.conditions.clear_world(tag)
         if not ambient_text:
             return
+        beat = styled(span(ambient_text, Style.AMBIENT))   # the world's own voice (B3)
         for loc in self.world.locations.values():
             if not self.world.occupants(loc.id):
                 continue                 # perceivable-only: no beat into an empty place
-            await self._broadcast(loc.id, "text", ambient_text)
+            await self._broadcast(loc.id, "text", beat)
             self.chronicle.record(ambient_text, location_id=loc.id, kind="ambient")
             self._spawn_reaction(loc.id, "world", ambient_text)
 
@@ -700,8 +706,12 @@ class Engine:
         # explicit multi-room broadcasts (move's departure + arrival). Broadcast now
         # unless the caller is composing them into a fused beat itself.
         if broadcast:
+            # The bodiless director's lines are the world's own voice — styled
+            # AMBIENT so they read as atmosphere, not a character speaking (B3).
+            ambient = getattr(actor, "id", None) == "director"
             for room, line in self._resolve_lines(location_id, actor, result):
-                await self._broadcast(room, "text", line, exclude=exclude_session)
+                payload = styled(span(line, Style.AMBIENT)) if ambient else line
+                await self._broadcast(room, "text", payload, exclude=exclude_session)
         # Record the beat for the chronicle — the perception feed the director
         # reads. Use the room-visible narration, or a move's first broadcast line.
         beat = result.narration or (result.broadcasts[0][1]
@@ -842,7 +852,28 @@ class Engine:
         # The source-form ack ("… from Wren") when an optional source resolved.
         ack = (v.ack_source if v.ack_source and v.iobj is not None
                and v.iobj.arg in resolved else v.ack)
-        await session.send_text(ack.format(**{k: e.name for k, e in resolved.items()}))
+        await session.send_text(self._style_ack(ack, v, resolved))
+
+    def _style_ack(self, template: str, verb: command.Verb, resolved: dict) -> list:
+        """Render a second-person action ack (e.g. ``You take {item} from {source}.``)
+        as a styled line — each substituted entity in its semantic role (an item as
+        ITEM, a character as NAME, keyed by the slot's scope), the literal frame as
+        default text (B3)."""
+        role = {}
+        for slot in (verb.dobj, verb.iobj):
+            if slot is not None:
+                role[slot.arg] = (Style.NAME
+                                  if slot.scope in (command.OCCUPANTS, command.PRESENT)
+                                  else Style.ITEM)
+        parts: list = []
+        for literal, field_name, _spec, _conv in Formatter().parse(template):
+            if literal:
+                parts.append(literal)
+            if field_name is not None:
+                ent = resolved.get(field_name)
+                parts.append(span(ent.name, role.get(field_name, Style.ITEM))
+                             if ent is not None else "{" + field_name + "}")
+        return styled(*parts)
 
     def _candidates(self, player, scope: str, resolved: dict) -> list:
         """Map a symbolic scope (from the verb table) to real candidate entities."""
@@ -886,8 +917,9 @@ class Engine:
         if not held:
             await session.send_text("You are carrying nothing.")
             return
-        await session.send_text("You are carrying: "
-                                + ", ".join(i.name for i in held) + ".")
+        await session.send_text(styled(
+            "You are carrying: ",
+            *join_styled([i.name for i in held], Style.ITEM), "."))
 
     async def _quests(self, session: Session, player) -> None:
         """The player's quest journal (a read-only query, no seam) — what the
@@ -897,12 +929,15 @@ class Engine:
         if not entries:
             await session.send_text("You are pursuing nothing in particular.")
             return
-        lines = ["== Your journal =="]
+        # One styled line with embedded newlines (as `look` builds): each quest
+        # title in the QUEST role, the summary as plain text (B3).
+        parts: list = ["== Your journal =="]
         for q in entries:
             mark = "✓" if q.status == COMPLETE else "•"
-            tail = "  (done)" if q.status == COMPLETE else ""
-            lines.append(f"{mark} {q.title} — {q.summary}{tail}")
-        await session.send_text("\n".join(lines))
+            parts += ["\n" + mark + " ", span(q.title, Style.QUEST), " — " + q.summary]
+            if q.status == COMPLETE:
+                parts.append("  (done)")
+        await session.send_text(styled(*parts))
 
     async def _check_arrival_quests(self, session: Session, player,
                                     location_id: str) -> None:

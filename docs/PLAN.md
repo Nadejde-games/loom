@@ -20,7 +20,7 @@ scene and now real events — a thing appears, a quest pulls onward — on a slo
 restrained, self-judging cadence; and an autonomous world-clock turns time itself while
 the weather wanders — all on local GPU inference, all editable as world data. NPC
 speech and deeds now render as **one styled beat** to the room, and the same engine
-runs on local GPUs (vLLM/Ollama) or hosted (OpenRouter) on one env switch. **397
+runs on local GPUs (vLLM/Ollama) or hosted (OpenRouter) on one env switch. **404
 offline tests + 29 live behavioral scenarios, both gates green.**
 
 The clean milestone: the director is *complete* on the seam — restrained, self-judging,
@@ -54,8 +54,8 @@ notes and `docs/BACKLOG.md`):
   (its quality wants the mind depth that lives there). Also open: the `loom-gm`
   wide-context variant, wired but never exercised (B10).
 - **Presentation** — fused speech+action rendering **(B2 — done 2026-07-17)** and
-  rich text **(B3 — the route-(b) semantic-styling foundation + the perception
-  surface landed 2026-07-18; the remaining surfaces are incremental)**.
+  rich text **(B3 — done 2026-07-19: route-(b) semantic styling across every
+  player-facing surface, incl. the world's own `ambient` voice)**.
 - **Later phases** — loot forge (4), deeper memory + persistence (5; note: world,
   NPC/director memory, and the chronicle are all in-memory today and reset on
   restart), rich transport + multiplayer (6), authoring tools incl. the world
@@ -245,7 +245,7 @@ Built:
   table misses ("offer … to Wren" → give, "scoop up …" → take, "head north" → go)
   map correctly. This is the payoff of hardening-before-B1: the fallback reuses the
   constrained-decoding waist so the model *cannot* emit a non-command.
-- `tests/` — **397 offline tests** (the above + validation, parse-tolerance incl.
+- `tests/` — **404 offline tests** (the above + validation, parse-tolerance incl.
   the live malformations, retry recovery, engine end-to-end emote/move/give/take/
   drop, perception rendering, the salience gate, chosen silence, the resolver, the
   containment model, the constrained-decoding schema emitter + drift cross-check,

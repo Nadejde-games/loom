@@ -24,13 +24,15 @@ _RESET = "\033[0m"
 # Semantic role -> ANSI SGR. Speech is left at default weight so dialogue reads
 # plainly; the decorations (name, dim gesture, coloured items/exits) frame it.
 _THEME = {
-    "name":   "\033[1;36m",   # bold cyan — a character's name
-    "speech": "",             # default — the spoken words read plainly
-    "emote":  "\033[2m",      # dim — a gesture recedes behind the words
-    "item":   "\033[33m",     # yellow — an object
-    "exit":   "\033[32m",     # green — a way out
-    "place":  "\033[1;35m",   # bold magenta — a location heading
-    "danger": "\033[1;31m",   # bold red — a warning
+    "name":    "\033[1;36m",   # bold cyan — a character's name
+    "speech":  "",             # default — the spoken words read plainly
+    "emote":   "\033[2m",      # dim — a gesture recedes behind the words
+    "item":    "\033[33m",     # yellow — an object
+    "exit":    "\033[32m",     # green — a way out
+    "place":   "\033[1;35m",   # bold magenta — a location heading
+    "quest":   "\033[1;34m",   # bold blue — a quest title
+    "ambient": "\033[2;3m",    # dim italic — the world's own voice
+    "danger":  "\033[1;31m",   # bold red — a warning
 }
 
 
