@@ -64,6 +64,27 @@
       }
     ]
   },
+  "loot": {
+    "tiers": [
+      { "name": "common",   "rank": 1, "weight": 60, "max_tags": 1 },
+      { "name": "uncommon", "rank": 2, "weight": 30, "max_tags": 2 },
+      { "name": "rare",     "rank": 3, "weight": 10, "max_tags": 3 }
+    ],
+    "themes": ["relic", "charm", "token", "curio", "talisman"],
+    "tags": [
+      { "tag": "rain-beaded",   "group": "weather", "when": ["weather"] },
+      { "tag": "storm-worn",    "group": "weather", "when": ["weather"], "min_rank": 2 },
+      { "tag": "dusk-touched",  "group": "time",    "when": ["time"] },
+      { "tag": "night-cold",    "group": "time",    "when": ["time"], "min_rank": 2 },
+      { "tag": "moss-grown",    "group": "make" },
+      { "tag": "iron-bound",    "group": "make" },
+      { "tag": "bone-pale",     "group": "make" },
+      { "tag": "hand-worn",     "group": "make" },
+      { "tag": "luck-bringing", "group": "omen" },
+      { "tag": "ill-omened",    "group": "omen", "min_rank": 2 },
+      { "tag": "rune-marked",   "group": "omen", "min_rank": 3 }
+    ]
+  },
   "locations": [
     {
       "id": "cave_mouth",
@@ -74,14 +95,32 @@
     {
       "id": "hill_path",
       "name": "The Hill Path",
-      "description": "A muddy path winds along the hillside under a bruised evening sky. The cave mouth yawns to the south.",
-      "exits": { "south": "cave_mouth" }
+      "description": "A muddy path winds along the hillside under a bruised evening sky. It climbs on, up toward the bald crown of the hill; the cave mouth yawns back to the south.",
+      "exits": { "south": "cave_mouth", "up": "hilltop" }
+    },
+    {
+      "id": "hilltop",
+      "name": "The Hilltop",
+      "description": "The path gives out on the bald, windswept crown of the hill. A ring of blackened, tumbled stones marks where a signal-fire once burned, long cold now. From here the whole valley lies open below, grey and folded, and the wind never quite stops. The path falls away downward to the south.",
+      "exits": { "down": "hill_path" }
     },
     {
       "id": "cave_interior",
       "name": "Inside the Cave",
       "description": "Darkness, and the smell of old smoke. A dead fire pit sits at the center, ringed by blackened stones. The only way out is up.",
       "exits": { "up": "cave_mouth" }
+    }
+  ],
+  "start_quests": [
+    {
+      "title": "The Old Signal-Fire",
+      "summary": "They say a signal-fire once burned on the hill's crown, dark for years now. Climb the path and see what remains.",
+      "destination": "hilltop"
+    },
+    {
+      "title": "The Dead Hearth",
+      "summary": "The cave keeps a cold fire pit and the smell of old smoke. Go down into the dark and see what was left behind.",
+      "destination": "cave_interior"
     }
   ],
   "npcs": [

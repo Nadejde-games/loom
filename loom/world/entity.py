@@ -42,3 +42,14 @@ class Item(Entity):
     # Whether it can be picked up, dropped, or given. A fixed feature of the
     # scene (a wall carving, a fountain) is not portable.
     portable: bool = True
+    # --- code-owned mechanical classification (the loot forge, Phase 4) ---
+    # Set by CODE, never by the model — the golden rule extended to loot: the forge
+    # rolls these from tables and attaches them, while the model authors only the
+    # flavour above (name/description/aliases). An authored or director-spawned item
+    # leaves them empty. ``tier`` is the rarity/power ordinal — the single scalar
+    # (PoE's ilvl analog) that gates which tables are eligible today and will gate a
+    # future stat system with no change to this shape; ``tags`` is the rolled
+    # classification; ``theme`` the coherence handle name, lore, and tags share.
+    tier: str = ""
+    tags: list = field(default_factory=list)
+    theme: str = ""

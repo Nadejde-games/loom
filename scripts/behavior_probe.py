@@ -59,6 +59,8 @@ from loom.ai.director import DirectorMind
 from loom.ai.intent import interpret
 from loom.action import default_registry
 from loom.command import command_schema, describe_verbs, default_verbs
+from loom import loot
+from loom.ai import loot as loot_ai
 
 WORLD = os.path.join(os.path.dirname(__file__), "..", "game", "world", "world.json")
 
@@ -759,6 +761,87 @@ async def run_scenario(provider, sc: Scenario):
     return successes, samples
 
 
+# --- Phase 4: the loot forge — the model authors flavour to a code-rolled brief ---
+# This probes loom.ai.loot.author_flavour directly (the model's *flavour* half): given
+# a brief whose mechanics (tier/tags/theme) are already fixed by code, does the model
+# return a schema-valid, in-theme name and lore? The forge's mechanical half — the roll,
+# the tier gating, the family guard, the assembly — is deterministic and is the offline
+# suite's job (tests/test_loot.py). This is the mind gate the offline suite structurally
+# cannot see: whether the model authors a usable, grounded item, not a number or a
+# malformed reply. Constrained decoding guarantees the shape; this checks the substance.
+@dataclass
+class LootScenario:
+    name: str
+    brief: object                   # a loot.Brief the code would have rolled
+    check: Callable                 # (raw dict|None) -> bool
+    desc: str
+    n: int = 6
+    threshold: int = 4
+    gated: bool = True              # False = measured but NOT a hard gate (a watch item)
+    tags: tuple = ("loot",)
+
+
+def _grounded_in(brief) -> Callable:
+    """The authored flavour is schema-valid AND reflects the brief — its theme, one of
+    its qualities, or the moment it was forged for shows in the name or lore. Lenient by
+    design (the model rephrases: 'storm-worn' -> 'battered by storms'), so it matches on
+    word *stems*; it fails only on a malformed reply or flavour with no grounding at all
+    — a collapse of the forge, not a strict-wording check."""
+    stems = [brief.theme.lower()] if brief.theme else []
+    stems += [t.split("-")[0].lower() for t in brief.tags]
+    stems += [w for w in ("storm", "dusk", "night", "rain", "signal", "fire", "hill",
+                          "cave", "mine", "wood", "cold") if w in brief.context.lower()]
+    stems = [s for s in stems if len(s) >= 3]
+
+    def check(raw):
+        flav = loot.parse_flavour(raw)
+        if flav is None:
+            return False
+        text = (flav["name"] + " " + flav["description"]).lower()
+        return any(s in text for s in stems)
+    return check
+
+
+# A rich brief (rare tier, three qualities, a storm-at-dusk quest reward) — the code has
+# already decided everything mechanical; the model authors only the words. The real
+# forge rolls this and hands it over; here we hand it a fixed one and watch it write.
+_LOOT_BRIEF = loot.Brief(
+    tier="rare", rank=3, theme="talisman",
+    tags=["storm-worn", "dusk-touched", "ill-omened"],
+    context="a reward for reaching the old signal-fire on the hill, "
+            "under a driving storm at dusk")
+
+LOOT_SCENARIOS = [
+    LootScenario(
+        # The forge's mind gate: schema-valid, grounded flavour for a code-rolled brief.
+        # Constrained decoding makes the shape near-certain, so a miss is either an empty
+        # field (parse rejects) or flavour with no grounding at all — a collapse, which
+        # n=6/threshold=4 catches while tolerating the model's rephrasing latitude.
+        name="loot.forges-in-theme", brief=_LOOT_BRIEF,
+        check=_grounded_in(_LOOT_BRIEF), n=6, threshold=4,
+        desc="the loot forge authors a schema-valid, in-theme item for a "
+             "code-rolled brief (the model writes flavour, never mechanics)"),
+]
+
+
+async def run_loot_scenario(provider, sc: LootScenario):
+    schema = loot.flavour_schema()
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        try:
+            raw = await loot_ai.author_flavour(provider, schema, sc.brief)
+            ok = bool(sc.check(raw))
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        flav = loot.parse_flavour(raw)
+        detail = (f'"{flav["name"]}" — {flav["description"][:64]}'
+                  if flav else f"INVALID: {raw!r}")
+        samples.append((ok, detail))
+    return successes, samples
+
+
 async def main():
     provider = get_default_provider()
     pname = getattr(provider, "name", type(provider).__name__)
@@ -771,17 +854,20 @@ async def main():
     chosen_dir = [s for s in DIRECTOR_SCENARIOS if picks(s)]
     chosen_gate = [s for s in GATE_SCENARIOS if picks(s)]
     chosen_react = [s for s in REACT_SCENARIOS if picks(s)]
-    if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react)):
+    chosen_loot = [s for s in LOOT_SCENARIOS if picks(s)]
+    if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react,
+                chosen_loot)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
                       | {t for s in GATE_SCENARIOS for t in s.tags}
-                      | {t for s in REACT_SCENARIOS for t in s.tags})
+                      | {t for s in REACT_SCENARIOS for t in s.tags}
+                      | {t for s in LOOT_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
     total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
-             + len(chosen_gate) + len(chosen_react))
+             + len(chosen_gate) + len(chosen_react) + len(chosen_loot))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -860,6 +946,17 @@ async def main():
         if not ok:
             for hit, detail in samples:
                 print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    for sc in chosen_loot:
+        # Phase 4: the loot forge authors schema-valid, in-theme flavour for a
+        # code-rolled brief (the mechanical roll is the offline suite's job).
+        successes, samples = await run_loot_scenario(provider, sc)
+        ok, v = verdict(sc, successes)
+        print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        # Show the forged items even on a pass — the point is to read the loot.
+        for hit, detail in samples:
+            print(f"          {'ok ' if hit else 'MISS'} {detail}")
 
     print()
     if watch:

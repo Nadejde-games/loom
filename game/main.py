@@ -144,6 +144,33 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
         print(f"[game] weather: {len(weather_cfg['states'])} sky-states, "
               f"a roll every {weather_cfg.get('period_pulses', 12)} pulses")
 
+    # The loot forge (Phase 4): dynamic, context-aware items on the golden rule. Code
+    # rolls an item's mechanical brief (tier/tags/theme) from the authored "loot" tables,
+    # gated by the place's current conditions (weather/time); the model authors only its
+    # flavour (name/lore) under a flat constrained schema; the forge assembles a real
+    # Item. Fires on quest completion — a per-player reward. On the denser game-master
+    # tier (creative flavour, and it is a rare, slow call). Off unless a "loot" block is
+    # authored; LOOM_LOOT_SEED pins the roll for a reproducible run (else fresh variety).
+    loot_cfg = world.meta.get("loot")
+    if loot_cfg and loot_cfg.get("tiers"):
+        seed_env = os.environ.get("LOOM_LOOT_SEED")
+        forge = engine.attach_loot(loot_cfg, provider=gm_provider,
+                                   seed=int(seed_env) if seed_env else None)
+        if forge:
+            print(f"[game] loot forge: {len(loot_cfg['tiers'])} tiers, "
+                  f"{len(loot_cfg.get('tags', []))} tags, via "
+                  f"{getattr(gm_provider or provider, 'name', 'engine provider')} "
+                  "(on quest completion)")
+
+    # Starting quests: a goal every connecting player is handed, so the world has a
+    # purpose from the first step — and a deterministic way to reach the loot forge (walk
+    # to a quest's destination → it completes → a reward is forged). Authored as the
+    # "start_quests" block; off unless present.
+    start_quests = world.meta.get("start_quests")
+    if start_quests:
+        kept = engine.attach_start_quests(start_quests)
+        print(f"[game] starting quests: {len(kept)} offered on connect")
+
     await asyncio.gather(server.serve_forever(), loop.run())
 
 

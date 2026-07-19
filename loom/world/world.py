@@ -85,15 +85,22 @@ class World:
                 return candidate
 
     def spawn_item(self, name: str, description: str = "",
-                   holder_id: str | None = None, portable: bool = True) -> Item:
+                   holder_id: str | None = None, portable: bool = True, *,
+                   aliases: list | None = None, tier: str = "",
+                   tags: list | None = None, theme: str = "") -> Item:
         """Mint and place a new ``Item``, returning it. The World-layer creator behind
         the director's ``spawn_item`` action (so ``loom/action.py`` never imports the
         world model): the item gets a fresh id, is indexed onto its holder via
         ``add_entity`` (a location = the floor, a character = an inventory), and is a
         real, persistent, perceivable thing from that moment — nothing spawn-specific
-        downstream. Placing lore-authored, balanced loot is Phase 4; this is the plumbing."""
+        downstream. The keyword-only ``aliases`` (model-authored extra nouns) and the
+        code-owned ``tier``/``tags``/``theme`` are how the Phase 4 loot forge mints a
+        lore-rich, classified item through this same path; the director's plain
+        ``spawn_item`` omits them and gets a bare object exactly as before."""
         item = Item(id=self.fresh_id("item"), name=name, description=description,
-                    holder=holder_id, portable=portable)
+                    holder=holder_id, portable=portable,
+                    aliases=list(aliases or []), tier=tier,
+                    tags=list(tags or []), theme=theme)
         self.add_entity(item)
         return item
 

@@ -698,10 +698,84 @@ thread, **idle-NPC autonomy** (*purely unprompted* NPC initiative — mobact-sty
 act-gate, so a naive version now would risk a noisy/mechanical room. Also deferred: the
 non-adjacent off-screen stir (needs hear-from-afar propagation).
 
-### Phase 4 — Loot forge  ○
-Dynamic, context-aware item generation: the LLM authors name/lore/tags as
-schema-constrained JSON; numeric balance stays in code/tables. Tied to player
-history, quests, location, and what the world is currently doing.
+### Phase 4 — Loot forge  ▶ (first slice landed 2026-07-19: the quest-reward forge)
+Dynamic, context-aware item generation: the LLM authors an item's *flavour*
+(name/lore/aliases) as flat schema-constrained JSON; its *balance* (a rarity tier +
+tags/theme) stays in code and tables. Tied to player history, quests, location, and what
+the world is currently doing.
+
+Prior art settled first (the loot-generation spike, `docs/spikes/loot-generation.md`):
+every mature loot system — Path of Exile, Diablo, Borderlands, DikuMUD — separates
+authored *flavour* from tuned *mechanical data*, and derives an item's name from mechanics
+a weighted table rolls, gated by a single level scalar (ilvl / affix-level / item-power).
+The LLM literature is the complement: models are strong at situated flavour text and
+measured-unreliable at numeric balance and constraint satisfaction. The synthesis
+(design signed off with the user 2026-07-19): keep the industry separation, invert one
+step — **code rolls the mechanics; the model authors the name/lore conditioned on that
+roll and the world state, as one flat, grammar-constrained JSON object.** The model never
+emits a number, a tier, or a category — the golden rule, applied to loot.
+
+**What "balance" means with no combat system.** Loom has no stat/combat mechanic, so
+nothing consumes a number yet. Rather than invent combat stats, code owns one lightweight
+**`tier` ordinal** (rarity/power — common/uncommon/rare) plus a **tags/theme
+classification**, rolled from tables gated by the tier and by the place's current
+conditions. Zero combat math. The `tier` scalar stands exactly where PoE's ilvl stands,
+so when a combat system eventually lands the *same* scalar gates stat-range tables with no
+change to the seam.
+
+**Built — the first slice (2026-07-19), both gates green.** The tightest end-to-end proof
+of the forge seam, fired from a single trigger (quest completion, because the `QuestBook`
+already gives per-player context and a deterministic hook):
+- **The forge, three stages.** `loom/loot.py` (the code-owned, deterministic half —
+  game-agnostic, offline-testable via a seeded RNG): `LootTables` (authored `tiers` /
+  `themes` / `tags`), `roll_brief` (a weighted tier, then tags gated by its rank and
+  *filtered toward the moment* — a tag whose `when` matches the place's conditions is
+  preferred — one per family group, PoE's mod-group guard, so a brief never contradicts
+  itself; higher tier ⇒ more tags), and the flat `flavour_schema` / tolerant
+  `parse_flavour` / `fallback_flavour`. The model call is `loom/ai/loot.py`
+  (`author_flavour`, world-free, the sibling of `loom/ai/intent.py`): a brief + the flat
+  schema → the model authors `{name, description, aliases}` only, constrained so it cannot
+  emit a number or a `oneOf` branch. The engine owns the orchestration (`attach_loot` +
+  `_forge_reward`): gather context (the completion place's standing conditions theme the
+  reward; the quest names why it appears) → roll → author → assemble a real `Item` via the
+  existing `World.spawn_item` (extended with the code-owned `tier`/`tags`/`theme` + model
+  `aliases`) into the player's own inventory, and tell them what they earned. Runs off the
+  loop (a background task, like an NPC reply), so a completed quest never blocks on the
+  model call; a failed call degrades to a brief-only item — the reward is always real,
+  never a crash.
+- **Opt-in and game-agnostic.** The base engine forges nothing; the game wires it via
+  `attach_loot` reading the authored `"loot"` block in world.json (like the
+  clock/weather/director blocks), on the denser game-master tier. `Item` gains
+  `tier`/`tags`/`theme` (default empty → all authored items and every prior test
+  unregressed). Not a registered action on the shared catalogue — a separate flavour call
+  on a seam event — so it dilutes no NPC/director action selection (the neighbours are
+  structurally untouched).
+- **A playable path to it — starting quests.** So the forge can actually be *played*
+  (not only reached through the stochastic director), the engine gained opt-in **starting
+  quests** (`attach_start_quests`, authored as a `"start_quests"` block): every connecting
+  player is handed opening goals and told them, and reaching a destination completes one
+  through the same arrival hook and forges the reward. The demo world gained a themed
+  destination — a **hilltop** with a long-cold signal-fire, up the hill path — so the
+  opening quest *"The Old Signal-Fire"* is a real, short journey. Verified live E2E: a
+  wanderer walked to the hilltop under a storm at dusk and was rewarded *"a rain-beaded
+  clay charm"* — code-rolled `common` / `rain-beaded` / `charm` (weather-resonant), the
+  name and lore authored by the model and grounded in the storm and the signal-fire.
+- **Gates.** Offline **440** (from 405): `tests/test_loot.py` — the table parse, the roll
+  (determinism under seed, tier weighting, rank gating, the family guard, context
+  preference), the flat schema (no `oneOf`) + parse/fallback bounds, the extended
+  `spawn_item`, the async flavour call (scripted / prose / error), the engine seam (a
+  completed quest forges a context-themed, code-classified reward into inventory;
+  degrade-to-brief; no-forge; no-completion), and the starting-quest gameplay path
+  (offered on connect, a bad destination dropped, reaching one forges the reward). Live: a
+  new `loot.forges-in-theme`
+  behavioral scenario — the model authors schema-valid, in-theme flavour for a code-rolled
+  brief — **6/6** on `qwen3.6-35b-a3b` (e.g. *"the dusk-wreathed storm-shard of ill-omened
+  grace"* for a rare storm-at-dusk brief), the mechanics all code-owned.
+- **Deferred (grow the tables, not the seam):** combat stats / `(field, number)`
+  apply-pairs (no combat to balance against); the other firing paths (a director forge
+  action; a discovery seeded in a place); deeper mod-pool tiers + tuned spawn weights;
+  unique/set fixed items; identification; a wider item-type/slot vocabulary. All grow the
+  content later without moving the seam.
 
 ### Phase 5 — Deeper minds & persistence  ○
 Importance scoring, embedding retrieval (start SQLite + brute-force cosine),
@@ -734,7 +808,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (357 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (444 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*

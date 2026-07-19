@@ -4,6 +4,7 @@ particular world — a game may subclass this or register extra commands.
 """
 from __future__ import annotations
 import asyncio
+import random
 from dataclasses import dataclass, field
 from string import Formatter
 from .session import Session
@@ -20,7 +21,10 @@ from .style import Style, span, styled, join_styled
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
 from .ai import intent
 from .ai.director import DirectorMind, Director
+from .ai import loot as loot_ai
 from . import command
+from . import loot
+from .loot import LootTables, LootForge, flavour_schema
 
 # Actions the default game offers the *player* but not its NPCs — the NPCs in
 # this world don't scavenge the floor. Purely a content choice (not a seam rule):
@@ -125,6 +129,19 @@ class Engine:
         # The world's weather, if a game attaches one (attach_weather; B9) — the
         # clock's sibling, a bounded random walk over sky-states on the same bridge.
         self.weather: WeatherSystem | None = None
+        # The loot forge, if a game attaches one (attach_loot; Phase 4). Code rolls an
+        # item's mechanical brief (tier/tags/theme) from authored tables gated by the
+        # place's conditions; the model authors only its flavour under a flat constrained
+        # schema; the forge assembles a real Item. None until wired — the base engine
+        # forges nothing, exactly as it has no director, clock, or weather. Fires today
+        # on quest completion (a per-player reward).
+        self.loot: LootForge | None = None
+        # Starting quests (opt-in): opening goals every connecting player is handed, so
+        # the world has a purpose from the first step — and a deterministic way to reach
+        # the loot forge (walk to a quest's destination → it completes → a reward is
+        # forged). Authored as world content (the "start_quests" block); empty = the base
+        # engine hands out nothing.
+        self.start_quests: list = []
         # The action catalogue offered to NPCs — the shared registry minus the
         # player-only verbs and the director-only verbs. Both the prompt and the
         # constrained-decoding grammar are narrowed to this, so NPC behavior is
@@ -159,6 +176,26 @@ class Engine:
         where = loc.name if loc else self.start_location
         self.chronicle.record(f"{player.name} arrived in {where}.",
                               location_id=self.start_location, kind="arrival")
+        await self._offer_start_quests(session, player)
+
+    async def _offer_start_quests(self, session: Session, player) -> None:
+        """Hand a newly-arrived player their opening goals and name them, so the journey
+        has a direction from the first breath. No-op unless the game authored starting
+        quests (attach_start_quests). Reaching one's destination completes it through the
+        very same arrival hook every director-offered quest uses — and forges a reward if
+        a loot forge is attached."""
+        offered = False
+        for d in self.start_quests:
+            q = self.world.quests.offer(
+                player.id, title=str(d["title"]), summary=str(d.get("summary", "")),
+                giver=str(d.get("giver", "")), destination=str(d["destination"]))
+            if q is not None:
+                offered = True
+                await session.send_text(styled(
+                    "A purpose settles on you — ", span(q.title, Style.QUEST),
+                    ". " + q.summary))
+        if offered:
+            await session.send_system("(Type quests to see your journal.)")
 
     async def on_disconnect(self, session: Session) -> None:
         self.sessions.pop(session.id, None)
@@ -655,6 +692,97 @@ class Engine:
         self.weather.install(loop)
         return self.weather
 
+    def attach_loot(self, config: dict, *, provider: LLMProvider | None = None,
+                    seed: int | None = None,
+                    max_aliases: int = 4) -> LootForge | None:
+        """Give this world a loot forge (Phase 4) — dynamic, context-aware items on the
+        golden rule. ``config`` is the authored ``"loot"`` block (``tiers`` / ``themes``
+        / ``tags``); code rolls an item's mechanical brief from those tables, gated by
+        the ``tier`` scalar and by the place's current conditions, and the model
+        (``provider``, default the engine provider — pass the denser game-master tier for
+        richer flavour) authors only its name and lore under a flat constrained schema.
+        Pass a ``seed`` for a reproducible roll (else fresh variety each run). Returns the
+        ``LootForge`` (also on ``self.loot``), or ``None`` if the config has no tiers to
+        roll. Opt-in — the base engine forges nothing; unlike the director/clock/weather
+        it hangs off no loop, firing instead on a seam event (today: quest completion)."""
+        tables = LootTables.from_config(config)
+        if tables.is_empty():
+            return None
+        self.loot = LootForge(tables=tables, provider=provider or self.provider,
+                              rng=random.Random(seed),
+                              schema=flavour_schema(max_aliases),
+                              max_aliases=max_aliases)
+        return self.loot
+
+    def attach_start_quests(self, defs: list | None) -> list:
+        """Hand every connecting player a set of opening goals (opt-in). ``defs`` is a
+        list of ``{title, summary, destination}`` — a ``reach`` quest each — authored as
+        the ``"start_quests"`` block in world.json. Offered on connect (``on_connect`` →
+        ``_offer_start_quests``), so the world has a purpose from the first step and the
+        loot forge has a deterministic trigger. A def whose destination is not a real
+        place, or which has no title, is dropped (it could never complete). Returns the
+        kept defs (also on ``self.start_quests``); base engine hands out nothing."""
+        self.start_quests = [d for d in (defs or [])
+                             if d.get("title")
+                             and d.get("destination") in self.world.locations]
+        return self.start_quests
+
+    def _spawn_forge_reward(self, session: Session, player, quest,
+                            location_id: str) -> None:
+        """Forge a per-player reward for a completed quest on a background task, so the
+        arrival that triggered it is never blocked on a model call — the same off-loop
+        dispatch an NPC reply uses. No-op unless a loot forge is attached."""
+        if self.loot is None:
+            return
+        task = asyncio.create_task(
+            self._forge_reward(session, player, quest, location_id))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _forge_reward(self, session: Session, player, quest,
+                            location_id: str) -> None:
+        """Gather context → roll the brief → have the model author flavour → assemble a
+        real Item into the player's own inventory, and tell them what they earned. The
+        forge's orchestration, which the engine owns because only it holds the world and
+        the trigger. A failed model call degrades to a brief-only item — the reward is
+        always real — and any error is contained, never breaking the arrival."""
+        forge = self.loot
+        if forge is None:
+            return
+        try:
+            # Context that themes the reward: the place's standing conditions (weather,
+            # time, anything the director set) give the resonant tags *and* the
+            # situational blurb; the quest names why the thing appears.
+            conds = (self.world.conditions.at(location_id)
+                     + self.world.conditions.world_at())
+            context_tags = [c.tag for c in conds]
+            loc = self.world.locations.get(location_id)
+            where = loc.name if loc else location_id
+            situation = "; ".join(c.text for c in conds)
+            blurb = (f'a reward for completing the quest "{quest.title}", at {where}'
+                     + (f' — {situation}' if situation else ''))
+            brief = loot.roll_brief(forge.tables, forge.rng,
+                                    context_tags=context_tags, context_blurb=blurb)
+            if brief is None:
+                return
+            raw = await loot_ai.author_flavour(forge.provider, forge.schema, brief)
+            flavour = loot.parse_flavour(raw, max_aliases=forge.max_aliases)
+            if flavour is None:                       # model unreachable/unusable
+                flavour = loot.fallback_flavour(brief)
+            item = self.world.spawn_item(
+                flavour["name"], flavour["description"], holder_id=player.id,
+                aliases=flavour["aliases"], tier=brief.tier, tags=brief.tags,
+                theme=brief.theme)
+        except Exception as exc:                      # a broken forge never breaks play
+            print(f"[loom] loot forge failed for {getattr(player, 'id', '?')}: {exc!r}")
+            return
+        # The reward is personal — into the player's own inventory (a quest is per
+        # player). Tell them, the item styled as an item (B3).
+        await self._safe_send(
+            session.send_text,
+            styled("For seeing it through, you receive ",
+                   span(item.name, Style.ITEM), "."))
+
     def _resolve_lines(self, location_id: str, actor, result) -> list:
         """The room-addressed lines an executed action makes visible: a
         ``(location_id, text)`` for each. The single definition of *what shows
@@ -948,6 +1076,9 @@ class Engine:
         done = self.world.quests.complete_reached(player.id, location_id)
         for q in done:
             await session.send_system(f'✓ Quest complete: "{q.title}".')
+            # A completed quest earns a forged reward — a context-themed item authored
+            # off the loop (Phase 4). No-op unless a loot forge is attached.
+            self._spawn_forge_reward(session, player, q, location_id)
 
     @staticmethod
     def _which(match) -> str:
