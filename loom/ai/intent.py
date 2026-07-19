@@ -19,14 +19,25 @@ from .mind import _extract_json   # shared tolerant single-object JSON extractio
 def _system_prompt(catalogue: str, context: str) -> str:
     return (
         "You translate a player's free-text input in a text adventure into exactly "
-        "one game command. Choose the single command that best matches the player's "
-        "intent, using only the commands listed. Fill each object with the plain "
-        "name of the thing meant, drawn from the surroundings; do not invent things "
-        "that are not present.\n\n"
+        "one game command. Read the player's INTENT — the action they mean to take — "
+        "and pick the single listed command that performs it. Fill each object with "
+        "the plain name of the thing meant, drawn from the surroundings; do not invent "
+        "things that are not present. Do NOT fall back to 'look': choose 'look', "
+        "'inventory', 'who' or 'quests' only when the player truly means to observe or "
+        "check, never as a default when a verb of action fits better.\n\n"
         "Reply with a single JSON object and nothing else, in this shape:\n"
         '{"command": {"verb": "<one listed verb>", "dobj": "<object, if any>", '
         '"iobj": "<second object, if any>"}}\n\n'
         "Commands you may choose from:\n" + catalogue + "\n\n"
+        "Map the intent, not the exact words — the phrasing varies, the action is "
+        "what matters. Examples:\n"
+        '- "grab the brass key" -> {"command": {"verb": "take", "dobj": "brass key"}}\n'
+        '- "hand the map to Odd" -> {"command": {"verb": "give", "dobj": "map", '
+        '"iobj": "Odd"}}\n'
+        '- "walk east" -> {"command": {"verb": "go", "dobj": "east"}}\n'
+        '- "inspect the old door" -> {"command": {"verb": "examine", "dobj": '
+        '"old door"}}\n'
+        '- "set the lantern down" -> {"command": {"verb": "drop", "dobj": "lantern"}}\n\n'
         "The player's surroundings right now:\n" + context
     )
 
@@ -42,7 +53,13 @@ async def interpret(provider: LLMProvider, schema: dict, catalogue: str,
     messages = [{"role": "user", "content": text}]
     try:
         raw = await provider.complete(system, messages, schema=schema)
-    except Exception:
+    except Exception as exc:
+        # Degrade to None (the caller shows "unknown command") — but SURFACE it. A
+        # silent None here made a transient provider error (e.g. a rate-limit) look
+        # identical to a genuine "couldn't map it", which masked a throttle as a
+        # behaviour failure in the harness. Print so the two are never confused again.
+        print(f"[loom] intent interpret failed ({type(exc).__name__}: {exc}); "
+              "treating as unmapped")
         return None
     obj = _extract_json(raw)
     if not isinstance(obj, dict):

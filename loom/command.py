@@ -190,35 +190,35 @@ def describe_verbs(verbs: dict, allowed=None) -> str:
 
 
 def command_schema(verbs: dict, allowed=None) -> dict:
-    """A JSON Schema constraining a free-text command to one canonical verb and
-    its object phrases — the verb-table counterpart of ``ActionRegistry.json_schema``.
+    """A JSON Schema constraining a free-text command to one canonical verb and its
+    object phrases — the verb-table counterpart of ``ActionRegistry.json_schema``.
 
-    The LLM fallback (B1b) is constrained to this so it can only emit a real
-    command: an object ``{"command": {...}}`` whose value is a ``oneOf`` over the
-    (allowed) verbs, each branch pinning ``verb`` to a const and declaring the
-    string object phrases that verb takes (``dobj`` always for a verb that wants
-    one; ``iobj`` required for a two-object verb like give, optional for take's
-    source). Same shape the deterministic parser produces, so the model's output
-    flows through the identical dispatch.
+    A **flat** object — ``{"command": {"verb": <enum>, "dobj": <string>, "iobj":
+    <string>}}`` — deliberately NOT a ``oneOf`` over per-verb branches. A
+    discriminated union whose branches differ only in which fields they require
+    invites a weaker model, under strict decoding, to collapse to the *simplest*
+    branch: measured 2026-07-19, ``qwen3.6-35b-a3b`` picked ``look`` (the only
+    object-free verb, the shortest valid branch) for *every* input, 0/4, where a flat
+    enum maps them 4/4. A flat schema makes the model *reason* the verb rather than
+    take the cheapest grammar path, and still guarantees the shape (verb ∈ the allowed
+    set). ``dobj`` is required so the object is actually filled — a harmless spurious
+    ``dobj`` on an object-free verb like ``look`` is ignored downstream; ``iobj`` is
+    optional (give's recipient, take's source). See docs/PROMPTING.md for the wider
+    lesson. Still flows through the identical dispatch the deterministic parser feeds.
     """
-    branches = []
-    for v in _distinct_verbs(verbs, allowed):
-        props = {"verb": {"const": v.canonical}}
-        required = ["verb"]
-        if _wants_dobj(v):
-            props["dobj"] = {"type": "string"}
-            required.append("dobj")
-        if v.iobj is not None:
-            props["iobj"] = {"type": "string"}
-            if not v.dobj_from_iobj:      # give needs a recipient; take's source is optional
-                required.append("iobj")
-        branches.append({
-            "type": "object", "properties": props,
-            "required": required, "additionalProperties": False,
-        })
+    canon = [v.canonical for v in _distinct_verbs(verbs, allowed)]
     return {
         "type": "object",
-        "properties": {"command": {"oneOf": branches}},
+        "properties": {"command": {
+            "type": "object",
+            "properties": {
+                "verb": {"enum": canon},
+                "dobj": {"type": "string"},
+                "iobj": {"type": "string"},
+            },
+            "required": ["verb", "dobj"],
+            "additionalProperties": False,
+        }},
         "required": ["command"],
         "additionalProperties": False,
     }

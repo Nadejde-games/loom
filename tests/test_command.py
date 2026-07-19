@@ -116,44 +116,43 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(self.p("TAKE lantern").verb.target, "take_item")
 
 
-def _cmd_branches(schema):
-    return {b["properties"]["verb"]["const"]: b
-            for b in schema["properties"]["command"]["oneOf"]}
+def _cmd(schema):
+    """The inner command-object schema (flat: a verb enum + object phrases)."""
+    return schema["properties"]["command"]
 
 
 class CommandSchemaTests(unittest.TestCase):
-    """The command grammar (B1b): the LLM-fallback counterpart of the action
-    registry's json_schema — a constrained shape over the verb table."""
+    """The command grammar (B1b): a FLAT constrained shape over the verb table —
+    verb as an enum, not a ``oneOf`` over per-verb branches (which a weaker model
+    collapses to the simplest branch under strict decoding; see command_schema)."""
 
     def setUp(self):
-        self.branches = _cmd_branches(command.command_schema(default_verbs()))
+        self.cmd = _cmd(command.command_schema(default_verbs()))
 
-    def test_top_level_wraps_a_oneof(self):
+    def test_top_level_wraps_a_command_object(self):
         schema = command.command_schema(default_verbs())
         self.assertEqual(schema["required"], ["command"])
-        self.assertIn("oneOf", schema["properties"]["command"])
+        self.assertEqual(self.cmd["type"], "object")
+        self.assertFalse(self.cmd["additionalProperties"])
 
-    def test_give_requires_both_objects(self):
-        b = self.branches["give"]
-        self.assertEqual(set(b["required"]), {"verb", "dobj", "iobj"})
+    def test_verb_is_an_enum_over_the_verbs(self):
+        verbs = set(self.cmd["properties"]["verb"]["enum"])
+        self.assertIn("give", verbs)
+        self.assertIn("look", verbs)
+        self.assertIn("go", verbs)
 
-    def test_take_source_is_optional(self):
-        b = self.branches["take"]
-        self.assertEqual(set(b["required"]), {"verb", "dobj"})   # not iobj
-        self.assertIn("iobj", b["properties"])                    # but offered
+    def test_verb_and_dobj_required_iobj_optional(self):
+        # dobj required so the object is actually filled; iobj offered, not required.
+        self.assertEqual(set(self.cmd["required"]), {"verb", "dobj"})
+        self.assertIn("iobj", self.cmd["properties"])
 
-    def test_objectless_verb_requires_only_verb(self):
-        self.assertEqual(self.branches["look"]["required"], ["verb"])
-        self.assertNotIn("dobj", self.branches["look"]["properties"])
-
-    def test_go_and_say_take_a_dobj(self):
-        self.assertIn("dobj", self.branches["go"]["required"])
-        self.assertIn("dobj", self.branches["say"]["required"])
+    def test_object_phrases_are_strings(self):
+        self.assertEqual(self.cmd["properties"]["dobj"], {"type": "string"})
+        self.assertEqual(self.cmd["properties"]["iobj"], {"type": "string"})
 
     def test_allowed_narrows_the_verbs(self):
-        branches = _cmd_branches(
-            command.command_schema(default_verbs(), ["take", "give"]))
-        self.assertEqual(set(branches), {"take", "give"})
+        cmd = _cmd(command.command_schema(default_verbs(), ["take", "give"]))
+        self.assertEqual(set(cmd["properties"]["verb"]["enum"]), {"take", "give"})
 
 
 class DescribeVerbsTests(unittest.TestCase):

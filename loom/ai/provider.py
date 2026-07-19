@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from typing import Protocol, runtime_checkable
 
 
@@ -193,11 +194,29 @@ class OpenAICompatibleProvider:
             self._client = httpx.AsyncClient(timeout=self.timeout)
         return self._client
 
+    def _is_retryable(self, status: int, body: str) -> bool:
+        """Whether an HTTP error status should be retried with backoff — the standard
+        transient statuses. A subclass widens this when a backend disguises a
+        rate-limit as another status (see ``OpenRouterProvider``)."""
+        return status in (429, 503, 529)
+
+    async def _pace_wait(self) -> None:
+        """Hook: await any client-side pacing before a request. No-op by default;
+        a rate-limited backend (see ``OpenRouterProvider``) overrides it to space
+        bursts out and stay under a server rate limit."""
+        return
+
+    def _pace_note(self, throttled: bool) -> None:
+        """Hook: record a request's outcome (throttled or clean) so adaptive pacing
+        can tighten or relax. No-op by default."""
+        return
+
     async def _post(self, payload: dict) -> dict:
         """POST the chat request and return the decoded JSON. Async and pooled via
-        httpx; retries the transient statuses (429/503/529) and transport errors
-        with linear backoff, then raises ``ProviderError``. The overridable seam the
-        capturing test doubles replace to assert the wire payload without a network."""
+        httpx; paces bursts (``_pace_wait``), retries the transient statuses
+        (``_is_retryable``) and transport errors with linear backoff, then raises
+        ``ProviderError``. The overridable seam the capturing test doubles replace to
+        assert the wire payload without a network."""
         import httpx
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -205,6 +224,7 @@ class OpenAICompatibleProvider:
         client = self._get_client()
         last: object = None
         for attempt in range(self.retries):
+            await self._pace_wait()
             try:
                 resp = await client.post(self.url, json=payload, headers=headers)
             except httpx.HTTPError as exc:       # transport: connect/read/timeout
@@ -213,13 +233,16 @@ class OpenAICompatibleProvider:
                     await asyncio.sleep(0.5 * (attempt + 1))
                     continue
                 raise ProviderError(f"cannot reach {self.url}: {exc}") from exc
-            if resp.status_code in (429, 503, 529) and attempt < self.retries - 1:
-                last = f"HTTP {resp.status_code}"
-                await asyncio.sleep(0.5 * (attempt + 1))
-                continue
             if resp.status_code >= 400:
+                body = resp.text
+                if self._is_retryable(resp.status_code, body) and attempt < self.retries - 1:
+                    self._pace_note(True)        # throttled -> pace the next calls out
+                    last = f"HTTP {resp.status_code}"
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
                 raise ProviderError(
-                    f"HTTP {resp.status_code} from {self.url}: {resp.text[:200]}")
+                    f"HTTP {resp.status_code} from {self.url}: {body[:200]}")
+            self._pace_note(False)               # clean -> relax the pacing
             return resp.json()
         raise ProviderError(f"request failed after {self.retries} tries: {last}")
 
@@ -317,14 +340,63 @@ class OpenRouterProvider(OpenAICompatibleProvider):
 
     def __init__(self, model: str = "qwen/qwen3.6-35b-a3b",
                  api_key: str | None = None, host: str | None = None,
-                 think: bool = False, timeout: float = 120.0, **kw):
+                 think: bool = False, timeout: float = 120.0, retries: int = 5, **kw):
         extra = dict(kw.pop("extra_body", None) or {})
         if not think:
             extra.setdefault("reasoning", {"enabled": False})
+        # retries defaults higher than the base (5 vs 3): OpenRouter throttles bursts,
+        # and _is_retryable rides them out (see below), so a few extra backoff steps
+        # turn a burst-heavy run — like the behavioral harness — from failing to slow.
         super().__init__(base_url=(host or self.BASE_URL).rstrip("/"), model=model,
                          api_key=api_key or os.environ.get("OPENROUTER_API_KEY"),
-                         timeout=timeout, extra_body=extra, **kw)
+                         timeout=timeout, retries=retries, extra_body=extra, **kw)
         self.name = f"openrouter:{model}"
+
+    def _is_retryable(self, status: int, body: str) -> bool:
+        """OpenRouter surfaces a burst rate-limit as a **401** with a cookie-auth
+        message ("No cookie auth credentials" / "No user or org id"), not a 429 — so
+        the base rule would give up on what is really throttling. Retry it: a
+        genuinely bad key fails on the *first* call, before any burst, so widening to
+        this specific 401 only ever rides out a rate-limit, never masks real auth."""
+        if super()._is_retryable(status, body):
+            return True
+        low = body.lower()
+        return status == 401 and ("cookie" in low or "no user or org" in low)
+
+    # Adaptive per-model pacing. OpenRouter rate-limits *bursts* per model (worse on
+    # the pricier ones), which a purely reactive retry can't ride when the whole run
+    # is bursty (the behavioral harness). This spaces requests out only once a
+    # throttle is actually seen, and decays back to zero when they come clean — so
+    # normal play (calls already seconds apart) pays nothing, while a burst is paced
+    # under the limit instead of failing. Class-level and keyed by model, so all
+    # instances answering as one model share the same pacing state.
+    _PACE_MAX = 4.0     # seconds: ceiling on the inter-request interval
+    _pace: dict = {}    # model -> {"interval": float, "next_ok": float (monotonic)}
+
+    def _pace_state(self) -> dict:
+        return OpenRouterProvider._pace.setdefault(
+            self.model, {"interval": 0.0, "next_ok": 0.0})
+
+    async def _pace_wait(self) -> None:
+        st = self._pace_state()
+        if st["interval"] <= 0:
+            return                               # not throttling — no delay
+        now = time.monotonic()
+        if now < st["next_ok"]:
+            await asyncio.sleep(st["next_ok"] - now)
+        st["next_ok"] = time.monotonic() + st["interval"]
+
+    def _pace_note(self, throttled: bool) -> None:
+        st = self._pace_state()
+        if throttled:
+            # Back off: double the interval (from a 0.5s floor), capped, and hold the
+            # next slot out so the immediately-following calls are already spaced.
+            st["interval"] = min(self._PACE_MAX, (st["interval"] or 0.5) * 2)
+            st["next_ok"] = time.monotonic() + st["interval"]
+        elif st["interval"] > 0:
+            st["interval"] *= 0.7                # clean call — relax toward zero
+            if st["interval"] < 0.05:
+                st["interval"] = 0.0
 
 
 class AnthropicProvider:

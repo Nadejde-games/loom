@@ -761,6 +761,18 @@ or a *regression*, not to force the model past its ceiling. Label claims as
 *mechanical* (guaranteed by the offline suite) or *behavioral* (characterised, with
 a rate) — never conflate them.
 
+**Re-baselined 2026-07-19 to qwen3.6** (was `qwen3.5:35b-a3b`/Ollama): the harness now
+distinguishes hard **gates** from **watch items** (`gated=False` — measured but not
+failing the run), for behaviours that genuinely degraded on the current models and
+are known-limited rather than broken. A cross-model sweep (35b-a3b · 27b · 9b · 14b ·
+two 30b-a3b MoEs) characterised where behaviours hold vs break; **the core NPC loop
+holds down to 9B.** Model-specific prompting learnings — proven, with the harness —
+are collected for game builders in **`docs/PROMPTING.md`** (first entry: prefer a flat
+enum schema over a `oneOf` discriminated union, which a weaker model collapses to the
+simplest branch; this fixed the command fallback 0/4 → 16/16 on qwen3.6-35b-a3b). Note
+OpenRouter intermittently throttles bursts, so harness runs against it are measurement-
+noisy; `OpenRouterProvider` retries the throttle and paces adaptively (idle in play).
+
 ## Cross-cutting (ongoing)
 Tests alongside each phase (BOTH gates — see *Testing discipline*) · schema/
 versioning for save data · cost & latency budgets for AI calls · keeping `loom/`

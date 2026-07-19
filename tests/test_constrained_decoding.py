@@ -261,6 +261,31 @@ class OpenRouterProviderTests(unittest.TestCase):
         self.assertEqual(OpenRouterProvider(model="x", api_key="k").name,
                          "openrouter:x")
 
+    def test_throttle_401_is_retryable_but_real_auth_is_not(self):
+        # OpenRouter disguises a burst rate-limit as a 401 with a cookie-auth message;
+        # that is retried like a 429. A genuine bad-key 401 is not (it fails on call 1).
+        p = OpenRouterProvider(model="m", api_key="k")
+        self.assertTrue(p._is_retryable(
+            401, '{"error":{"message":"No cookie auth credentials found"}}'))
+        self.assertTrue(p._is_retryable(401, "No user or org id found in auth cookie"))
+        self.assertTrue(p._is_retryable(429, "rate limited"))
+        self.assertFalse(p._is_retryable(401, '{"error":{"message":"Invalid API key"}}'))
+        self.assertFalse(p._is_retryable(400, "bad request"))
+        self.assertEqual(p.retries, 5)   # widened default so a burst run rides throttle
+
+    def test_pacing_is_idle_by_default_and_adapts_to_throttle(self):
+        # Unique model name so the class-level pace state can't collide with others.
+        p = OpenRouterProvider(model="pace-test-adapt", api_key="k")
+        self.assertEqual(p._pace_state()["interval"], 0.0)   # idle -> no delay
+        run(p._pace_wait())                                   # idle wait is a no-op
+        p._pace_note(True)                                    # a throttle -> back off
+        self.assertGreater(p._pace_state()["interval"], 0.0)
+        p._pace_note(True)                                    # again -> larger, capped
+        self.assertLessEqual(p._pace_state()["interval"], OpenRouterProvider._PACE_MAX)
+        for _ in range(30):
+            p._pace_note(False)                               # clean calls -> decay off
+        self.assertEqual(p._pace_state()["interval"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
