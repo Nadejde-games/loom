@@ -34,11 +34,16 @@ and the director-side ones against the director model:
 
 A scenario may be a hard **gate** (``gated=True``, the default — a failure fails the
 run) or a **watch item** (``gated=False`` — measured and printed, but it does NOT
-fail the run). The watch list holds behaviors that genuinely degraded on the current
-models and are known-limited rather than broken-by-regression (see the dated notes
-per scenario) — chiefly the free-text command fallback on the a3b NPC model and the
-director's rarer "reach" actions on the 27b with reasoning off. Exit code 0 iff every
-*gated* scenario met its threshold.
+fail the run). The watch list holds behaviors that are known-limited rather than
+broken-by-regression (see the dated notes per scenario). Most of the 2026-07-19
+re-baseline's watch items have since been fixed with single, model-agnostic prompt
+rules and RE-GATED — the free-text command fallback (a flat-enum schema; see
+``loom/command.py``), the NPC's strong-stimulus reaction (a magnitude rule;
+``NpcMind.react``), and the director's "reach" actions (an observe de-hedge, since the
+act-gate already owns restraint; ``DirectorMind._action_instructions``) — all
+documented in ``docs/PROMPTING.md``. What remains is the blended idle-move variant,
+whose act-gated twin (the path the game actually runs) holds green. Exit code 0 iff
+every *gated* scenario met its threshold.
 """
 from __future__ import annotations
 import asyncio
@@ -449,15 +454,21 @@ DIRECTOR_SCENARIOS = [
         # a standing condition (a storm) grounded in a real room, with a non-empty
         # tag (the clear handle) and line. Proves the new capability the way
         # sets-a-scene proved stage_event.
-        # WATCH (re-baseline 2026-07-19): on the current director model qwen3.6-27b
-        # (reasoning off) this is flaky — 1/5. The director reliably *sets scenes* and
-        # *offers quests* (both gated below, green), but rarely reaches for the
-        # world-*shaping* reach actions. Likely wants reasoning on (the thoughtful GM)
-        # or a stronger GM variant — tracked as a follow-up, not gated here.
+        # RE-GATED 2026-07-19: the reach actions fell off on qwen3.6-27b (0-1/5) at the
+        # re-baseline. Root cause was the observe prompt DOUBLE-restraining — it
+        # re-asserted "intervene sparingly, most beats need nothing" even though the
+        # act-gate already owns restraint (it decides wait/act BEFORE observe runs).
+        # The instruction-following 27b took that hedge literally and fell silent,
+        # while the less-restrained 9b reached anyway (spawns-item 4/5). Removing the
+        # redundant hedge and telling observe to COMMIT to the fitting touch
+        # (DirectorMind._action_instructions) recovered the reach on 27b with the
+        # act-gate's restraint intact (director.restraint still 8/8): spawns-item
+        # 0->5/5, sets-a-condition 1->3/5, foreshadows 0->3/8. One model-agnostic
+        # rule, no per-model branch. See docs/PROMPTING.md.
         name="director.sets-a-condition",
         digest=DIRECTOR_WEATHER_DIGEST, snapshot=DIRECTOR_SNAPSHOT,
         check=sets_condition_in("cave_mouth"), offered=("set_condition",),
-        n=5, threshold=3, gated=False,
+        n=5, threshold=3,
         desc="the director raises a standing condition over the room where "
              "players are, grounded and well-formed"),
     DirectorScenario(
@@ -480,14 +491,13 @@ DIRECTOR_SCENARIOS = [
         # any action targeting hill_path. Threshold catches a *collapse* (the director
         # never reaches the room ahead), not a rate — foreshadowing is a *sometimes*
         # touch, and shaping the occupied room first is also correct.
-        # WATCH (re-baseline 2026-07-19): 0/8 on qwen3.6-27b — the current director does
-        # not reach into the room ahead. Foreshadowing was always a *sometimes* touch
-        # (~37% on qwen3.5), so this is a soft loss, not a broken path; part of the same
-        # "27b + reasoning-off under-reaches" pattern as sets-a-condition / spawns-item.
+        # RE-GATED 2026-07-19: 0/8 -> 3/8 with the observe de-hedge/commit fix (see
+        # director.sets-a-condition for the full root cause). Foreshadowing is a
+        # *sometimes* touch, so the threshold stays a collapse-detector (>=2), not a rate.
         name="director.foreshadows",
         digest=DIRECTOR_AHEAD_DIGEST, snapshot=DIRECTOR_AHEAD_SNAPSHOT,
         check=acts_in("hill_path"), offered=("stage_event", "set_condition"),
-        foreshadow=True, n=8, threshold=2, gated=False,
+        foreshadow=True, n=8, threshold=2,
         desc="the director foreshadows into the empty room the players are about "
              "to enter (off-screen staging)"),
     DirectorScenario(
@@ -497,14 +507,13 @@ DIRECTOR_SCENARIOS = [
         # sets-a-scene proved stage_event. Threshold is a collapse-detector (the director
         # never spawns, or spawns into a room that doesn't exist), not a rate — the offer
         # subset is spawn_item only, so the question is whether it acts well when invited.
-        # WATCH (re-baseline 2026-07-19): 0/5 on qwen3.6-27b — same under-reach pattern
-        # as sets-a-condition / foreshadows. The capability is proven (offline + it fires
-        # on other models, e.g. qwen3.5-9b 4/5), so this guards a model behaviour, not the
-        # engine; not gated on the current GM model.
+        # RE-GATED 2026-07-19: 0/5 -> 5/5 with the observe de-hedge/commit fix (see
+        # director.sets-a-condition for the full root cause — this was the clearest
+        # case: 27b spawned 0/5 where the less-restrained 9b spawned 4/5).
         name="director.spawns-item",
         digest=DIRECTOR_SPAWN_DIGEST, snapshot=DIRECTOR_SNAPSHOT,
         check=spawns_item_in("cave_mouth"), offered=("spawn_item",),
-        n=5, threshold=3, gated=False,
+        n=5, threshold=3,
         desc="the director spawns a real, well-formed object into the room where "
              "players are (reach: spawn_item)"),
     DirectorScenario(
@@ -641,17 +650,20 @@ def _set_nightfall(world):
 
 REACT_SCENARIOS = [
     ReactScenario(
-        # Observed ~0.75-0.8 react rate (5/5, 3/5); n=6/threshold=3 tolerates that
-        # variance and catches a collapse (the react path going silent), not a dip.
-        # WATCH (re-baseline 2026-07-19): the current NPC model qwen3.6-35b-a3b
-        # under-reacts to the storm — 1/6, where qwen3.5:35b-a3b gave ~0.75-0.8 (and the
-        # smaller models here still give 6/6). The react PATH is not dead on this model
-        # (reacts-to-npc and reacts-to-nightfall below still fire, and are gated); this
-        # particular strong-stimulus reaction just fell off. A watch, pending a look at
-        # whether the a3b model wants a nudge or the react prompt tuning.
+        # n=6/threshold=3 tolerates the react rate's variance and catches a collapse
+        # (the react path going silent), not a dip. RE-GATED 2026-07-19: this briefly
+        # fell to a WATCH when the re-baseline found qwen3.6-35b-a3b under-reacting to
+        # the storm (1/6) and qwen3.5-9b not reacting at all (0/6). Root cause was the
+        # react nudge itself — it was weighted almost entirely toward restraint ("most
+        # of the time a character does nothing"), which suppressed reaction even to a
+        # storm that physically reaches the character. Rewriting the nudge to a
+        # *magnitude test* (answer what is strong or close; let the slight and idle
+        # pass — NpcMind.react) recovered it with ONE model-agnostic rule: measured
+        # 6/6 on both qwen3.6-35b-a3b and qwen3.5-9b, with restraint (ignores-trivial)
+        # preserved 5/5 on both. So it is a hard gate again. See docs/PROMPTING.md.
         name="npc.reacts-to-world", npc_id="guide",
         event="A cold rain sweeps in and the wind rises to a howl.",
-        check=speaks, setup=_set_storm, n=6, threshold=3, gated=False,
+        check=speaks, setup=_set_storm, n=6, threshold=3,
         desc="an NPC reacts of its own volition to a change in the world (a storm)"),
     ReactScenario(
         # NPC->NPC reaction is a genuine coin-flip on this model (~50%): an NPC

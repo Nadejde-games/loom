@@ -766,10 +766,14 @@ distinguishes hard **gates** from **watch items** (`gated=False` — measured bu
 failing the run), for behaviours that genuinely degraded on the current models and
 are known-limited rather than broken. A cross-model sweep (35b-a3b · 27b · 9b · 14b ·
 two 30b-a3b MoEs) characterised where behaviours hold vs break; **the core NPC loop
-holds down to 9B.** Model-specific prompting learnings — proven, with the harness —
-are collected for game builders in **`docs/PROMPTING.md`** (first entry: prefer a flat
-enum schema over a `oneOf` discriminated union, which a weaker model collapses to the
-simplest branch; this fixed the command fallback 0/4 → 16/16 on qwen3.6-35b-a3b). Note
+holds down to 9B.** The behaviour we want holds across the range with ONE comprehensive prompt rule set,
+not per-model profiles (that idea was weighed and rejected): the free-text command
+fallback (a flat-enum schema over a collapse-prone `oneOf`), the NPC's strong-stimulus
+reaction (a magnitude rule), and the director's world-shaping reach (an observe
+de-hedge — the act-gate already owns restraint) were each fixed with a single rule
+proven on more than one model, then re-gated in the harness. **`docs/PROMPTING.md`** is
+now the game-creator's guide to writing NPC and game-master personas; the engineering
+detail behind these fixes lives in the harness scenario comments and project memory. Note
 OpenRouter intermittently throttles bursts, so harness runs against it are measurement-
 noisy; `OpenRouterProvider` retries the throttle and paces adaptively (idle in play).
 

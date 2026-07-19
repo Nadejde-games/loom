@@ -419,11 +419,17 @@ class NpcMind:
         system = self._system_prompt(scene)
         nudge = (
             f"Something happens around you: {event}\n"
-            "This was not said to you and asks nothing of you. React only if it "
-            "genuinely concerns your character and you would truly respond — with a "
-            "word, a gesture, or an action from your surroundings. Most of the time "
-            "a character simply takes such a thing in and does nothing; if so, reply "
-            'with exactly {"speech": "", "actions": []}. Do not react merely to react.'
+            "This was not said to you and asks nothing of you, so respond only as "
+            "your character truly would — never out of politeness. Weigh how much "
+            "it touches you. Something strong or close — weather turned harsh enough "
+            "to feel, a threat or a blade drawn near, anything that reaches you "
+            "bodily or plainly bears on what your character cares about — is what a "
+            "real person answers: react to it, with a word, a gesture, or an action "
+            "from your surroundings. Something slight, distant, or idle — a faint "
+            "sound, a shift of light, a leaf coming down — a person simply takes in "
+            "and lets pass; then reply with exactly {\"speech\": \"\", "
+            '"actions": []}. React when it genuinely moves your character; stay '
+            "silent when it does not. Never react merely to react."
         )
         messages = [{"role": "user", "content": nudge}]
         schema = (self.registry.json_schema(self.offered)
