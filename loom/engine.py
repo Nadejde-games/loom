@@ -81,7 +81,7 @@ class Engine:
                  intent_fallback: bool = True,
                  autonomous_reactions: bool = False,
                  npc_act_gate: bool = False,
-                 embedder=None):
+                 embedder=None, memory_store=None):
         self.world = world
         self.provider = provider
         self.start_location = start_location
@@ -90,6 +90,11 @@ class Engine:
         # recency/importance (Phase 5 memory depth). None = recency+importance only —
         # every offline test and the base engine run this way, unchanged.
         self.embedder = embedder
+        # The SQLite backing for memory (a ``MemoryStore``, or None; slice 1b), shared
+        # by every mind keyed by its agent id. With it, a memory is an incremental
+        # INSERT and survives a restart in the DB rather than the JSON overlay; without
+        # it, streams are plain in-memory lists persisted through the overlay as before.
+        self.memory_store = memory_store
         self.actions = registry or default_registry()
         self.gate = gate or default_gate()
         self.verbs = command.default_verbs()   # the player-command vocabulary
@@ -172,7 +177,8 @@ class Engine:
                 self.minds[ent.id] = NpcMind(ent, provider, registry=self.actions,
                                              offered=self.npc_actions,
                                              act_gate=self.npc_act_gate,
-                                             embedder=self.embedder)
+                                             embedder=self.embedder,
+                                             store=self.memory_store)
 
     # ---- Handler protocol (called by GameServer) ----
     async def on_connect(self, session: Session) -> None:
@@ -620,7 +626,8 @@ class Engine:
         ``self.director``)."""
         mind = DirectorMind(persona=persona, provider=provider or self.provider,
                             registry=self.actions, offered=self.director_actions,
-                            name=name, embedder=self.embedder)
+                            name=name, embedder=self.embedder,
+                            store=self.memory_store)
         self.director = Director(self, mind, period_ticks=period_ticks, name=name,
                                  min_new_events=min_new_events,
                                  cooldown_pulses=cooldown_pulses,

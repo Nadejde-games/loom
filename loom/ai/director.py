@@ -63,13 +63,16 @@ class DirectorMind:
                  offered: list | None = None,
                  memory: MemoryStream | None = None,
                  name: str = "the Director",
-                 embedder=None) -> None:
+                 embedder=None, store=None) -> None:
         self.persona = persona or {}
         self.provider = provider
         # Retrieval over the director's own past beats ranks by relevance to what is
         # happening now (via the embedder), not only by recency — so it recalls a
-        # fitting earlier touch for a similar scene. None = recency+importance only.
-        self.memory = memory or MemoryStream(embedder=embedder)
+        # fitting earlier touch for a similar scene. None = recency+importance only. An
+        # optional SQLite ``store`` backs the stream (slice 1b) under the reserved
+        # "director" agent key.
+        self.memory = memory or MemoryStream(embedder=embedder, store=store,
+                                             agent_id="director")
         self.registry = registry
         # The subset of the registry this mind may act through — its own
         # director-only actions. Both the prompt catalogue and the constrained

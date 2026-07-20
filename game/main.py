@@ -8,7 +8,7 @@ import asyncio
 import os
 from loom import GameServer, GameLoop, Engine
 from loom.ai import (get_default_provider, get_default_embedder, OllamaProvider,
-                     VLLMProvider, OpenRouterProvider)
+                     VLLMProvider, OpenRouterProvider, MemoryStore)
 from loom.content import load_world
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -86,11 +86,18 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     # the same key as chat (get_default_embedder); None falls back to recency+
     # importance, still a real upgrade. LOOM_EMBEDDER=none to disable.
     embedder = get_default_embedder()
+    # SQLite-backed memory (slice 1b): a memory is an incremental INSERT and survives a
+    # restart in the DB (embeddings persisted as BLOBs), rather than being re-serialized
+    # into the JSON overlay on every autosave. The DB lives beside the world save, NOT
+    # inside game/world/ (load_world would ingest it). LOOM_MEMORY_DB overrides.
+    memory_db = os.environ.get("LOOM_MEMORY_DB") or os.path.join(HERE, "world.memory.db")
+    memory_store = MemoryStore(memory_db)
     engine = Engine(world, provider, start_location=start,
                     autonomous_reactions=True, npc_act_gate=npc_gate,
-                    embedder=embedder)
+                    embedder=embedder, memory_store=memory_store)
     print(f"[game] memory embedder: "
           f"{getattr(embedder, 'name', 'none (recency + importance only)')}")
+    print(f"[game] memory store: {memory_db}")
     loop = GameLoop(tick_seconds=5.0)  # ambient world systems hang off here
     server = GameServer(engine, host=host, port=port)
 
@@ -203,6 +210,7 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
         # forged reward left in the world, and what the NPCs remember, outlast the run.
         if engine.save():
             print("[game] world saved.")
+        memory_store.close()
 
 
 if __name__ == "__main__":

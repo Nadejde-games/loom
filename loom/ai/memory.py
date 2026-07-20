@@ -60,9 +60,13 @@ class MemoryEntry:
     # field). Drives the importance term of retrieval.
     importance: int = 1
     # A derived cache of the text's embedding vector, filled lazily off the loop at
-    # first retrieval; None until embedded (and after a restart — re-computed, not
-    # persisted, this slice). Never part of the memory's identity.
+    # first retrieval; None until embedded. Persisted as a BLOB when the stream is
+    # SQLite-backed (slice 1b), so it need not be re-derived after a restart.
     embedding: list | None = None
+    # The SQLite rowid when this memory is stored (slice 1b), so a later embedding
+    # fill can UPDATE the exact row. Not part of the memory's identity or its
+    # persisted state; None for a store-less (in-memory) stream.
+    rowid: int | None = field(default=None, compare=False)
 
 
 def _cosine(a: list, b: list) -> float:
@@ -94,16 +98,25 @@ class MemoryStream:
     W_IMPORTANCE = 1.0
     W_RELEVANCE = 1.0
 
-    def __init__(self, embedder=None):
-        self.entries: list[MemoryEntry] = []
+    def __init__(self, embedder=None, store=None, agent_id: str | None = None):
         # The optional embedding provider (an ``EmbeddingProvider``). None = no
         # relevance signal; retrieval degrades to recency+importance, and ``retrieve``
         # returns exactly what ``recent`` would, so an embedder-less world behaves as
         # before. Injected by the engine from ``get_default_embedder()``.
         self._embedder = embedder
+        # The optional SQLite backing (a ``MemoryStore``) and this stream's agent key
+        # (slice 1b). With a store, writes go through to the DB and reads come from it
+        # at construction; without one, the stream is a plain in-memory list exactly as
+        # before — so the offline suite and any store-less deployment are unchanged.
+        self._store = store
+        self._agent_id = agent_id
+        self.entries: list[MemoryEntry] = (
+            store.load(agent_id) if (store is not None and agent_id) else [])
 
     def add(self, text: str, kind: str = "observation") -> MemoryEntry:
         e = MemoryEntry(text=text, kind=kind, importance=score_importance(text, kind))
+        if self._store is not None and self._agent_id:
+            e.rowid = self._store.insert(self._agent_id, e)   # incremental append
         self.entries.append(e)
         return e
 
@@ -131,6 +144,8 @@ class MemoryStream:
         qvec, rest = batch[0], batch[1:]
         for e, vec in zip(to_embed, rest):
             e.embedding = vec
+            if self._store is not None and e.rowid is not None:
+                self._store.update_embedding(e.rowid, vec)   # persist the vector
         now = time.time()
         rec = _minmax([self.RECENCY_DECAY ** (max(0.0, now - e.t) / 3600.0)
                        for e in cands])
@@ -155,9 +170,16 @@ class MemoryStream:
                  "importance": e.importance} for e in self.entries]
 
     def load_state(self, data: list) -> None:
-        """Replace the stream from a ``state()`` snapshot, restoring each entry's
-        original timestamp and importance. An older save without ``importance`` gets
-        it re-derived from the heuristic (tolerant). Embeddings restore empty."""
+        """Restore the stream from a ``state()`` snapshot — and, when SQLite-backed,
+        act as the one-time JSON->SQLite migration bridge.
+
+        Each entry restores its original timestamp and importance (an older save
+        without ``importance`` re-derives it from the heuristic; embeddings restore
+        empty and re-embed lazily). With no store this simply replaces the in-memory
+        list, exactly as before. With a store it imports the JSON memory **only into an
+        empty store** (a first boot after the 1b upgrade); once the DB holds the
+        agent's memory it is authoritative and the JSON block is ignored — so a stale
+        overlay can never overwrite or double-import a live store."""
         out = []
         for e in (data or []):
             text = e.get("text", "")
@@ -166,4 +188,11 @@ class MemoryStream:
             out.append(MemoryEntry(
                 text=text, kind=kind, t=float(e.get("t", 0.0)),
                 importance=int(imp) if imp is not None else score_importance(text, kind)))
+        if self._store is not None and self._agent_id:
+            if self._store.count(self._agent_id) == 0:        # migrate once
+                for entry in out:
+                    entry.rowid = self._store.insert(self._agent_id, entry)
+                self.entries = out
+            # else: the DB is authoritative; keep what was loaded at construction.
+            return
         self.entries = out

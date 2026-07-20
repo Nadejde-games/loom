@@ -60,10 +60,17 @@ def snapshot(engine) -> dict:
                  if isinstance(ent, Npc) and ent.location_id}
     items = [_item_record(world, it) for it in world.entities.values()
              if isinstance(it, Item)]
-    memory = {nid: mind.memory.state() for nid, mind in engine.minds.items()}
-    if engine.director is not None:
-        # "director" is a reserved memory key — no authored NPC carries that id.
-        memory["director"] = engine.director.mind.memory.state()
+    # Memory rides the JSON overlay only when it is NOT SQLite-backed (slice 1b). With
+    # a store the DB is authoritative and durable on its own, so the overlay omits
+    # memory entirely — no whole-stream re-serialization on every autosave. A store-less
+    # deployment (and the offline suite) keeps memory in the overlay as before, and an
+    # old overlay's memory block still migrates into a fresh store once (see restore).
+    memory = {}
+    if getattr(engine, "memory_store", None) is None:
+        memory = {nid: mind.memory.state() for nid, mind in engine.minds.items()}
+        if engine.director is not None:
+            # "director" is a reserved memory key — no authored NPC carries that id.
+            memory["director"] = engine.director.mind.memory.state()
     return {
         "version": SAVE_VERSION,
         "positions": positions,

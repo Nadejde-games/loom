@@ -157,12 +157,14 @@ class NpcMind:
                  registry: ActionRegistry | None = None,
                  offered: list | None = None,
                  act_gate: bool = False,
-                 embedder=None):
+                 embedder=None, store=None):
         self.npc = npc
         self.provider = provider
         # The embedder (if any) rides on the memory stream, so retrieval ranks by
-        # relevance as well as recency/importance. None = recency+importance only.
-        self.memory = memory or MemoryStream(embedder=embedder)
+        # relevance as well as recency/importance. None = recency+importance only. An
+        # optional SQLite ``store`` backs the stream (slice 1b), keyed by the npc id.
+        self.memory = memory or MemoryStream(embedder=embedder, store=store,
+                                             agent_id=npc.id)
         self.registry = registry
         # The subset of the registry this mind is offered — its action catalogue
         # need not be the whole registry (the player may take/drop where a given

@@ -16,3 +16,8 @@ world.save.json.tmp
 *.save.json
 *.save.json.bak
 *.save.json.tmp
+# SQLite-backed memory (slice 1b) — local runtime state, never committed.
+world.memory.db
+*.memory.db
+*.memory.db-wal
+*.memory.db-shm
