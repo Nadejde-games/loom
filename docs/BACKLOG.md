@@ -644,7 +644,11 @@ source that writes to the chronicle.
 - ~~**Idle NPC autonomy**~~ — **moved to Phase 5 (2026-07-12), see the CLOSED note at
   the top of B9.** NPCs that act or speak unprompted (DikuMUD `mobact.c`: a separate,
   slower, per-mob-gated pulse). Its *mechanism* is a cheap NPC-side lull mirror; its
-  *quality* wants Phase 5's mind depth + act-gate, which is why it lands there.
+  *quality* wanted Phase 5's mind depth + act-gate. **Update 2026-07-20: every
+  prerequisite has now landed** — the model-side act-gate (B5/B8, `e94a218`), reflection
+  (`27fea59`, so an idle NPC stirs from a distilled goal, not mechanical recency), and
+  durable identity (`635ce82`). This is the last remaining Phase 5 thread and the natural
+  next build.
 
 **Related:** Phase 3 (director), B8 (restraint — the counter-force to balance),
 Phase 5 (deeper minds / autonomy).

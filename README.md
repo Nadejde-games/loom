@@ -94,6 +94,11 @@ source .venv/bin/activate
 python client/terminal.py
 ```
 
+On connect the world asks your name; type it. Your identity — your location,
+inventory, quests, and **the NPCs' memory of you** — persists across sessions and
+restarts: reconnect under the same name and the world remembers you. Set
+`LOOM_REQUIRE_LOGIN=0` for anonymous, session-ephemeral wanderers instead.
+
 Try: `look`, `say hello`, `go north`, `go south`, `help`, `quit`.
 
 ### Provider selection (env)
