@@ -11,6 +11,7 @@ from .embedding import (
 )
 from .mind import NpcMind, Turn, Scene, parse_turn
 from .director import DirectorMind, Director
+from .reflection import Reflector, reflect
 
 __all__ = [
     "LLMProvider", "ProviderError", "FakeProvider", "OpenAICompatibleProvider",
@@ -20,4 +21,5 @@ __all__ = [
     "EmbeddingProvider", "FakeEmbeddingProvider", "OpenRouterEmbeddingProvider",
     "get_default_embedder",
     "NpcMind", "Turn", "Scene", "parse_turn", "DirectorMind", "Director",
+    "Reflector", "reflect",
 ]

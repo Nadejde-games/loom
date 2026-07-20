@@ -25,6 +25,7 @@ import asyncio
 from dataclasses import dataclass, field
 
 from ..action import ActionRegistry
+from .. import log
 from .provider import LLMProvider
 from .memory import MemoryStream
 from .mind import Turn, parse_turn, _extract_json
@@ -87,6 +88,21 @@ class DirectorMind:
         query is the chronicle digest (what is happening), so a similar scene recalls
         the fitting earlier touch and the director does not repeat itself."""
         return await self.memory.retrieve(query, k=k)
+
+    def reflection_subject(self) -> str:
+        """The persona preamble for a reflection prompt — the director reflecting on its
+        own past beats to notice the patterns across them (which rooms the wanderers
+        favour, what a scene keeps asking for). Mirrors ``NpcMind.reflection_subject``."""
+        p = self.persona
+        parts = [f"You are {self.name}, the unseen game-master of a living text world. "
+                 "You watch what unfolds and, sparingly, shape the scene."]
+        if p.get("backstory"):
+            parts.append(str(p["backstory"]))
+        if p.get("tone"):
+            parts.append("Tone of the world: " + str(p["tone"]))
+        if p.get("goals"):
+            parts.append("What you are shaping toward: " + ", ".join(p["goals"]))
+        return "\n\n".join(parts)
 
     def _system_prompt(self, chronicle: str, snapshot: str,
                        foreshadow: bool = False,
@@ -394,7 +410,7 @@ class Director:
         try:
             await self._run_beat(reason)
         except Exception as exc:    # a bad beat must never break the loop
-            print(f"[loom] director beat failed: {exc!r}")
+            log.event(f"director beat failed: {exc!r}")
         finally:
             self._running = False
 
@@ -412,6 +428,7 @@ class Director:
         # gate must not sit on it.
         if self.act_gate and reason == "activity":
             act, _reason = await self.mind.decide(digest, snapshot)
+            log.debug(f"director act-gate: {'ACT' if act else 'wait'} — {_reason}")
             if not act:
                 # The model judged this moment needs nothing. Mark the events seen so
                 # the same ones do not re-trigger, but do NOT count this as a beat:
@@ -425,6 +442,11 @@ class Director:
         # validated actions touch the world, through the same seam as everyone.
         for intent in turn.actions:
             await self.engine._perform(None, self.actor, self.mind, intent)
+        if turn.actions:
+            log.event(f"director beat ({reason}): "
+                      + ", ".join(i.name for i in turn.actions))
+        else:
+            log.debug(f"director composed but staged nothing ({reason})")
         # Mark everything up to now as seen — including this beat's own staged
         # events — so the director does not react to its own touch next pulse, and
         # restart the cooldown from this beat.

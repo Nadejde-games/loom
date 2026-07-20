@@ -6,7 +6,7 @@ Then connect with:  PYTHONPATH=. python3 client/terminal.py
 from __future__ import annotations
 import asyncio
 import os
-from loom import GameServer, GameLoop, Engine
+from loom import GameServer, GameLoop, Engine, log
 from loom.ai import (get_default_provider, get_default_embedder, OllamaProvider,
                      VLLMProvider, OpenRouterProvider, MemoryStore)
 from loom.content import load_world
@@ -66,9 +66,16 @@ def _director_provider():
 
 
 async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
+    # Force stdout line-buffered so every event prints the instant it happens (piped or
+    # wrapped stdout otherwise block-buffers and the console lags in batches). The engine
+    # logs world events through loom.log in real time; LOOM_VERBOSE=1 adds the debug
+    # firehose (salience skips, act-gate reasons, reflection accumulation and questions).
+    log.real_time_stdout()
     world, start = load_world(WORLD_FILE)
     provider = get_default_provider()
     print(f"[game] AI provider: {getattr(provider, 'name', type(provider).__name__)}")
+    if log.VERBOSE:
+        print("[game] verbose logging on (LOOM_VERBOSE) — full debug trace")
 
     # autonomous_reactions: our NPCs react to what happens around them — a change
     # in the world (a storm the director raises) or each other's words and deeds —
@@ -134,6 +141,25 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
           + (f", or a {lull}-pulse lull" if lull else "")
           + (", foreshadowing ahead" if foreshadow else "")
           + (", act-gated" if act_gate else "") + f"), via {gm_name}")
+
+    # Memory reflection (Phase 5, slice 2): on a threshold-gated cadence, an agent distills
+    # its accumulated memory into higher-level "reflection" memories on the same substrate
+    # — so a long-lived NPC forms durable beliefs that then colour its dialogue, and the
+    # director notices the patterns across its own beats. A second cognition (two model
+    # calls per reflection). The live gate cleared 3/3, so it is ON here; LOOM_REFLECT=0 to
+    # disable. The defaults are tuned for OBSERVABILITY in a play session (a few pointed,
+    # salient exchanges with one NPC trip it within ~20-40s) — raise LOOM_REFLECT_PERIOD
+    # and _THRESHOLD for a calmer, more economical long-run world. LOOM_REFLECT_TELL=0
+    # silences the perceptible "gaze turns inward" tell (memory-only reflection).
+    if os.environ.get("LOOM_REFLECT", "1") not in ("0", "", "false"):
+        r_period = int(os.environ.get("LOOM_REFLECT_PERIOD", "20"))
+        r_threshold = int(os.environ.get("LOOM_REFLECT_THRESHOLD", "24"))
+        r_tell = os.environ.get("LOOM_REFLECT_TELL", "1") not in ("0", "", "false")
+        engine.attach_reflector(loop, period_ticks=r_period,
+                                importance_threshold=r_threshold, tell=r_tell)
+        print(f"[game] memory reflection: every {r_period} ticks "
+              f"(when an agent's accumulated importance >= {r_threshold}), NPCs + director"
+              + (", with a visible tell" if r_tell else ""))
 
     # The world-clock: the world's own time, advancing on the loop whether or not
     # anyone is present (B9). Time-of-day turns through a table authored in the

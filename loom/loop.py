@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 from typing import Awaitable, Callable
 
+from . import log
+
 TickFn = Callable[[float], Awaitable[None]]
 
 
@@ -27,7 +29,7 @@ class GameLoop:
                 try:
                     await system(self.tick_seconds)
                 except Exception as exc:  # a broken system must not kill the loop
-                    print(f"[loom] system error: {exc!r}")
+                    log.event(f"system error: {exc!r}")
             await asyncio.sleep(self.tick_seconds)
 
     def stop(self) -> None:

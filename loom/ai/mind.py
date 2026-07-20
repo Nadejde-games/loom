@@ -189,6 +189,22 @@ class NpcMind:
         so the retrieval cost is paid at most once however many passes the turn runs."""
         return await self.memory.retrieve(query, k=k)
 
+    def reflection_subject(self) -> str:
+        """The persona preamble for a reflection prompt — who this NPC is, without the
+        per-turn memories or scene. Lets ``loom.ai.reflection`` frame the NPC's own
+        reflection in its voice without reaching into the mind's prompt assembly."""
+        p = self.npc.persona or {}
+        parts = [f"You are {self.npc.name}, a character in a living text world."]
+        if p.get("backstory"):
+            parts.append(str(p["backstory"]))
+        if p.get("traits"):
+            parts.append("Traits: " + ", ".join(p["traits"]))
+        if p.get("goals"):
+            parts.append("Goals: " + ", ".join(p["goals"]))
+        if p.get("voice"):
+            parts.append("Speak like this: " + str(p["voice"]))
+        return "\n\n".join(parts)
+
     def _base_lines(self, scene: Scene | None = None,
                     memories: list | None = None) -> list:
         """Persona, memories, and the perceived scene — the shared head of every

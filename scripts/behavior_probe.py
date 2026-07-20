@@ -57,7 +57,8 @@ from loom.engine import Engine
 from loom.ai import get_default_provider, NpcMind
 from loom.ai.director import DirectorMind
 from loom.ai.embedding import get_default_embedder
-from loom.ai.memory import _cosine
+from loom.ai.memory import _cosine, MemoryStream
+from loom.ai.reflection import reflect
 from loom.ai.intent import interpret
 from loom.action import default_registry
 from loom.command import command_schema, describe_verbs, default_verbs
@@ -899,6 +900,81 @@ async def run_memory_scenario(embedder, sc: MemoryScenario):
     return successes, samples
 
 
+@dataclass
+class ReflectionScenario:
+    """Phase 5 reflection (slice 2): a REAL model, given a stream of repeated broken
+    promises, must distill them into a grounded higher-level belief (a ``reflection``
+    memory carrying the GA-style ``(because of: …)`` clause) that then SURFACES on a
+    paraphrase retrieval sharing no exact words. Needs both the chat provider (to
+    synthesize) and a real embedder (for the paraphrase surfacing) — the offline suite
+    proves the mechanics on the deterministic fake. Each query is one trial; groundedness
+    is a precondition (an ungrounded run scores zero)."""
+    name: str
+    memories: list                  # (text, kind) seed of the stream
+    queries: list                   # paraphrases; each should surface a reflection top-k
+    subject: str                    # the reflecting agent's persona preamble
+    desc: str
+    top_k: int = 3
+    threshold: int = 2
+    gated: bool = True
+    tags: tuple = ("reflection",)
+
+    @property
+    def n(self) -> int:
+        return len(self.queries)
+
+
+_REFLECT_SEED = [
+    ('the player said to me: "I swear I will bring you the black key."', "speech"),
+    ("I noticed: the player walked away toward the north gate.", "event"),
+    ("A merchant haggled over salt in the square.", "observation"),
+    ('the player said to me: "This time I truly will return with it."', "speech"),
+    ("I noticed: the player left again, empty-handed.", "event"),
+    ("Rain fell over the market for an hour.", "observation"),
+    ('the player said to me: "Trust me, the key is as good as yours."', "speech"),
+    ("I noticed: the player was seen laughing in the tavern, the key forgotten.", "event"),
+]
+
+REFLECTION_SCENARIOS = [
+    ReflectionScenario(
+        name="reflection.distills-a-belief", memories=_REFLECT_SEED,
+        queries=[
+            "can I trust this person to do what they say",
+            "will the wanderer ever keep their word to me",
+            "what have I learned about broken oaths",
+        ],
+        subject=("You are the Hermit, a wary recluse who keeps to the edge of the wood. "
+                 "Traits: wary, patient\n\nSpeak like this: terse, old-fashioned"),
+        top_k=3, threshold=2,
+        desc="a real model distills repeated broken promises into a grounded, in-voice "
+             "belief that surfaces on a paraphrase query (reflection, slice 2)"),
+]
+
+
+async def run_reflection_scenario(provider, embedder, sc: ReflectionScenario):
+    """Seed a stream, run one real reflection, then check the distilled belief surfaces
+    on each paraphrase query. Groundedness (every insight carries a because-of clause) is
+    a precondition — an ungrounded or empty reflection scores zero."""
+    s = MemoryStream(embedder=embedder)
+    for text, kind in sc.memories:
+        s.add(text, kind=kind)
+    added = await reflect(s, provider, subject=sc.subject)
+    grounded = bool(added) and all("(because of:" in e.text for e in added)
+    samples = [(grounded, f'formed {len(added)} reflection(s), grounded={grounded}'
+                + (f' :: {added[0].text[:64]!r}' if added else ''))]
+    successes = 0
+    for q in sc.queries:
+        top = await s.retrieve(q, k=sc.top_k)
+        hit = any(e.kind == "reflection" for e in top)
+        successes += hit
+        head = top[0] if top else None
+        samples.append((hit, f'{q[:38]!r} -> top {head.kind if head else "-"} '
+                        f'({(head.text[:46] if head else "")!r})'))
+    if not grounded:            # groundedness is a precondition, not just a bonus
+        successes = 0
+    return successes, samples
+
+
 async def main():
     provider = get_default_provider()
     pname = getattr(provider, "name", type(provider).__name__)
@@ -913,21 +989,23 @@ async def main():
     chosen_react = [s for s in REACT_SCENARIOS if picks(s)]
     chosen_loot = [s for s in LOOT_SCENARIOS if picks(s)]
     chosen_mem = [s for s in MEMORY_SCENARIOS if picks(s)]
+    chosen_refl = [s for s in REFLECTION_SCENARIOS if picks(s)]
     if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react,
-                chosen_loot, chosen_mem)):
+                chosen_loot, chosen_mem, chosen_refl)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
                       | {t for s in GATE_SCENARIOS for t in s.tags}
                       | {t for s in REACT_SCENARIOS for t in s.tags}
                       | {t for s in LOOT_SCENARIOS for t in s.tags}
-                      | {t for s in MEMORY_SCENARIOS for t in s.tags})
+                      | {t for s in MEMORY_SCENARIOS for t in s.tags}
+                      | {t for s in REFLECTION_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
     total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
              + len(chosen_gate) + len(chosen_react) + len(chosen_loot)
-             + len(chosen_mem))
+             + len(chosen_mem) + len(chosen_refl))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -1039,6 +1117,29 @@ async def main():
                 print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} "
                       f"(need >={sc.threshold})  — {sc.desc}")
                 for hit, detail in samples:
+                    print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    if chosen_refl:
+        # Phase 5 reflection (slice 2): the LIVE gate — a real model distills repeated
+        # broken promises into a grounded belief that then surfaces on a paraphrase. Needs
+        # BOTH the chat provider (to synthesize) and a real embedder (for the surfacing);
+        # if no embedder is configured it cannot run, so it is a watch item, not a fail.
+        embedder = get_default_embedder()
+        ename = getattr(embedder, "name", None)
+        if embedder is None:
+            for sc in chosen_refl:
+                watch.append(sc.name)
+                print(f"[WATCH] {sc.name:<28} —  no embedder configured "
+                      "(set OPENROUTER_API_KEY / LOOM_EMBEDDER); reflection gate skipped")
+        else:
+            print(f"(reflection gate via {pname} + embedder {ename})")
+            for sc in chosen_refl:
+                successes, samples = await run_reflection_scenario(
+                    provider, embedder, sc)
+                ok, v = verdict(sc, successes)
+                print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} "
+                      f"(need >={sc.threshold})  — {sc.desc}")
+                for hit, detail in samples:      # show the belief even on a pass
                     print(f"          {'ok ' if hit else 'MISS'} {detail}")
 
     print()

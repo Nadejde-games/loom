@@ -21,8 +21,10 @@ from .style import Style, span, styled, join_styled
 from .ai import NpcMind, LLMProvider, ProviderError, Scene
 from .ai import intent
 from .ai.director import DirectorMind, Director
+from .ai.reflection import Reflector
 from .ai import loot as loot_ai
 from . import command
+from . import log
 from . import loot
 from . import persistence
 from .loot import LootTables, LootForge, flavour_schema
@@ -133,6 +135,11 @@ class Engine:
         # cadence as its perception of what has changed since it last looked.
         self.chronicle = Chronicle()
         self.director: Director | None = None
+        # The reflector (attach_reflector; Phase 5, slice 2), if a game attaches one.
+        # It hangs off the loop on a slow, threshold-gated cadence and, once an agent
+        # has lived enough salient memory, distills it into higher-level "reflection"
+        # memories on the same substrate. None until opted in.
+        self.reflector: Reflector | None = None
         # The world's own clock, if a game attaches one (attach_clock; B9). It
         # advances time-of-day on the loop whether or not a player is present, so a
         # still world stirs on its own. None until wired — the base engine has no
@@ -197,6 +204,8 @@ class Engine:
         where = loc.name if loc else self.start_location
         self.chronicle.record(f"{player.name} arrived in {where}.",
                               location_id=self.start_location, kind="arrival")
+        log.event(f"{player.name} connected ({getattr(session, 'addr', '?')}) "
+                  f"in {where}")
         await self._offer_start_quests(session, player)
 
     async def _offer_start_quests(self, session: Session, player) -> None:
@@ -223,6 +232,7 @@ class Engine:
         player = self.players.pop(session.id, None)
         if player:
             self.world.remove_entity(player.id)
+            log.event(f"{player.name} disconnected")
 
     async def on_input(self, session: Session, text: str) -> None:
         player = self.players.get(session.id)
@@ -367,6 +377,8 @@ class Engine:
         loc_id = player.location_id
         present = [e.name for e in self.world.occupants(loc_id, exclude=player.id)
                    if isinstance(e, Npc)]
+        log.event(f"{player.name} said {words!r} in {loc_id}; "
+                  f"NPCs present: {present or 'none'}")
         for ent in self.world.occupants(loc_id, exclude=player.id):
             if not isinstance(ent, Npc):
                 continue
@@ -376,7 +388,10 @@ class Engine:
             ctx = SalienceContext(npc=ent, speaker_name=player.name,
                                   utterance=words, present_npcs=present)
             if not self.gate.should_engage(ctx):
+                log.debug(f"  {ent.name} stays silent (salience gate)")
                 continue
+            log.debug(f"  {ent.name} is engaged "
+                      f"({'addressed' if is_addressed(ent.name, words) else 'overheard'})")
             # Was this NPC named? The mind frames a directly-addressed line as a
             # question to answer, and an unaddressed one as merely overheard —
             # which makes chosen silence more likely on ambient chatter (B4).
@@ -397,11 +412,11 @@ class Engine:
             turn = await mind.converse(speaker_name, words, scene=scene,
                                        addressed=addressed)
         except ProviderError as exc:
-            print(f"[loom] NPC {npc.id} reply failed: {exc}")
+            log.event(f"NPC {npc.id} reply failed: {exc}")
             await self._broadcast(location_id, "text", f"{npc.name} frowns, at a loss for words.")
             return
         except Exception as exc:  # a broken reply must never kill the connection
-            print(f"[loom] NPC {npc.id} unexpected error: {exc!r}")
+            log.event(f"NPC {npc.id} unexpected error: {exc!r}")
             await self._broadcast(location_id, "text", f"{npc.name} frowns, at a loss for words.")
             return
         observed = await self._deliver_turn(location_id, npc, mind, turn)
@@ -425,6 +440,11 @@ class Engine:
         its own, since that room never heard the speech. Only the room broadcast is
         composed: the structured turn, the chronicle, the actor's memory, and the
         observed string are all unchanged."""
+        if turn.is_silent:
+            log.debug(f"{npc.name} stays silent (empty turn)")
+        else:
+            log.event(f"{npc.name} turn: speech={turn.speech!r}, "
+                      f"actions={[a.name for a in turn.actions]}")
         observed: list[str] = []
         if turn.speech:
             # NPC dialogue is salient world activity — the director should perceive
@@ -515,7 +535,7 @@ class Engine:
             try:
                 turn = await mind.react(event_text, scene=scene)
             except Exception as exc:          # a bad reaction must never break the loop
-                print(f"[loom] NPC {npc.id} reaction failed: {exc!r}")
+                log.event(f"NPC {npc.id} reaction failed: {exc!r}")
                 continue
             if turn.is_silent:
                 continue                      # the appropriateness gate: it chose not to
@@ -636,6 +656,53 @@ class Engine:
         self.director.install(loop)
         return self.director
 
+    def attach_reflector(self, loop, *, period_ticks: int = 40,
+                         importance_threshold: int = 30,
+                         include_director: bool = True,
+                         recent_n: int = 40, max_questions: int = 3,
+                         retrieve_k: int = 4, max_insights: int = 3,
+                         tell: bool = True) -> Reflector:
+        """Give this world memory reflection and hang it off ``loop`` (Phase 5, slice 2).
+
+        On a slow cadence (``period_ticks`` between pulses — deliberately slower than the
+        director, since reflection is heavier and rarer), the reflector distills an agent's
+        accumulated memory into higher-level ``kind="reflection"`` memories, but only once
+        that agent's summed memory-importance since its last reflection crosses
+        ``importance_threshold`` — so a model call is spent only on an agent with something
+        to distill. One agent reflects per pulse, on a background task, non-overlapping.
+        ``include_director`` also reflects the game-master over its own past beats.
+        ``tell`` (default on) shows a quiet ambient beat in a reflecting NPC's room so a
+        present player feels the moment (``narrate_reflection``); the belief stays private.
+        Off until a game opts in; each agent reflects with its own provider under one
+        shared rule set. Returns the ``Reflector`` (also on ``self.reflector``).
+        """
+        self.reflector = Reflector(
+            self, period_ticks=period_ticks,
+            importance_threshold=importance_threshold,
+            include_director=include_director, recent_n=recent_n,
+            max_questions=max_questions, retrieve_k=retrieve_k,
+            max_insights=max_insights, tell=tell)
+        self.reflector.install(loop)
+        return self.reflector
+
+    async def narrate_reflection(self, agent_id: str) -> None:
+        """A perceptible *tell* when an NPC reflects (Phase 5, slice 2): a quiet ambient
+        line in the reflecting character's room, so a present player glimpses the moment
+        of insight — the belief itself stays private, only the pause shows. No-op for a
+        bodiless agent (the director), an unplaced one, or a room with no player to see
+        it (ambient beats are perceivable-only). Deterministic, no model call."""
+        ent = self.world.entities.get(agent_id)
+        loc = getattr(ent, "location_id", None)
+        if not loc:
+            return
+        if not any(getattr(p, "location_id", None) == loc
+                   for p in self.players.values()):
+            return
+        text = (f"{ent.name} falls still for a moment, gaze turning inward, as if "
+                "weighing something long carried.")
+        await self._broadcast(loc, "text", styled(span(text, Style.AMBIENT)))
+        self.chronicle.record(text, location_id=loc, kind="ambient")
+
     # ---- autonomous world-scope changes (clock, weather) ----
     async def apply_world_condition(self, tag: str, condition_text: str,
                                     ambient_text: str) -> None:
@@ -658,6 +725,7 @@ class Engine:
             self.world.conditions.clear_world(tag)
         if not ambient_text:
             return
+        log.event(f"world [{tag}]: {ambient_text}")
         beat = styled(span(ambient_text, Style.AMBIENT))   # the world's own voice (B3)
         for loc in self.world.locations.values():
             if not self.world.occupants(loc.id):
@@ -844,8 +912,9 @@ class Engine:
                 aliases=flavour["aliases"], tier=brief.tier, tags=brief.tags,
                 theme=brief.theme)
         except Exception as exc:                      # a broken forge never breaks play
-            print(f"[loom] loot forge failed for {getattr(player, 'id', '?')}: {exc!r}")
+            log.event(f"loot forge failed for {getattr(player, 'id', '?')}: {exc!r}")
             return
+        log.event(f"forged {item.name!r} (tier {brief.tier}) for {player.name}")
         # The reward is personal — into the player's own inventory (a quest is per
         # player). Tell them, the item styled as an item (B3).
         await self._safe_send(
@@ -890,12 +959,12 @@ class Engine:
         """
         spec = self.actions.get(intent.name)
         if spec is None:      # defense in depth; the mind should never send this
-            print(f"[loom] dropped unknown action {intent.name!r} from {actor.id}")
+            log.event(f"dropped unknown action {intent.name!r} from {actor.id}")
             return None
         try:
             result = spec.handler(ActionContext(self.world, actor, intent.args))
         except Exception as exc:  # a bad handler must not kill the connection
-            print(f"[loom] action {intent.name} by {actor.id} failed: {exc!r}")
+            log.event(f"action {intent.name} by {actor.id} failed: {exc!r}")
             return None
         if mind is not None and result.actor_memory:
             mind.memory.add(result.actor_memory, kind="action")
@@ -964,6 +1033,8 @@ class Engine:
         self.world.move(player.id, dest_id)
         await self._look(session)
         dest = self.world.locations.get(dest_id)
+        log.event(f"{player.name} moved {direction} → "
+                  f"{dest.name if dest else dest_id}")
         self.chronicle.record(f"{player.name} goes {direction} to "
                               f"{dest.name if dest else dest_id}.",
                               location_id=dest_id, kind="move")
@@ -1145,6 +1216,7 @@ class Engine:
         re-fires), so wandering back through the destination does nothing."""
         done = self.world.quests.complete_reached(player.id, location_id)
         for q in done:
+            log.event(f"{player.name} completed quest: {q.title!r}")
             await session.send_system(f'✓ Quest complete: "{q.title}".')
             # A completed quest earns a forged reward — a context-themed item authored
             # off the loop (Phase 4). No-op unless a loot forge is attached.
