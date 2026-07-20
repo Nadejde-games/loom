@@ -3,10 +3,10 @@
 Living document. The reference for where we are and where we're going.
 Last updated: 2026-07-20.
 
-## Status snapshot — 2026-07-20 (Phase 5 open: persistence + memory depth)
+## Status snapshot — 2026-07-20 (Phase 5: persistence + memory depth + reflection)
 
-**Phase 5 is underway** — three commits past the Phase 4 status block below, both gates
-green throughout (offline **488**):
+**Phase 5 is underway** — four commits past the Phase 4 status block below, both gates
+green throughout (offline **510**):
 - **Persistence (`fe07e0c`)** — the world survives a restart. A versioned JSON *overlay*
   of mutable runtime state (entity positions, forged loot, conditions, quests, clock/
   weather, chronicle) composed onto the authored `world.json` reloaded each boot; snapshot
@@ -22,9 +22,19 @@ green throughout (offline **488**):
 - **Memory depth 1b (`b685cae`)** — SQLite-backed memory: one table by `agent_id`, the
   embedding a float32 BLOB, incremental INSERT, embeddings persist across a reboot;
   `load_state` doubles as the one-time JSON→SQLite migration.
-Live: the `memory.paraphrase-relevance` gate 3/3 on bge-m3, plus live restart proofs.
-**Remaining in Phase 5:** reflection (importance-triggered synthesis), durable player
-identity + accretion, idle-NPC autonomy, LLM importance scoring — see the Phase 5 entry.
+- **Reflection (`27fea59`)** — the Generative-Agents reflection step, depth-1: on a slow,
+  threshold-gated cadence an agent distills its accumulated memory into higher-level
+  `kind="reflection"` memories (a two-call cognition: questions → retrieve evidence →
+  grounded insights with `(because of: …)` citations), re-inserted on the same substrate so
+  a long-lived NPC forms durable beliefs that colour its dialogue. A `Reflector` orchestrator
+  mirrors `Director`; NPCs and the director both reflect. Shipped with **real-time server
+  logging** (`loom/log.py`: `event`/`debug` under `LOOM_VERBOSE`, flushed). Spike:
+  `docs/spikes/reflection.md`.
+Live: `memory.paraphrase-relevance` 3/3 and `reflection.distills-a-belief` 3/3 on bge-m3 +
+qwen3.6, plus live restart proofs.
+**Remaining in Phase 5:** durable player identity + accretion, idle-NPC autonomy (reflection,
+its prerequisite, is now in), plus reflection polish (persist the watermark, fairer
+scheduling, depth>1, LLM importance) — see the Phase 5 entry.
 
 ## Status snapshot — line drawn 2026-07-14
 
@@ -800,7 +810,7 @@ already gives per-player context and a deterministic hook):
   unique/set fixed items; identification; a wider item-type/slot vocabulary. All grow the
   content later without moving the seam.
 
-### Phase 5 — Deeper minds & persistence  ▶ (persistence + memory depth landed 2026-07-20; reflection, player identity, idle-NPC remain)
+### Phase 5 — Deeper minds & persistence  ▶ (persistence + memory depth + reflection landed 2026-07-20; player identity, idle-NPC remain)
 Importance scoring, embedding retrieval (SQLite + brute-force cosine), and reflection on
 the memory stream; persist world + memories across restarts; player personality/history
 accretion on the same substrate as NPCs. **The loose end it closes:** the world, all NPC
@@ -846,12 +856,38 @@ last-k window.
   misses — **3/3** on bge-m3, folded into `scripts/behavior_probe.py memory`; plus a live
   restart proof (real BLOB embeddings reload, history not re-embedded).
 
+**Built — reflection (slice 2, `27fea59`, both gates green).** The Generative-Agents
+reflection step, **depth-1**: on a slow, threshold-gated cadence an agent distills its
+accumulated memory into higher-level insights and writes them back as `kind="reflection"`
+memories on the same substrate — so a long-lived NPC forms durable beliefs (*"Men's vows are
+fleeting wind…"*) that then colour its dialogue through ordinary relevance retrieval. A
+reflection is *just another memory*, so no memory-seam change.
+- **Cognition** (`loom/ai/reflection.py`, provider-agnostic): two model calls — recent
+  memories → up to 3 salient questions; each question `retrieve()`s evidence (the reach back
+  past the recent window that makes it more than summarisation); evidence → grounded insights,
+  each stored GA-style as `"<insight> (because of: <src>; <src>)"`.
+- **Orchestrator** (`Reflector`, mirrors `Director`): slow tick, threshold-gated on
+  accumulated memory-importance, one agent per pulse on a background task; **depth-1 by
+  construction** (the per-agent watermark advances past the new reflections so a reflection
+  never re-triggers itself; in-memory + lazy-init, so a restored backlog is not re-reflected).
+  NPCs **and** the director reflect, each with its own provider under one shared rule set.
+- **Engine/game:** `attach_reflector` + `narrate_reflection` (a quiet in-client *tell* when an
+  NPC reflects; the belief stays private); `NpcMind/DirectorMind.reflection_subject()` seams;
+  on by default, tuned for observability (`LOOM_REFLECT*`).
+- **Shipped with it: real-time server logging** (`loom/log.py`) — `event()` always-on +
+  `debug()` under `LOOM_VERBOSE`, both flushed (`real_time_stdout()` defeats block-buffering).
+  The engine/director/loop now log connect/move/say/NPC-turns/world-beats/quests/forge/
+  director-beats/reflections as they happen, with the *why* (salience skips, act-gate reasons,
+  reflection questions/evidence) behind `LOOM_VERBOSE`.
+- **Gates.** Offline **510** (`tests/test_reflection.py`, 22 tests: the cognition, the
+  buried-promise → distilled-belief value proof, durable through the store, the trigger +
+  depth-1 watermark, citation dedup/bounds, the perceptible tell, graceful degrades). Live:
+  `reflection.distills-a-belief` **3/3** — the real NPC model distilled repeated broken
+  promises into grounded, in-voice beliefs that surface on a paraphrase query. Spike:
+  `docs/spikes/reflection.md`.
+
 **Remaining in Phase 5 (start each with a prior-art survey + a design proposal for
 sign-off — the standing rule):**
-- **Reflection (slice 2)** — importance-triggered synthesis of higher-level insights,
-  re-inserted as memories (`MemoryEntry(kind="reflection")`, high importance, cited ids);
-  a `Reflector` beside `Director`, off the loop, depth-1 first. The prerequisite for the
-  *rich* form of idle-NPC autonomy. Prior art: Generative Agents reflection tree.
 - **Durable player identity + accretion** — a stable identity (login / reconnect) so held
   loot and personal quests survive a reconnect and a player's own history accretes on the
   same memory substrate as NPCs — the vision's "history accretes through play," and the
@@ -859,8 +895,13 @@ sign-off — the standing rule):**
   drops their inventory to the floor).
 - **Idle-NPC autonomy (moved from B9, 2026-07-12)** — NPCs that act or speak *unprompted*
   during a lull (a cheap `NpcMind.stir` reusing `_deliver_turn` + the reaction cascade).
-  The *mechanism* is cheap, but its *quality* wants reflection + the model-side act-gate —
-  why it lives here rather than B9. Prior art: DikuMUD `mobact.c`; Generative Agents plans.
+  The *mechanism* is cheap, but its *quality* wanted reflection + the model-side act-gate —
+  **both are now in**, so this is unblocked and the natural next thread. Prior art: DikuMUD
+  `mobact.c`; Generative Agents plans.
+- **Reflection polish (follow-ups to `27fea59`):** persist the reflection watermark (in-memory
+  today, resets on restart); fairer scheduling (one-agent-per-pulse lets the busiest agent
+  monopolize); depth>1 (reflections on reflections — the GA tree); LLM importance for the
+  trigger. All optional tightening, not blockers.
 - **Also:** LLM importance scoring (a batched off-loop fidelity pass; the heuristic
   suffices now); `remember_fact` (the deferred Phase 2 action — a thin high-importance
   `add`, now that retrieval exists); in-process local embedder + sqlite-vec/ANN only if
@@ -880,7 +921,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (488 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (510 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*
@@ -930,7 +971,7 @@ free of game-specific content.
 
 Unscheduled improvements noticed during review live in `docs/BACKLOG.md`. Open as
 of 2026-07-20: world atlas (B7) · exercising the `loom-gm` variant (B10) · plus the
-Phase 5 remaining threads (reflection · durable player identity · idle-NPC autonomy).
+Phase 5 remaining threads (durable player identity · idle-NPC autonomy · reflection polish).
 Done and folded in: B2 (fused rendering) · B3 (rich text) · B1 (command
 grammar), B4 (choice-to-react), **B5 (NPC `move` ceiling — the two-pass act-gate,
 2026-07-13: authoritative-action decision, 8/8 gated vs ~70% blended, no regressions,
