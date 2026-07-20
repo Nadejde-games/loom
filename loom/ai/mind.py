@@ -156,10 +156,13 @@ class NpcMind:
                  memory: MemoryStream | None = None,
                  registry: ActionRegistry | None = None,
                  offered: list | None = None,
-                 act_gate: bool = False):
+                 act_gate: bool = False,
+                 embedder=None):
         self.npc = npc
         self.provider = provider
-        self.memory = memory or MemoryStream()
+        # The embedder (if any) rides on the memory stream, so retrieval ranks by
+        # relevance as well as recency/importance. None = recency+importance only.
+        self.memory = memory or MemoryStream(embedder=embedder)
         self.registry = registry
         # The subset of the registry this mind is offered — its action catalogue
         # need not be the whole registry (the player may take/drop where a given
@@ -175,11 +178,22 @@ class NpcMind:
         self.act_gate = act_gate
 
     # ---- prompt ----
-    def _base_lines(self, scene: Scene | None = None) -> list:
+    async def _recall(self, query: str, scene: Scene | None = None,
+                      k: int = 8) -> list:
+        """The memories to inject for this turn: relevance+importance+recency
+        retrieval when an embedder is present, else exactly the recent ones. ``query``
+        is the incoming utterance or event — what the NPC is answering. Computed once
+        per turn (an awaited embedding) and threaded into each prompt this turn builds,
+        so the retrieval cost is paid at most once however many passes the turn runs."""
+        return await self.memory.retrieve(query, k=k)
+
+    def _base_lines(self, scene: Scene | None = None,
+                    memories: list | None = None) -> list:
         """Persona, memories, and the perceived scene — the shared head of every
         prompt this mind builds (the blended turn, and the two-pass decision and
         speech prompts). Ends with the stay-in-character line; each caller appends
-        its own instruction block after it."""
+        its own instruction block after it. ``memories`` is the retrieved set for this
+        turn; None falls back to the recent ones (the query-free path, unchanged)."""
         p = self.npc.persona or {}
         parts = [f"You are {self.npc.name}, a character in a living text world."]
         if p.get("backstory"):
@@ -194,16 +208,18 @@ class NpcMind:
             # How readily this character speaks at all — the silence prior. A
             # reticent disposition should stay quiet far more than a gregarious one.
             parts.append("Disposition: " + str(p["disposition"]))
-        mems = self.memory.recent()
+        mems = memories if memories is not None else self.memory.recent()
         if mems:
-            parts.append("Recent memories:\n" + "\n".join(f"- {m.text}" for m in mems))
+            parts.append("Memories that bear on this moment:\n"
+                         + "\n".join(f"- {m.text}" for m in mems))
         if scene is not None:
             parts.append(self._scene_description(scene))
         parts.append("Stay in character. Never break character or mention being an AI.")
         return parts
 
-    def _system_prompt(self, scene: Scene | None = None) -> str:
-        parts = self._base_lines(scene)
+    def _system_prompt(self, scene: Scene | None = None,
+                       memories: list | None = None) -> str:
+        parts = self._base_lines(scene, memories)
         if self.registry is not None:
             parts.append(self._action_instructions())
         else:
@@ -294,6 +310,9 @@ class NpcMind:
             self.memory.add(f'{speaker_name} said to the room: "{utterance}"',
                             kind="speech")
 
+        # Retrieve the memories that bear on this utterance once, and thread them into
+        # every prompt this turn builds (both act-gate passes share them).
+        mems = await self._recall(utterance, scene)
         if self.act_gate and self.registry is not None:
             # Two-pass act-gate (B5): a cheap, low-temperature pass decides the DEED
             # authoritatively — raising the move-when-asked rate off the blended
@@ -302,22 +321,22 @@ class NpcMind:
             # silent (B4), stay the proven blended turn; only its action is discarded
             # in favour of the decided one. Same two-call cost as the blended path
             # with its retry, and every speech behaviour is preserved by construction.
-            actions = await self._decide_actions(heard, scene)
-            speech, _blended_actions = await self._blended_turn(heard, scene)
+            actions = await self._decide_actions(heard, scene, mems)
+            speech, _blended_actions = await self._blended_turn(heard, scene, mems)
         else:
-            speech, actions = await self._blended_turn(heard, scene)
+            speech, actions = await self._blended_turn(heard, scene, mems)
 
         if speech:
             self.memory.add(f'I replied: "{speech}"', kind="speech")
         return Turn(speech=speech, actions=actions)
 
-    async def _blended_turn(self, heard: str,
-                            scene: Scene | None) -> tuple[str, list]:
+    async def _blended_turn(self, heard: str, scene: Scene | None,
+                            memories: list | None = None) -> tuple[str, list]:
         """The single blended turn: one constrained-envelope call (speech + actions),
         tolerant parse, and one bounded retry. The default turn shape — and, under the
         act-gate, the source of the spoken line (its actions discarded for the
         decision pass's). Returns ``(speech, actions)``; records no memory."""
-        system = self._system_prompt(scene)
+        system = self._system_prompt(scene, memories)
         messages = [{"role": "user", "content": heard}]
 
         # Constrained decoding (Phase 2 hardening): when actions are in play, hand
@@ -373,18 +392,20 @@ class NpcMind:
             'Available actions:\n' + self.registry.describe(self.offered)
         )
 
-    def _decision_system(self, scene: Scene | None) -> str:
-        parts = self._base_lines(scene)
+    def _decision_system(self, scene: Scene | None,
+                         memories: list | None = None) -> str:
+        parts = self._base_lines(scene, memories)
         parts.append(self._action_decision_instructions())
         return "\n\n".join(parts)
 
-    async def _decide_actions(self, heard: str, scene: Scene | None) -> list:
+    async def _decide_actions(self, heard: str, scene: Scene | None,
+                              memories: list | None = None) -> list:
         """Pass 1 of the act-gate: a cheap, low-temperature, constrained pass whose
         only job is to pick the action this moment calls for (or none). Returns the
         validated intents — the turn's *authoritative* actions. Same tolerant parse,
         constrained grammar, and one bounded retry as the blended turn; any speech in
         the reply is ignored (the second pass composes it)."""
-        system = self._decision_system(scene)
+        system = self._decision_system(scene, memories)
         messages = [{"role": "user", "content": heard}]
         schema = self.registry.json_schema(self.offered)
         raw = await self.provider.complete(system, messages, schema=schema,
@@ -416,7 +437,8 @@ class NpcMind:
         when the moment genuinely concerns it, never merely to react. Same
         constrained decoding, tolerant parse, and bounded retry as ``converse``.
         """
-        system = self._system_prompt(scene)
+        mems = await self._recall(event, scene)
+        system = self._system_prompt(scene, mems)
         nudge = (
             f"Something happens around you: {event}\n"
             "This was not said to you and asks nothing of you, so respond only as "

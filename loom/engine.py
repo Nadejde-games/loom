@@ -80,10 +80,16 @@ class Engine:
                  gate: SalienceGate | None = None,
                  intent_fallback: bool = True,
                  autonomous_reactions: bool = False,
-                 npc_act_gate: bool = False):
+                 npc_act_gate: bool = False,
+                 embedder=None):
         self.world = world
         self.provider = provider
         self.start_location = start_location
+        # The embedding provider (an ``EmbeddingProvider``, or None), shared by every
+        # mind's memory stream so retrieval ranks by relevance as well as
+        # recency/importance (Phase 5 memory depth). None = recency+importance only —
+        # every offline test and the base engine run this way, unchanged.
+        self.embedder = embedder
         self.actions = registry or default_registry()
         self.gate = gate or default_gate()
         self.verbs = command.default_verbs()   # the player-command vocabulary
@@ -165,7 +171,8 @@ class Engine:
             if isinstance(ent, Npc):
                 self.minds[ent.id] = NpcMind(ent, provider, registry=self.actions,
                                              offered=self.npc_actions,
-                                             act_gate=self.npc_act_gate)
+                                             act_gate=self.npc_act_gate,
+                                             embedder=self.embedder)
 
     # ---- Handler protocol (called by GameServer) ----
     async def on_connect(self, session: Session) -> None:
@@ -613,7 +620,7 @@ class Engine:
         ``self.director``)."""
         mind = DirectorMind(persona=persona, provider=provider or self.provider,
                             registry=self.actions, offered=self.director_actions,
-                            name=name)
+                            name=name, embedder=self.embedder)
         self.director = Director(self, mind, period_ticks=period_ticks, name=name,
                                  min_new_events=min_new_events,
                                  cooldown_pulses=cooldown_pulses,

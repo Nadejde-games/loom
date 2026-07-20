@@ -56,6 +56,8 @@ from loom.content import load_world
 from loom.engine import Engine
 from loom.ai import get_default_provider, NpcMind
 from loom.ai.director import DirectorMind
+from loom.ai.embedding import get_default_embedder
+from loom.ai.memory import _cosine
 from loom.ai.intent import interpret
 from loom.action import default_registry
 from loom.command import command_schema, describe_verbs, default_verbs
@@ -842,6 +844,61 @@ async def run_loot_scenario(provider, sc: LootScenario):
     return successes, samples
 
 
+@dataclass
+class MemoryScenario:
+    """Phase 5 memory depth: a REAL embedder must rank the on-topic memory top for
+    *paraphrase* queries that share no exact words with it — the semantic relevance the
+    lexical fake (offline) cannot do, and the reason this is a live gate. Each query is
+    one trial; success = the target memory ranks first by cosine."""
+    name: str
+    memories: list                  # the pool of memory texts
+    queries: list                   # paraphrase queries; each should rank `target` top
+    target: int                     # index in `memories` that is on-topic
+    desc: str
+    threshold: int = 3
+    gated: bool = True
+    tags: tuple = ("memory",)
+
+    @property
+    def n(self) -> int:
+        return len(self.queries)
+
+
+_MEM_SET = [
+    "The player swore to bring me the black key.",          # 0 — the on-topic promise
+    "A merchant sold me dried figs at the market.",
+    "The weather turned cold as clouds gathered.",
+    "A child laughed somewhere down the lane.",
+]
+
+MEMORY_SCENARIOS = [
+    MemoryScenario(
+        name="memory.paraphrase-relevance", memories=_MEM_SET,
+        queries=[
+            "when will you hand over that dark iron thing you promised me?",
+            "tell me about the oath you made to fetch something for me",
+            "did you forget the vow to deliver the dark lock-opener?",
+        ],
+        target=0, threshold=3,
+        desc="a real embedder ranks the on-topic memory top for paraphrase queries "
+             "sharing no exact words (relevance retrieval, not keyword match)"),
+]
+
+
+async def run_memory_scenario(embedder, sc: MemoryScenario):
+    mem_vecs = await embedder.embed(sc.memories)
+    q_vecs = await embedder.embed(sc.queries)
+    successes, samples = 0, []
+    for q, qv in zip(sc.queries, q_vecs):
+        ranked = sorted(((_cosine(qv, mv), i) for i, mv in enumerate(mem_vecs)),
+                        reverse=True)
+        top_cos, top_i = ranked[0]
+        ok = (top_i == sc.target)
+        successes += ok
+        samples.append((ok, f'{q[:44]!r} -> M{top_i} (cos {top_cos:.3f})'))
+    return successes, samples
+
+
 async def main():
     provider = get_default_provider()
     pname = getattr(provider, "name", type(provider).__name__)
@@ -855,19 +912,22 @@ async def main():
     chosen_gate = [s for s in GATE_SCENARIOS if picks(s)]
     chosen_react = [s for s in REACT_SCENARIOS if picks(s)]
     chosen_loot = [s for s in LOOT_SCENARIOS if picks(s)]
+    chosen_mem = [s for s in MEMORY_SCENARIOS if picks(s)]
     if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react,
-                chosen_loot)):
+                chosen_loot, chosen_mem)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
                       | {t for s in GATE_SCENARIOS for t in s.tags}
                       | {t for s in REACT_SCENARIOS for t in s.tags}
-                      | {t for s in LOOT_SCENARIOS for t in s.tags})
+                      | {t for s in LOOT_SCENARIOS for t in s.tags}
+                      | {t for s in MEMORY_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
     total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
-             + len(chosen_gate) + len(chosen_react) + len(chosen_loot))
+             + len(chosen_gate) + len(chosen_react) + len(chosen_loot)
+             + len(chosen_mem))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -957,6 +1017,29 @@ async def main():
         # Show the forged items even on a pass — the point is to read the loot.
         for hit, detail in samples:
             print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    if chosen_mem:
+        # Phase 5 memory depth: the LIVE embedding gate — a real embedder ranks a
+        # paraphrase of an on-topic memory above unrelated trivia (the offline suite
+        # proves the retrieval math on the deterministic fake). Uses the EMBEDDER, not
+        # the chat provider; if none is configured it cannot run, so it is noted as a
+        # watch item rather than failing the run.
+        embedder = get_default_embedder()
+        ename = getattr(embedder, "name", None)
+        if embedder is None:
+            for sc in chosen_mem:
+                watch.append(sc.name)
+                print(f"[WATCH] {sc.name:<28} —  no embedder configured "
+                      "(set OPENROUTER_API_KEY / LOOM_EMBEDDER); live memory gate skipped")
+        else:
+            print(f"(memory gate via embedder {ename})")
+            for sc in chosen_mem:
+                successes, samples = await run_memory_scenario(embedder, sc)
+                ok, v = verdict(sc, successes)
+                print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} "
+                      f"(need >={sc.threshold})  — {sc.desc}")
+                for hit, detail in samples:
+                    print(f"          {'ok ' if hit else 'MISS'} {detail}")
 
     print()
     if watch:

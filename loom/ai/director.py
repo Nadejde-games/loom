@@ -62,10 +62,14 @@ class DirectorMind:
                  registry: ActionRegistry | None = None,
                  offered: list | None = None,
                  memory: MemoryStream | None = None,
-                 name: str = "the Director") -> None:
+                 name: str = "the Director",
+                 embedder=None) -> None:
         self.persona = persona or {}
         self.provider = provider
-        self.memory = memory or MemoryStream()
+        # Retrieval over the director's own past beats ranks by relevance to what is
+        # happening now (via the embedder), not only by recency — so it recalls a
+        # fitting earlier touch for a similar scene. None = recency+importance only.
+        self.memory = memory or MemoryStream(embedder=embedder)
         self.registry = registry
         # The subset of the registry this mind may act through — its own
         # director-only actions. Both the prompt catalogue and the constrained
@@ -74,8 +78,16 @@ class DirectorMind:
         self.name = name
 
     # ---- prompt ----
+    async def _recall(self, query: str, k: int = 8) -> list:
+        """The director's own past beats that bear on the present — relevance +
+        importance + recency when an embedder is present, else the recent ones. The
+        query is the chronicle digest (what is happening), so a similar scene recalls
+        the fitting earlier touch and the director does not repeat itself."""
+        return await self.memory.retrieve(query, k=k)
+
     def _system_prompt(self, chronicle: str, snapshot: str,
-                       foreshadow: bool = False) -> str:
+                       foreshadow: bool = False,
+                       memories: list | None = None) -> str:
         p = self.persona
         parts = [
             f"You are {self.name}, the unseen game-master of a living text world. "
@@ -90,10 +102,11 @@ class DirectorMind:
             parts.append("Tone of the world: " + str(p["tone"]))
         if p.get("goals"):
             parts.append("What you are shaping toward: " + ", ".join(p["goals"]))
-        mems = self.memory.recent()
+        mems = memories if memories is not None else self.memory.recent()
         if mems:
-            # Its own recent touches — so it does not repeat a beat it just set.
-            parts.append("Beats you have recently set:\n"
+            # Its own past touches that bear on this moment — so it does not repeat a
+            # beat it has set for a scene like this one.
+            parts.append("Beats you have set that bear on this moment:\n"
                          + "\n".join(f"- {m.text}" for m in mems))
         parts.append("What has happened recently, oldest first:\n" + chronicle)
         label = ("The world right now (places with someone present, and any empty "
@@ -154,7 +167,9 @@ class DirectorMind:
         the prompt the snapshot includes the empty rooms just ahead of the players,
         which the director may shape before they arrive (B9).
         """
-        system = self._system_prompt(chronicle, snapshot, foreshadow=foreshadow)
+        mems = await self._recall(chronicle)
+        system = self._system_prompt(chronicle, snapshot, foreshadow=foreshadow,
+                                     memories=mems)
         if lull:
             nudge = ("The scene has gone quiet — no one has stirred it for a "
                      "while. If a single small, low-key beat would keep it from "
@@ -191,7 +206,8 @@ class DirectorMind:
         return Turn(speech=speech, actions=actions)
 
     # ---- the act-gate: judge *whether* to beat before composing one ----
-    def _decision_prompt(self, chronicle: str, snapshot: str) -> str:
+    def _decision_prompt(self, chronicle: str, snapshot: str,
+                         memories: list | None = None) -> str:
         """A deliberately *lean* prompt for the act-gate — persona tone and goals, the
         same perception the compose call reads, and one narrow instruction. It carries
         NO action catalogue and no envelope examples: the gate decides only
@@ -211,10 +227,10 @@ class DirectorMind:
             # The gate judges against what the director is *for* — atmosphere and
             # small omens — not a generic 'intervene only if something is broken' bar.
             parts.append("What you are shaping toward: " + ", ".join(p["goals"]))
-        mems = self.memory.recent()
+        mems = memories if memories is not None else self.memory.recent()
         if mems:
-            parts.append("Beats you have recently set (do not crowd them):\n"
-                         + "\n".join(f"- {m.text}" for m in mems))
+            parts.append("Beats you have set that bear on this moment (do not crowd "
+                         "them):\n" + "\n".join(f"- {m.text}" for m in mems))
         parts.append("What has happened recently, oldest first:\n" + chronicle)
         parts.append("The world right now:\n" + snapshot)
         parts.append(
@@ -245,7 +261,8 @@ class DirectorMind:
         which would kill the floor). On any parse failure the gate returns
         ``(False, ...)`` — it fails *toward silence*, the whole point of a restraint gate.
         """
-        system = self._decision_prompt(chronicle, snapshot)
+        mems = await self._recall(chronicle)
+        system = self._decision_prompt(chronicle, snapshot, memories=mems)
         nudge = "Make the call for this moment: wait, or act?"
         messages = [{"role": "user", "content": nudge}]
         raw = await self.provider.complete(system, messages,

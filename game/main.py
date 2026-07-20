@@ -7,8 +7,8 @@ from __future__ import annotations
 import asyncio
 import os
 from loom import GameServer, GameLoop, Engine
-from loom.ai import (get_default_provider, OllamaProvider, VLLMProvider,
-                     OpenRouterProvider)
+from loom.ai import (get_default_provider, get_default_embedder, OllamaProvider,
+                     VLLMProvider, OpenRouterProvider)
 from loom.content import load_world
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -80,8 +80,17 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     # preserved). On here; LOOM_NPC_ACT_GATE=0 to disable. Costs a second model call
     # per engaged NPC turn (bounded by salience — only engaged NPCs pay it).
     npc_gate = os.environ.get("LOOM_NPC_ACT_GATE", "1") not in ("0", "", "false")
+    # Memory depth (Phase 5): an embedder lets every mind's memory rank by *relevance*
+    # to the current moment, not only recency — so an old-but-salient memory (a
+    # promise, a threat) can surface when it matters. Hosted OpenRouter embeddings on
+    # the same key as chat (get_default_embedder); None falls back to recency+
+    # importance, still a real upgrade. LOOM_EMBEDDER=none to disable.
+    embedder = get_default_embedder()
     engine = Engine(world, provider, start_location=start,
-                    autonomous_reactions=True, npc_act_gate=npc_gate)
+                    autonomous_reactions=True, npc_act_gate=npc_gate,
+                    embedder=embedder)
+    print(f"[game] memory embedder: "
+          f"{getattr(embedder, 'name', 'none (recency + importance only)')}")
     loop = GameLoop(tick_seconds=5.0)  # ambient world systems hang off here
     server = GameServer(engine, host=host, port=port)
 
