@@ -3,17 +3,17 @@
 Living document. The reference for where we are and where we're going.
 Last updated: 2026-07-20.
 
-## Status snapshot — 2026-07-20 (Phase 5: persistence + memory depth + reflection)
+## Status snapshot — 2026-07-20 (Phase 5: persistence + memory depth + reflection + identity)
 
-**Phase 5 is underway** — four commits past the Phase 4 status block below, both gates
-green throughout (offline **510**):
+**Phase 5 is underway** — five landed slices past the Phase 4 status block below, both gates
+green throughout (offline **535**):
 - **Persistence (`fe07e0c`)** — the world survives a restart. A versioned JSON *overlay*
   of mutable runtime state (entity positions, forged loot, conditions, quests, clock/
   weather, chronicle) composed onto the authored `world.json` reloaded each boot; snapshot
   not event-log; atomic save (temp→fsync→`os.replace`+`.bak`) on shutdown + a loop
   autosave. `loom/persistence.py`. Player-held items drop to the floor at snapshot (players
-  are session-ephemeral — **durable player identity is deferred**, the named next crux).
-  Spike: `docs/spikes/persistence.md`.
+  are session-ephemeral — durable player identity was deferred here, then **landed as
+  slice 3 below**). Spike: `docs/spikes/persistence.md`.
 - **Memory depth 1a (`0c7a588`)** — the Generative-Agents retrieval score verbatim
   (`recency + importance + relevance`, min-max, weights 1/1/1). Importance a cheap
   deterministic heuristic at write (not an LLM call per memory); relevance via an
@@ -30,11 +30,21 @@ green throughout (offline **510**):
   mirrors `Director`; NPCs and the director both reflect. Shipped with **real-time server
   logging** (`loom/log.py`: `event`/`debug` under `LOOM_VERBOSE`, flushed). Spike:
   `docs/spikes/reflection.md`.
-Live: `memory.paraphrase-relevance` 3/3 and `reflection.distills-a-belief` 3/3 on bge-m3 +
-qwen3.6, plus live restart proofs.
-**Remaining in Phase 5:** durable player identity + accretion, idle-NPC autonomy (reflection,
-its prerequisite, is now in), plus reflection polish (persist the watermark, fairer
-scheduling, depth>1, LLM importance) — see the Phase 5 entry.
+- **Durable player identity + accretion (uncommitted, both gates green)** — the DikuMUD line:
+  the player's **name is the key**, identity == character, one durable `PlayerRecord` per name
+  folded into the JSON overlay. An opt-in `require_login` flag (base engine unchanged — the
+  anonymous Wanderer path all prior tests use is default): connect → name prompt (not auto-mint);
+  a known name resumes its location, inventory, and quests; disconnect **persists-and-detaches**
+  (never delete-and-drop); a duplicate live name is taken over newest-wins. **Accretion is nearly
+  free**: NPCs already record the speaker by name (`mind.py:325`), so a durable name makes every
+  existing memory line meaningful across sessions, surfaced by relevance retrieval — the world
+  remembers you (reconnect seeds present NPCs with "<name> has returned"). No player memory stream
+  (deferred — a recap feature). `loom/identity.py`. Spike: `docs/spikes/identity.md`.
+Live: `memory.paraphrase-relevance` 3/3, `reflection.distills-a-belief` 3/3, and
+`identity.remembers-a-returning-player` 3/3 on bge-m3 + qwen3.6, plus live restart proofs.
+**Remaining in Phase 5:** idle-NPC autonomy (reflection, its prerequisite, is now in), plus
+reflection polish (persist the watermark, fairer scheduling, depth>1, LLM importance) — and
+identity follow-ups (password auth, a player recap stream) — see the Phase 5 entry.
 
 ## Status snapshot — line drawn 2026-07-14
 
@@ -810,7 +820,7 @@ already gives per-player context and a deterministic hook):
   unique/set fixed items; identification; a wider item-type/slot vocabulary. All grow the
   content later without moving the seam.
 
-### Phase 5 — Deeper minds & persistence  ▶ (persistence + memory depth + reflection landed 2026-07-20; player identity, idle-NPC remain)
+### Phase 5 — Deeper minds & persistence  ▶ (persistence + memory depth + reflection + identity landed 2026-07-20; idle-NPC remains)
 Importance scoring, embedding retrieval (SQLite + brute-force cosine), and reflection on
 the memory stream; persist world + memories across restarts; player personality/history
 accretion on the same substrate as NPCs. **The loose end it closes:** the world, all NPC
@@ -886,13 +896,39 @@ reflection is *just another memory*, so no memory-seam change.
   promises into grounded, in-voice beliefs that surface on a paraphrase query. Spike:
   `docs/spikes/reflection.md`.
 
+**Built — durable player identity + accretion (slice 3, uncommitted, both gates green).**
+The crux persistence deferred — a player who survives a disconnect and a restart, and whose
+history accretes on the same memory substrate as the NPCs. The DikuMUD line
+(`docs/spikes/identity.md`, from a two-front prior-art survey — MUD identity/login/link-dead
+and LLM-agent player memory): **the name is the durable key; identity == character** (no
+account object); one `PlayerRecord` per name, folded into the JSON overlay.
+- **Opt-in `require_login` flag** (base engine unchanged — the anonymous session-ephemeral
+  Wanderer path every prior test uses stays the default; the game opts in). Connect enters an
+  explicit **name-prompt gate** (Diku's `CON_GET_NAME`), not an auto-mint: a known name resumes
+  its saved location, inventory (items travel *in* the record, not to the floor), and quests
+  (`QuestBook` already keys by the now-durable id); a new name creates a record; a name already
+  live on another session is **taken over newest-wins** (Evennia mode-0 / Diku USURP). Disconnect
+  **persists-and-detaches** — never delete-and-drop.
+- **Accretion is nearly free.** NPCs already record the speaker by name (`mind.py:325`); a durable
+  name makes every existing memory line meaningful across sessions, surfaced by the relevance
+  retrieval that already ships — *the world remembers you*. Reconnect **seeds present NPCs** with
+  "<name> has returned" through the autonomous-reaction cascade, so recall emerges (GA-faithful;
+  no bespoke welcome-back store). **No player-owned memory stream** (deferred — it serves only a
+  recap; the payoff lives in the witnesses' streams, exactly the Generative-Agents model).
+- **Framework/persistence:** `loom/identity.py` (slug/display/validate, `PlayerRecord`, item
+  (de)serialization); `Engine(require_login=)` + the login/usurp/detach/`sync_player_records`
+  lifecycle; a `players` block in the overlay (`SAVE_VERSION` 2, tolerant of a v1 save that lacks
+  it); a durable player's held items excluded from the global item snapshot. `password_hash`
+  reserved (auth deferred). `game/main.py` opts in (`LOOM_REQUIRE_LOGIN`).
+- **Gates.** Offline **535** (`tests/test_identity.py`, 25 tests: the primitives, the login gate +
+  bad/reserved/case-insensitive names, persist-and-detach, reconnect restore, newest-wins takeover,
+  the overlay round-trip, and the accretion seam). Live:
+  `identity.remembers-a-returning-player` **3/3** — a real embedder surfaces the returning player's
+  memory above four others' purely by durable name (person-keyed recall). Spike:
+  `docs/spikes/identity.md`.
+
 **Remaining in Phase 5 (start each with a prior-art survey + a design proposal for
 sign-off — the standing rule):**
-- **Durable player identity + accretion** — a stable identity (login / reconnect) so held
-  loot and personal quests survive a reconnect and a player's own history accretes on the
-  same memory substrate as NPCs — the vision's "history accretes through play," and the
-  crux persistence explicitly deferred (players are session-ephemeral today; `remove_entity`
-  drops their inventory to the floor).
 - **Idle-NPC autonomy (moved from B9, 2026-07-12)** — NPCs that act or speak *unprompted*
   during a lull (a cheap `NpcMind.stir` reusing `_deliver_turn` + the reaction cascade).
   The *mechanism* is cheap, but its *quality* wanted reflection + the model-side act-gate —
@@ -902,6 +938,11 @@ sign-off — the standing rule):**
   today, resets on restart); fairer scheduling (one-agent-per-pulse lets the busiest agent
   monopolize); depth>1 (reflections on reflections — the GA tree); LLM importance for the
   trigger. All optional tightening, not blockers.
+- **Identity follow-ups (to the slice-3 build):** password authentication (the `password_hash`
+  slot is reserved — a `GET_PASSWORD` state insertion, not a migration; deferred as there is no
+  adversary in a personal/trusted game); a player-owned memory stream for a "previously, on…"
+  recap (near-free on the shared substrate, but the payoff does not need it); an account/character
+  split (only if multi-character or account-level bans ever arrive — Evennia's documented path).
 - **Also:** LLM importance scoring (a batched off-loop fidelity pass; the heuristic
   suffices now); `remember_fact` (the deferred Phase 2 action — a thin high-importance
   `add`, now that retrieval exists); in-process local embedder + sqlite-vec/ANN only if
@@ -921,7 +962,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (510 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (535 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*

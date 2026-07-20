@@ -20,6 +20,7 @@ from .action import (
 )
 from .salience import SalienceGate, SalienceContext, default_gate
 from .naming import resolve, Resolved, Ambiguous, NoMatch
+from .identity import PlayerRecord
 
 __all__ = [
     "Message", "Channel", "Session", "GameServer", "GameLoop", "Engine",
@@ -29,5 +30,6 @@ __all__ = [
     "ActionResult", "Param", "ActionError", "default_registry",
     "SalienceGate", "SalienceContext", "default_gate",
     "resolve", "Resolved", "Ambiguous", "NoMatch",
+    "PlayerRecord",
 ]
 __version__ = "0.0.1"

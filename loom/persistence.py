@@ -32,13 +32,20 @@ from __future__ import annotations
 import json
 import os
 from .world import Item, Npc, Player
+from . import identity
 
 # The save-format version. Bump it whenever the overlay's shape changes and add a
 # pure ``_migrate_vN`` to ``_MIGRATIONS`` — an old save then upgrades on load.
-SAVE_VERSION = 1
+#   v2 (Phase 5, slice 3): a ``players`` block of durable ``PlayerRecord``s, and
+#      player-held items captured in those records rather than dropped to the floor in
+#      ``items``. No active migration is needed — a v1 save simply has no ``players``
+#      block (tolerant default: no durable players) and its player-held items already
+#      lie on the floor (the pre-identity behaviour), which loads unchanged.
+SAVE_VERSION = 2
 
-# from_version -> pure function(save: dict) -> save: dict. Empty at v1 (nothing to
-# migrate yet); the dispatch loop below is the seam a future field-move slots into.
+# from_version -> pure function(save: dict) -> save: dict. v1->v2 needs no active
+# migration (tolerant defaults suffice); the dispatch loop is the seam a future
+# field-move that DOES need rewriting slots into.
 _MIGRATIONS: dict = {}
 
 
@@ -52,14 +59,21 @@ def snapshot(engine) -> dict:
     them. Authored definitions (locations, personas, base item text, ``world.meta``)
     are never snapshotted — they reload from ``world.json``."""
     world = engine.world
-    # Positions: authored characters only. Players are session-ephemeral (no durable
-    # identity yet) — their held items fall to the floor below, exactly as
-    # ``World.remove_entity`` drops them on disconnect.
+    # Refresh every live player's durable record before capture, so an autosave taken
+    # mid-session persists where they now stand and what they now hold (no-op with no
+    # durable players — the anonymous path keeps its records empty).
+    engine.sync_player_records()
+    # Positions: authored NPCs only. Players persist through the ``players`` block below,
+    # keyed by durable identity, not through positions.
     positions = {eid: ent.location_id
                  for eid, ent in world.entities.items()
                  if isinstance(ent, Npc) and ent.location_id}
+    # Items: everything except what a *durable* player is holding — those travel in the
+    # player's record (re-minted onto them on reconnect), not the world floor. An
+    # anonymous player's held item still falls to the floor via ``_item_record`` (the
+    # pre-identity behaviour), so a store-less/anonymous deployment is unchanged.
     items = [_item_record(world, it) for it in world.entities.values()
-             if isinstance(it, Item)]
+             if isinstance(it, Item) and not _durable_player_held(engine, it)]
     # Memory rides the JSON overlay only when it is NOT SQLite-backed (slice 1b). With
     # a store the DB is authoritative and durable on its own, so the overlay omits
     # memory entirely — no whole-stream re-serialization on every autosave. A store-less
@@ -82,8 +96,21 @@ def snapshot(engine) -> dict:
         "clock": _clock_state(engine.clock),
         "weather": _weather_state(engine.weather),
         "memory": memory,
+        "players": {slug: rec.to_dict()
+                    for slug, rec in engine.player_records.items()},
         "chronicle": engine.chronicle.state(),
     }
+
+
+def _durable_player_held(engine, item: Item) -> bool:
+    """True when ``item`` is held by a durable (logged-in) player — so it is captured in
+    that player's record instead of the global item list. Only meaningful under
+    ``require_login``; without it, no player is durable and every item snapshots as before."""
+    if not getattr(engine, "require_login", False):
+        return False
+    holder = item.holder
+    ent = engine.world.entities.get(holder) if holder else None
+    return isinstance(ent, Player)
 
 
 def _item_record(world, item: Item) -> dict:
@@ -135,8 +162,19 @@ def restore(engine, save: dict) -> None:
     _restore_clock(engine.clock, save.get("clock"))
     _restore_weather(engine.weather, save.get("weather"))
     _restore_memory(engine, save.get("memory") or {})
+    _restore_players(engine, save.get("players") or {})
     if "chronicle" in save:
         engine.chronicle.load_state(save["chronicle"])
+
+
+def _restore_players(engine, players: dict) -> None:
+    """Reload the durable player records (slug -> ``PlayerRecord``). They are the offline
+    truth; each materializes into a live body only when that name next logs in, so a
+    restored player's held items are re-minted then — never added to the world at boot,
+    so no body or item lingers for a player who is not connected."""
+    for slug, rec in players.items():
+        if isinstance(rec, dict):
+            engine.player_records[slug] = identity.PlayerRecord.from_dict(rec)
 
 
 def _restore_positions(world, positions: dict) -> None:

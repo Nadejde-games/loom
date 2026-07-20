@@ -901,6 +901,68 @@ async def run_memory_scenario(embedder, sc: MemoryScenario):
 
 
 @dataclass
+class IdentityScenario:
+    """Phase 5 identity (slice 3): the accretion payoff — *the world remembers you*. An
+    NPC's stream holds memories naming several people by their DURABLE identity; when one
+    returns, a query seeded with that returning name (exactly what the reconnect seed
+    injects — "<name> has returned") must surface THAT person's memory above the others' —
+    person-keyed relevance retrieval, the Generative-Agents named-recall mechanism. A REAL
+    embedder (a durable name is the key; the fake cannot do semantic person-recall). Each
+    query is one trial; success = the returning player's memory ranks first by cosine."""
+    name: str
+    memories: list                  # NPC memories, several naming different people
+    queries: list                   # reconnect-seed queries naming the returning player
+    target: int                     # index of the returning player's memory
+    desc: str
+    threshold: int = 3
+    gated: bool = True
+    tags: tuple = ("identity",)
+
+    @property
+    def n(self) -> int:
+        return len(self.queries)
+
+
+_IDENTITY_MEM = [
+    'Andrei said to me: "I swear I will bring back the black key."',    # 0 — returning
+    'Bettan said to me: "The north pass lies under deep snow now."',
+    "I noticed: Corin haggled over a sack of salt in the square.",
+    "A merchant sold dried figs at the market stall.",
+    'Dalia said to me: "Keep the hearth-fire lit until I come back."',
+]
+
+IDENTITY_SCENARIOS = [
+    IdentityScenario(
+        name="identity.remembers-a-returning-player", memories=_IDENTITY_MEM,
+        queries=[
+            "Andrei has returned to the cave mouth.",      # the reconnect seed, verbatim
+            "what do I remember about Andrei",
+            "Andrei stands before me once more",
+        ],
+        target=0, threshold=3,
+        desc="a real embedder surfaces the returning player's memory (by durable name) "
+             "above memories of others — person-keyed recall (identity, slice 3)"),
+]
+
+
+async def run_identity_scenario(embedder, sc: IdentityScenario):
+    """Embed the NPC's memories and each reconnect-seed query; the returning player's
+    memory must rank top by cosine for every query — the mechanism behind the emergent,
+    name-seeded recall the engine wires on reconnect."""
+    mem_vecs = await embedder.embed(sc.memories)
+    q_vecs = await embedder.embed(sc.queries)
+    successes, samples = 0, []
+    for q, qv in zip(sc.queries, q_vecs):
+        ranked = sorted(((_cosine(qv, mv), i) for i, mv in enumerate(mem_vecs)),
+                        reverse=True)
+        top_cos, top_i = ranked[0]
+        ok = (top_i == sc.target)
+        successes += ok
+        samples.append((ok, f'{q[:44]!r} -> M{top_i} (cos {top_cos:.3f})'))
+    return successes, samples
+
+
+@dataclass
 class ReflectionScenario:
     """Phase 5 reflection (slice 2): a REAL model, given a stream of repeated broken
     promises, must distill them into a grounded higher-level belief (a ``reflection``
@@ -990,8 +1052,9 @@ async def main():
     chosen_loot = [s for s in LOOT_SCENARIOS if picks(s)]
     chosen_mem = [s for s in MEMORY_SCENARIOS if picks(s)]
     chosen_refl = [s for s in REFLECTION_SCENARIOS if picks(s)]
+    chosen_ident = [s for s in IDENTITY_SCENARIOS if picks(s)]
     if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react,
-                chosen_loot, chosen_mem, chosen_refl)):
+                chosen_loot, chosen_mem, chosen_refl, chosen_ident)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
@@ -999,13 +1062,14 @@ async def main():
                       | {t for s in REACT_SCENARIOS for t in s.tags}
                       | {t for s in LOOT_SCENARIOS for t in s.tags}
                       | {t for s in MEMORY_SCENARIOS for t in s.tags}
-                      | {t for s in REFLECTION_SCENARIOS for t in s.tags})
+                      | {t for s in REFLECTION_SCENARIOS for t in s.tags}
+                      | {t for s in IDENTITY_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
     total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
              + len(chosen_gate) + len(chosen_react) + len(chosen_loot)
-             + len(chosen_mem) + len(chosen_refl))
+             + len(chosen_mem) + len(chosen_refl) + len(chosen_ident))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -1140,6 +1204,28 @@ async def main():
                 print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} "
                       f"(need >={sc.threshold})  — {sc.desc}")
                 for hit, detail in samples:      # show the belief even on a pass
+                    print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    if chosen_ident:
+        # Phase 5 identity (slice 3): the LIVE gate for accretion — a real embedder must
+        # surface a returning player's memory (by durable name) above others', the recall
+        # the engine seeds on reconnect. Uses the EMBEDDER, not the chat provider; no
+        # embedder configured -> a watch item, not a fail.
+        embedder = get_default_embedder()
+        ename = getattr(embedder, "name", None)
+        if embedder is None:
+            for sc in chosen_ident:
+                watch.append(sc.name)
+                print(f"[WATCH] {sc.name:<28} —  no embedder configured "
+                      "(set OPENROUTER_API_KEY / LOOM_EMBEDDER); identity gate skipped")
+        else:
+            print(f"(identity gate via embedder {ename})")
+            for sc in chosen_ident:
+                successes, samples = await run_identity_scenario(embedder, sc)
+                ok, v = verdict(sc, successes)
+                print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} "
+                      f"(need >={sc.threshold})  — {sc.desc}")
+                for hit, detail in samples:
                     print(f"          {'ok ' if hit else 'MISS'} {detail}")
 
     print()

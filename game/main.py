@@ -99,12 +99,23 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     # inside game/world/ (load_world would ingest it). LOOM_MEMORY_DB overrides.
     memory_db = os.environ.get("LOOM_MEMORY_DB") or os.path.join(HERE, "world.memory.db")
     memory_store = MemoryStore(memory_db)
+    # Durable player identity (Phase 5, slice 3): a connecting player is prompted for a
+    # name, which maps to a durable record — so held loot, quests, location, and the
+    # world's memory of them survive a disconnect. A returning name resumes where it stood;
+    # NPCs remember it (their memories already record the speaker by name), surfaced when
+    # you next speak to them. On here; LOOM_REQUIRE_LOGIN=0 falls back to anonymous
+    # session-ephemeral Wanderers. See docs/spikes/identity.md.
+    require_login = os.environ.get("LOOM_REQUIRE_LOGIN", "1") not in ("0", "", "false")
     engine = Engine(world, provider, start_location=start,
                     autonomous_reactions=True, npc_act_gate=npc_gate,
+                    require_login=require_login,
                     embedder=embedder, memory_store=memory_store)
     print(f"[game] memory embedder: "
           f"{getattr(embedder, 'name', 'none (recency + importance only)')}")
     print(f"[game] memory store: {memory_db}")
+    print(f"[game] player identity: "
+          + ("durable — name on connect, records persist, the world remembers you"
+             if require_login else "anonymous session-ephemeral Wanderers"))
     loop = GameLoop(tick_seconds=5.0)  # ambient world systems hang off here
     server = GameServer(engine, host=host, port=port)
 

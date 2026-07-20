@@ -5,6 +5,7 @@ particular world — a game may subclass this or register extra commands.
 from __future__ import annotations
 import asyncio
 import random
+import time
 from dataclasses import dataclass, field
 from string import Formatter
 from .session import Session
@@ -27,6 +28,8 @@ from . import command
 from . import log
 from . import loot
 from . import persistence
+from . import identity
+from .identity import PlayerRecord
 from .loot import LootTables, LootForge, flavour_schema
 
 # Actions the default game offers the *player* but not its NPCs — the NPCs in
@@ -83,6 +86,7 @@ class Engine:
                  intent_fallback: bool = True,
                  autonomous_reactions: bool = False,
                  npc_act_gate: bool = False,
+                 require_login: bool = False,
                  embedder=None, memory_store=None):
         self.world = world
         self.provider = provider
@@ -118,6 +122,14 @@ class Engine:
         # ~70% blended ceiling). A framework capability the game opts into; off keeps
         # the single blended turn every prior test was written against.
         self.npc_act_gate = npc_act_gate
+        # Durable player identity (Phase 5, slice 3), off by default. When off, a session
+        # is an ephemeral ``Wanderer-N`` minted on connect and dropped on disconnect —
+        # the behaviour every prior test was written against. When on (a game opts in),
+        # a connecting session is prompted for a NAME, which maps to a durable
+        # ``PlayerRecord`` (``loom/identity.py``): a returning name resumes its last
+        # location, inventory, quests, and — the payoff — the world's memory of it, since
+        # NPC memories already record the speaker by name. See docs/spikes/identity.md.
+        self.require_login = require_login
         self.react_budget = REACT_BUDGET
         self.react_cooldown = REACT_COOLDOWN
         self.react_fuse = REACT_FUSE
@@ -126,8 +138,15 @@ class Engine:
         self._fallback_verbs = [c for c in self._by_canonical
                                 if c not in ("quit", "help")]
         self.minds: dict[str, NpcMind] = {}
-        self.players: dict[str, Player] = {}    # session id -> player
+        self.players: dict[str, Player] = {}    # session id -> live player body
         self.sessions: dict[str, Session] = {}  # session id -> session
+        # Durable player records keyed by slug — the persistent truth for every known
+        # player, online or offline (refreshed from the live body on snapshot/detach),
+        # folded into the JSON overlay by loom/persistence.py. Empty unless require_login.
+        self.player_records: dict[str, PlayerRecord] = {}
+        # Sessions still at the login name-prompt (session id -> login state). A session
+        # here is connected but NOT yet a player; its input is its name, not a command.
+        self._login_state: dict[str, str] = {}
         self._pcount = 0
         self._tasks: set[asyncio.Task] = set()  # in-flight async NPC replies
         # The running record of salient world beats — arrivals, speech, actions,
@@ -189,6 +208,20 @@ class Engine:
 
     # ---- Handler protocol (called by GameServer) ----
     async def on_connect(self, session: Session) -> None:
+        if self.require_login:
+            # A connection is not yet a player: prompt for a name and hold the session at
+            # the login gate. Its next line is its name (Diku's CON_GET_NAME), not a
+            # command — resolved by _login_submit. Until then it has no body in the world.
+            self.sessions[session.id] = session
+            self._login_state[session.id] = "name"
+            await session.send_system("Connected.")
+            await session.send_text(styled(
+                span("The threshold of a living world. ", Style.AMBIENT),
+                "By what name are you known here?"))
+            log.event(f"session {session.id} connected "
+                      f"({getattr(session, 'addr', '?')}) — awaiting name")
+            return
+        # ---- anonymous path: a session-ephemeral Wanderer (no durable identity) ----
         self._pcount += 1
         pid = f"player:{self._pcount}"
         player = Player(id=pid, name=f"Wanderer-{self._pcount}",
@@ -207,6 +240,149 @@ class Engine:
         log.event(f"{player.name} connected ({getattr(session, 'addr', '?')}) "
                   f"in {where}")
         await self._offer_start_quests(session, player)
+
+    # ---- durable identity: login, reconnect, detach (require_login) ----
+    async def _login_submit(self, session: Session, text: str) -> None:
+        """Resolve a name typed at the login gate into a durable player. A bad name
+        re-prompts; a known name resumes its record (a *returning* player); a new name
+        creates one. A name already live on another session is taken over, newest wins
+        (Evennia mode-0 / Diku USURP)."""
+        slug, err = identity.validate_name(text)
+        if err:
+            await session.send_system(err)
+            return
+        self._login_state.pop(session.id, None)
+        self.sessions[session.id] = session
+        pid = identity.player_id(slug)
+        live_sid = next((sid for sid, p in self.players.items()
+                         if p.id == pid and sid != session.id), None)
+        if live_sid is not None:
+            await self._usurp(live_sid, session)
+            return
+        record = self.player_records.get(slug)
+        returning = record is not None
+        if record is None:
+            record = self._new_record(slug, identity.display_name(text))
+        player = self._materialize_player(record, session)
+        await self._enter_world(session, player, returning)
+
+    def _new_record(self, slug: str, display: str) -> PlayerRecord:
+        """Mint and register a first-time player's durable record, at the world's start."""
+        now = time.time()
+        rec = PlayerRecord(id=identity.player_id(slug), name=display or slug,
+                           location_id=self.start_location, held=[],
+                           created_t=now, last_seen_t=now)
+        self.player_records[slug] = rec
+        return rec
+
+    def _materialize_player(self, record: PlayerRecord, session: Session) -> Player:
+        """Build a live body from a durable record: place it at its saved location (or the
+        start, if that location is gone from an edited world) and re-mint its held items
+        onto it. The record stays in ``player_records`` as the persistent truth."""
+        loc = (record.location_id
+               if record.location_id in self.world.locations else self.start_location)
+        player = Player(id=record.id, name=record.name, location_id=loc,
+                        session_id=session.id)
+        self.world.add_entity(player)
+        for rec in record.held:
+            self.world.add_entity(identity.rebuild_item(rec, holder=player.id))
+        self.players[session.id] = player
+        session.player_id = player.id
+        return player
+
+    async def _usurp(self, old_sid: str, session: Session) -> None:
+        """Take over a name already live on another (usually zombie) session: rebind the
+        existing body to the new connection and cut the old socket — never spawn a
+        duplicate. Closing the old socket triggers its on_disconnect, which finds no
+        player (already popped) and so does not detach."""
+        player = self.players.pop(old_sid)
+        old = self.sessions.pop(old_sid, None)
+        self._login_state.pop(old_sid, None)
+        if old is not None:
+            await self._safe_send(old.send_system,
+                                  "Multiple login detected — disconnecting.")
+            try:
+                await old.close()
+            except Exception:
+                pass
+        player.session_id = session.id
+        self.players[session.id] = player
+        session.player_id = player.id
+        await session.send_system("Reconnecting.")
+        log.event(f"{player.name} reconnected — took over an active session")
+        await self._look(session)
+
+    async def _enter_world(self, session: Session, player: Player,
+                           returning: bool) -> None:
+        """The shared placement beat once a durable player has a body: greet, show the
+        room, record the arrival, and either offer opening quests (new) or seed the
+        world's recall of a returning name."""
+        await session.send_system(f"You are known as {player.name}.")
+        await session.send_text(self._banner())
+        await self._look(session)
+        loc = self.world.locations.get(player.location_id)
+        where = loc.name if loc else player.location_id
+        self.chronicle.record(f"{player.name} arrived in {where}.",
+                              location_id=player.location_id, kind="arrival")
+        log.event(f"{player.name} {'returned to' if returning else 'entered'} {where} "
+                  f"({getattr(session, 'addr', '?')})")
+        if returning:
+            await self._welcome_back(session, player, where)
+        else:
+            await self._offer_start_quests(session, player)
+
+    async def _welcome_back(self, session: Session, player: Player, where: str) -> None:
+        """A returning player: tell them the world knows them, and seed each NPC present
+        with their return so the reaction cascade may surface an old memory of them of its
+        own volition (emergent, name-seeded recall — docs/spikes/identity.md). The belief
+        stays the NPC's; retrieval does the remembering. No-op if no NPC is present or the
+        game did not enable autonomous reactions."""
+        await session.send_text(styled(
+            span("You have walked here before; the world has not forgotten you.",
+                 Style.AMBIENT)))
+        loc = player.location_id
+        present = [e for e in self.world.occupants(loc, exclude=player.id)
+                   if isinstance(e, Npc)]
+        if present and self.autonomous_reactions:
+            self._spawn_reaction(loc, player.id,
+                                 f"{player.name} has returned to {where}.")
+            log.event(f"seeded recall of {player.name} for "
+                      f"{len(present)} NPC(s) present")
+
+    def _detach_player(self, player: Player) -> None:
+        """Persist-and-detach on disconnect (never delete-and-drop): capture the player's
+        location and held items into their durable record, then remove the body and its
+        items from the live world — no frozen ghost, no floor litter. The items travel in
+        the record and are re-minted on reconnect."""
+        slug = identity.slug_of(player.id)
+        held = [identity.item_record(it) for it in self.world.contents(player.id)]
+        for it in list(self.world.contents(player.id)):
+            self.world.remove_entity(it.id)      # so remove_entity(player) drops nothing
+        self.world.remove_entity(player.id)
+        rec = self.player_records.get(slug)
+        if rec is None:                          # defensive — a live player always has one
+            rec = PlayerRecord(id=player.id, name=player.name,
+                               created_t=time.time())
+            self.player_records[slug] = rec
+        rec.location_id = player.location_id
+        rec.held = held
+        rec.last_seen_t = time.time()
+
+    def sync_player_records(self) -> None:
+        """Refresh every live player's durable record from the world, so a snapshot or
+        autosave taken mid-session captures where they now stand and what they now hold.
+        Called by persistence.snapshot; a no-op when no one is connected."""
+        now = time.time()
+        for player in self.players.values():
+            slug = identity.slug_of(player.id)
+            held = [identity.item_record(it) for it in self.world.contents(player.id)]
+            rec = self.player_records.get(slug)
+            if rec is None:
+                rec = PlayerRecord(id=player.id, name=player.name, created_t=now)
+                self.player_records[slug] = rec
+            rec.location_id = player.location_id
+            rec.held = held
+            rec.last_seen_t = now
 
     async def _offer_start_quests(self, session: Session, player) -> None:
         """Hand a newly-arrived player their opening goals and name them, so the journey
@@ -229,12 +405,24 @@ class Engine:
 
     async def on_disconnect(self, session: Session) -> None:
         self.sessions.pop(session.id, None)
+        self._login_state.pop(session.id, None)
         player = self.players.pop(session.id, None)
-        if player:
+        if player is None:
+            return
+        if self.require_login:
+            # Persist-and-detach: the record survives, the body does not.
+            self._detach_player(player)
+            log.event(f"{player.name} disconnected — record saved")
+        else:
+            # Anonymous: the ephemeral Wanderer leaves, dropping what it held (unchanged).
             self.world.remove_entity(player.id)
             log.event(f"{player.name} disconnected")
 
     async def on_input(self, session: Session, text: str) -> None:
+        # A session still at the login gate: its line is its name, not a command.
+        if session.id in self._login_state:
+            await self._login_submit(session, text)
+            return
         player = self.players.get(session.id)
         if not player:
             return
