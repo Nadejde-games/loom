@@ -171,7 +171,29 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
         kept = engine.attach_start_quests(start_quests)
         print(f"[game] starting quests: {len(kept)} offered on connect")
 
-    await asyncio.gather(server.serve_forever(), loop.run())
+    # Persistence (Phase 5): make the world survive a restart. The authored world.json
+    # above is always the definition; a versioned JSON overlay carries only the mutable
+    # delta — entity positions, forged loot, conditions, clock/weather, every mind's
+    # memory, the chronicle. Save on shutdown (the finally below) + a coarse autosave.
+    # Restore runs here, last, so the overlay lands on the fully-wired world (director,
+    # clock, weather all attached). The save must NOT live inside game/world/, where
+    # load_world would ingest it as content. LOOM_SAVE_PATH overrides the location;
+    # LOOM_AUTOSAVE_PULSES the cadence (0 = shutdown-only).
+    save_path = os.environ.get("LOOM_SAVE_PATH") or os.path.join(HERE, "world.save.json")
+    autosave = int(os.environ.get("LOOM_AUTOSAVE_PULSES", "60"))
+    engine.attach_persistence(loop, save_path, autosave_pulses=autosave)
+    restored = engine.restore()
+    print(f"[game] persistence: {save_path} "
+          + (f"(restored)" if restored else "(fresh world)")
+          + (f", autosave every {autosave} pulses" if autosave else ", save on shutdown"))
+
+    try:
+        await asyncio.gather(server.serve_forever(), loop.run())
+    finally:
+        # Graceful shutdown (SIGINT cancels this task) — persist the final state so a
+        # forged reward left in the world, and what the NPCs remember, outlast the run.
+        if engine.save():
+            print("[game] world saved.")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ Phase 5. Only the ``reach`` objective is bound to an engine check in this slice;
 are the same pattern on other seam events, scoped for a later slice.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 # Objective kinds. Only REACH is bound to a completion check today.
 REACH = "reach"
@@ -103,3 +103,29 @@ class QuestBook:
                 q.status = COMPLETE
                 done.append(q)
         return done
+
+    # ---- persistence (Phase 5) ----
+    # A JSON-ready snapshot of the whole book and its inverse. Persisted
+    # forward-looking: quests are keyed by the current ephemeral player id, so a
+    # restored book is only *re-associable* once a durable player identity exists
+    # (deferred). The engine persists ``_pcount`` alongside it so a reconnecting
+    # player never inherits a stranger's log by reusing an id (see engine.snapshot).
+    def state(self) -> dict:
+        """A JSON-ready snapshot: every player's quests plus the id cursor."""
+        return {"by_player": {pid: [asdict(q) for q in qs]
+                              for pid, qs in self._by_player.items()},
+                "seq": self._seq}
+
+    def load_state(self, data: dict) -> None:
+        """Replace the book from a ``state()`` snapshot, reconstructing each
+        ``Quest`` tolerantly (missing fields fall back to their defaults)."""
+        data = data or {}
+        self._by_player = {}
+        for pid, qs in (data.get("by_player") or {}).items():
+            self._by_player[pid] = [
+                Quest(id=q["id"], title=q.get("title", ""),
+                      summary=q.get("summary", ""), giver=q.get("giver", ""),
+                      kind=q.get("kind", REACH), destination=q.get("destination", ""),
+                      status=q.get("status", ACTIVE))
+                for q in qs if q.get("id")]
+        self._seq = int(data.get("seq", 0))

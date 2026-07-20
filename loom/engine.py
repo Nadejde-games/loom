@@ -24,6 +24,7 @@ from .ai.director import DirectorMind, Director
 from .ai import loot as loot_ai
 from . import command
 from . import loot
+from . import persistence
 from .loot import LootTables, LootForge, flavour_schema
 
 # Actions the default game offers the *player* but not its NPCs — the NPCs in
@@ -142,6 +143,13 @@ class Engine:
         # forged). Authored as world content (the "start_quests" block); empty = the base
         # engine hands out nothing.
         self.start_quests: list = []
+        # Persistence (Phase 5): where the mutable runtime overlay is saved, and the
+        # autosave cadence. None/0 until a game opts in (attach_persistence) — the
+        # base engine persists nothing; the authored world.json is always the
+        # definition reloaded beneath any saved delta (see loom/persistence.py).
+        self.save_path: str | None = None
+        self._autosave_pulses = 0
+        self._autosave_counter = 0
         # The action catalogue offered to NPCs — the shared registry minus the
         # player-only verbs and the director-only verbs. Both the prompt and the
         # constrained-decoding grammar are narrowed to this, so NPC behavior is
@@ -726,6 +734,54 @@ class Engine:
                              if d.get("title")
                              and d.get("destination") in self.world.locations]
         return self.start_quests
+
+    # ---- persistence (make the world survive a restart; Phase 5) ----
+    def attach_persistence(self, loop, path: str, *,
+                           autosave_pulses: int = 0) -> None:
+        """Make this world durable: save its mutable runtime overlay to ``path`` on
+        shutdown (call ``save()`` from the shutdown handler) and, if
+        ``autosave_pulses > 0``, every that-many loop pulses. Opt-in — the base engine
+        persists nothing. Restore is a separate step (``restore``), run once after the
+        world and all ``attach_*`` wiring are in place and before serving, so the
+        overlay lands on a fully-composed world (see loom/persistence.py)."""
+        self.save_path = path
+        self._autosave_pulses = max(0, int(autosave_pulses))
+        self._autosave_counter = 0
+        if self._autosave_pulses:
+            loop.add_system(self._autosave_tick)
+
+    async def _autosave_tick(self, dt: float) -> None:
+        """The autosave loop callback: every ``_autosave_pulses`` pulses, dump the
+        overlay. A forever-world will crash; shutdown-only would lose everything since
+        boot. The write is cheap and atomic; the loop swallows any error it raises."""
+        self._autosave_counter += 1
+        if self._autosave_counter < self._autosave_pulses:
+            return
+        self._autosave_counter = 0
+        self.save()
+
+    def save(self) -> bool:
+        """Atomically write the runtime overlay to ``save_path``. Returns False (a
+        no-op) if persistence was never attached. Blocking file I/O — negligible for a
+        small JSON overlay, and only ever called on the shutdown path or a coarse
+        autosave, never per player action."""
+        if not self.save_path:
+            return False
+        persistence.save_atomic(self.save_path, persistence.snapshot(self))
+        return True
+
+    def restore(self, path: str | None = None) -> bool:
+        """Compose a saved overlay onto this (already-built, already-wired) engine.
+        Returns True if a save was found and applied, False if there was none (a first
+        run). Reads ``save_path`` unless an explicit ``path`` is given."""
+        p = path or self.save_path
+        if not p:
+            return False
+        save = persistence.load(p)
+        if save is None:
+            return False
+        persistence.restore(self, save)
+        return True
 
     def _spawn_forge_reward(self, session: Session, player, quest,
                             location_id: str) -> None:

@@ -115,3 +115,23 @@ class Conditions:
         """Just the perceivable fragments that hold everywhere — read by every
         place alongside its own standing conditions."""
         return list(self._world.values())
+
+    # ---- persistence (Phase 5) ----
+    # A plain-data view of the standing conditions and its inverse, so the
+    # persistence layer serialises them without reaching into privates. The shape
+    # mirrors the internal one exactly (both scopes are already plain str->str
+    # maps), and insertion order — which drives stable rendering — survives a JSON
+    # round-trip because dicts preserve it.
+    def state(self) -> dict:
+        """A JSON-ready snapshot: the per-location conditions and the world scope."""
+        return {"by_location": {loc: dict(tags)
+                                for loc, tags in self._by_location.items()},
+                "world": dict(self._world)}
+
+    def load_state(self, data: dict) -> None:
+        """Replace all standing conditions from a ``state()`` snapshot. Tolerant of
+        a missing scope (an older save) — that scope simply loads empty."""
+        data = data or {}
+        self._by_location = {loc: dict(tags)
+                             for loc, tags in (data.get("by_location") or {}).items()}
+        self._world = dict(data.get("world") or {})

@@ -70,3 +70,26 @@ class Chronicle:
         if not events:
             return "(nothing has happened yet)"
         return "\n".join(f"- {e.text}" for e in events)
+
+    # ---- persistence (Phase 5) ----
+    # The chronicle is persisted *as data* — its surviving tail plus the ``_seq``
+    # cursor — never as a rebuild log (it is bounded and lossy by construction). This
+    # keeps the director's "what is new since N" continuity across a reboot: it does
+    # not wake believing nothing ever happened.
+    def state(self) -> dict:
+        """A JSON-ready snapshot: the windowed events and the monotonic cursor."""
+        return {"seq": self._seq,
+                "events": [{"text": e.text, "location_id": e.location_id,
+                            "kind": e.kind, "seq": e.seq} for e in self._events]}
+
+    def load_state(self, data: dict) -> None:
+        """Replace the window and restore the cursor from a ``state()`` snapshot. The
+        cursor is the *saved* ``seq`` (the high-water mark), which may exceed the last
+        windowed event — exactly as it does live once old events fall out."""
+        data = data or {}
+        self._events.clear()
+        for e in (data.get("events") or []):
+            self._events.append(ChronicleEvent(
+                text=e.get("text", ""), location_id=e.get("location_id"),
+                kind=e.get("kind", "event"), seq=int(e.get("seq", 0))))
+        self._seq = int(data.get("seq", 0))

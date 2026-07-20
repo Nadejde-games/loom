@@ -7,3 +7,12 @@ build/
 dist/
 .env
 *.swp
+
+# Persistence: the runtime save overlay (Phase 5) is local state, never committed —
+# the authored world lives in game/world/world.json; this is only the mutable delta.
+world.save.json
+world.save.json.bak
+world.save.json.tmp
+*.save.json
+*.save.json.bak
+*.save.json.tmp

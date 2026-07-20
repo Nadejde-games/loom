@@ -28,3 +28,20 @@ class MemoryStream:
 
     def recent(self, k: int = 8) -> list[MemoryEntry]:
         return self.entries[-k:]
+
+    # ---- persistence (Phase 5) ----
+    # A plain list of the entries' fields, so a mind's memory survives a restart
+    # (an NPC that remembers across reboots). The eventual importance/embedding
+    # fields slot into the same records with no format change — the whole reason
+    # this stays a JSON list now rather than moving to SQLite before it must.
+    def state(self) -> list:
+        """A JSON-ready snapshot: each memory as ``{text, kind, t}`` in order."""
+        return [{"text": e.text, "kind": e.kind, "t": e.t} for e in self.entries]
+
+    def load_state(self, data: list) -> None:
+        """Replace the stream from a ``state()`` snapshot, restoring each entry's
+        original timestamp (never ``time.time()`` at load)."""
+        self.entries = [MemoryEntry(text=e.get("text", ""),
+                                    kind=e.get("kind", "observation"),
+                                    t=float(e.get("t", 0.0)))
+                        for e in (data or [])]
