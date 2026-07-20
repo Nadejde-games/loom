@@ -1,7 +1,30 @@
 # Project plan — Loom engine & the forever game
 
 Living document. The reference for where we are and where we're going.
-Last updated: 2026-07-18.
+Last updated: 2026-07-20.
+
+## Status snapshot — 2026-07-20 (Phase 5 open: persistence + memory depth)
+
+**Phase 5 is underway** — three commits past the Phase 4 status block below, both gates
+green throughout (offline **488**):
+- **Persistence (`fe07e0c`)** — the world survives a restart. A versioned JSON *overlay*
+  of mutable runtime state (entity positions, forged loot, conditions, quests, clock/
+  weather, chronicle) composed onto the authored `world.json` reloaded each boot; snapshot
+  not event-log; atomic save (temp→fsync→`os.replace`+`.bak`) on shutdown + a loop
+  autosave. `loom/persistence.py`. Player-held items drop to the floor at snapshot (players
+  are session-ephemeral — **durable player identity is deferred**, the named next crux).
+  Spike: `docs/spikes/persistence.md`.
+- **Memory depth 1a (`0c7a588`)** — the Generative-Agents retrieval score verbatim
+  (`recency + importance + relevance`, min-max, weights 1/1/1). Importance a cheap
+  deterministic heuristic at write (not an LLM call per memory); relevance via an
+  `EmbeddingProvider` seam (OpenRouter `/api/v1/embeddings`, default `baai/bge-m3` —
+  verified live — plus a deterministic offline fake). Spike: `docs/spikes/memory.md`.
+- **Memory depth 1b (`b685cae`)** — SQLite-backed memory: one table by `agent_id`, the
+  embedding a float32 BLOB, incremental INSERT, embeddings persist across a reboot;
+  `load_state` doubles as the one-time JSON→SQLite migration.
+Live: the `memory.paraphrase-relevance` gate 3/3 on bge-m3, plus live restart proofs.
+**Remaining in Phase 5:** reflection (importance-triggered synthesis), durable player
+identity + accretion, idle-NPC autonomy, LLM importance scoring — see the Phase 5 entry.
 
 ## Status snapshot — line drawn 2026-07-14
 
@@ -56,10 +79,10 @@ notes and `docs/BACKLOG.md`):
 - **Presentation** — fused speech+action rendering **(B2 — done 2026-07-17)** and
   rich text **(B3 — done 2026-07-19: route-(b) semantic styling across every
   player-facing surface, incl. the world's own `ambient` voice)**.
-- **Later phases** — loot forge (4), deeper memory + persistence (5; note: world,
-  NPC/director memory, and the chronicle are all in-memory today and reset on
-  restart), rich transport + multiplayer (6), authoring tools incl. the world
-  atlas (7 / B7).
+- **Later phases** — loot forge (4 — first slice done), deeper memory + persistence
+  (5 — **underway**: persistence + memory importance/embeddings/SQLite landed
+  2026-07-20; world, NPC/director memory, and the chronicle now survive a restart),
+  rich transport + multiplayer (6), authoring tools incl. the world atlas (7 / B7).
 
 ## Vision
 
@@ -777,22 +800,71 @@ already gives per-player context and a deterministic hook):
   unique/set fixed items; identification; a wider item-type/slot vocabulary. All grow the
   content later without moving the seam.
 
-### Phase 5 — Deeper minds & persistence  ○
-Importance scoring, embedding retrieval (start SQLite + brute-force cosine),
-and reflection on the memory stream. Persist world + memories across restarts.
-Player personality/history accretion on the same substrate as NPCs.
-**Loose end this closes:** today the world, all NPC *and* director memory, and the
-chronicle are in-memory only — everything resets on restart. For a world that is
-meant to run *forever*, this is the phase where that stops being true. (`remember_fact`,
-the deferred Phase 2 action, lands here too, once memory has importance/retrieval.)
-**Idle-NPC autonomy lands here (moved from B9, 2026-07-12):** NPCs that act or speak
-*unprompted* during a lull — the NPC-side counterpart to the director lull. The
-*mechanism* is cheap (a slow, per-NPC-gated trigger offering a `NpcMind.stir` turn,
-reusing `_deliver_turn` + the reaction cascade), but its *quality* is what makes it a
-Phase-5 feature: an idle beat should flow from the NPC's evolving goals, mood, and
-reflected memory (else it reads as mechanical), and it needs the model-side act-gate
-(B5/B8) to hold the local model's over-action bias in check. Prior art: DikuMUD
-`mobact.c`; Stanford Generative Agents (daily plans) for the rich form.
+### Phase 5 — Deeper minds & persistence  ▶ (persistence + memory depth landed 2026-07-20; reflection, player identity, idle-NPC remain)
+Importance scoring, embedding retrieval (SQLite + brute-force cosine), and reflection on
+the memory stream; persist world + memories across restarts; player personality/history
+accretion on the same substrate as NPCs. **The loose end it closes:** the world, all NPC
+*and* director memory, and the chronicle were in-memory only — everything reset on
+restart. For a world meant to run *forever*, this is the phase where that stops being true.
+
+**Built — persistence (slice 1, `fe07e0c`, both gates green).** A **versioned JSON
+overlay** of the mutable runtime state, composed onto the authored `world.json` reloaded
+every boot (the DikuMUD authored-vs-mutable line — the authored file is the definition,
+never overwritten; only the delta persists). Snapshot, **not** event-log; the chronicle
+rides along *as data* (tail + `seq` cursor), never a rebuild source. `loom/persistence.py`
+— `snapshot`/`restore`, crash-safe `save_atomic` (temp → `fsync` → `os.replace`, retained
+`.bak` with fallback on load), a version int + pure `_migrate` dispatch + tolerant `.get`
+load — plus `state()`/`load_state()` on Conditions/QuestBook/MemoryStream/Chronicle and
+`Engine.attach_persistence/save/restore` + a loop autosave. Saves on shutdown + autosave;
+`game/main.py` restores before serving. **Player-held items snapshot to the floor**
+(drop-on-disconnect semantics — players are session-ephemeral; `pcount` persists so ids
+never collide); weather reseeds rather than serialising RNG bit-state. The proof: forge a
+reward, restart, it is still on the floor with `tier`/`tags` intact and NPCs remember.
+Spike: `docs/spikes/persistence.md`. Offline **+19**.
+
+**Built — memory depth (slices 1a + 1b, `0c7a588` + `b685cae`, both gates green).** The
+memory stream lifted past recency-only, so an old-but-salient memory (a promise, a threat)
+can outrank recent trivia and a memory *relevant to the moment* surfaces after leaving the
+last-k window.
+- **1a — retrieval.** The Generative-Agents score verbatim: `retrieve(query,k) = recency
+  (0.995 decay) + importance + relevance-cosine`, each min-max normalized, weights 1/1/1.
+  **Importance is a cheap deterministic heuristic at write** (kind base + salience cues) —
+  *not* an LLM call per memory (the per-memory tax every affordable system avoids). An
+  `EmbeddingProvider` seam mirrors `LLMProvider` (`loom/ai/embedding.py`): **OpenRouter
+  `/api/v1/embeddings`** (same key as chat, default `baai/bge-m3` 1024-dim, ~1e-7/memory —
+  verified live; *not* the vLLM box) + a deterministic `FakeEmbeddingProvider` for offline.
+  The one honest caller touch: mind/director pass the current utterance/chronicle into
+  `retrieve` (relevance needs a query; `recent()` did not). Spike: `docs/spikes/memory.md`.
+- **1b — SQLite backing.** `loom/ai/memory_store.py`: one table by `agent_id`, the embedding
+  a float32 BLOB via stdlib `array`, brute-force cosine; a new memory is an incremental
+  INSERT (no whole-file rewrite), embeddings persist so a rebooted NPC needn't re-embed its
+  history; `MemoryStream.load_state` doubles as the one-time JSON→SQLite migration (import
+  into an empty store only). Memory leaves the JSON overlay when a store is present.
+- **Gates.** Offline **488** (15 memory + 10 store tests; headline: the *buried-promise*
+  proof — a salient on-topic memory surfaces where `recent(8)` cannot). Live: the
+  `memory.paraphrase-relevance` gate — a real embedder ranks paraphrase the lexical fake
+  misses — **3/3** on bge-m3, folded into `scripts/behavior_probe.py memory`; plus a live
+  restart proof (real BLOB embeddings reload, history not re-embedded).
+
+**Remaining in Phase 5 (start each with a prior-art survey + a design proposal for
+sign-off — the standing rule):**
+- **Reflection (slice 2)** — importance-triggered synthesis of higher-level insights,
+  re-inserted as memories (`MemoryEntry(kind="reflection")`, high importance, cited ids);
+  a `Reflector` beside `Director`, off the loop, depth-1 first. The prerequisite for the
+  *rich* form of idle-NPC autonomy. Prior art: Generative Agents reflection tree.
+- **Durable player identity + accretion** — a stable identity (login / reconnect) so held
+  loot and personal quests survive a reconnect and a player's own history accretes on the
+  same memory substrate as NPCs — the vision's "history accretes through play," and the
+  crux persistence explicitly deferred (players are session-ephemeral today; `remove_entity`
+  drops their inventory to the floor).
+- **Idle-NPC autonomy (moved from B9, 2026-07-12)** — NPCs that act or speak *unprompted*
+  during a lull (a cheap `NpcMind.stir` reusing `_deliver_turn` + the reaction cascade).
+  The *mechanism* is cheap, but its *quality* wants reflection + the model-side act-gate —
+  why it lives here rather than B9. Prior art: DikuMUD `mobact.c`; Generative Agents plans.
+- **Also:** LLM importance scoring (a batched off-loop fidelity pass; the heuristic
+  suffices now); `remember_fact` (the deferred Phase 2 action — a thin high-importance
+  `add`, now that retrieval exists); in-process local embedder + sqlite-vec/ANN only if
+  scale ever demands (per-agent brute-force is fine indefinitely).
 
 ### Phase 6 — Rich transport & multiplayer  ○
 WebSocket transport implementing the same `Handler` contract; emit `map` /
@@ -808,7 +880,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (444 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (488 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*
@@ -857,8 +929,9 @@ versioning for save data · cost & latency budgets for AI calls · keeping `loom
 free of game-specific content.
 
 Unscheduled improvements noticed during review live in `docs/BACKLOG.md`. Open as
-of 2026-07-14: fused speech+action rendering (B2) · rich text formatting (B3) · world
-atlas (B7) · exercising the `loom-gm` variant (B10). Done and folded in: B1 (command
+of 2026-07-20: world atlas (B7) · exercising the `loom-gm` variant (B10) · plus the
+Phase 5 remaining threads (reflection · durable player identity · idle-NPC autonomy).
+Done and folded in: B2 (fused rendering) · B3 (rich text) · B1 (command
 grammar), B4 (choice-to-react), **B5 (NPC `move` ceiling — the two-pass act-gate,
 2026-07-13: authoritative-action decision, 8/8 gated vs ~70% blended, no regressions,
 game default on)**, B6 (envelope leak, retired by constrained decoding), **B8
