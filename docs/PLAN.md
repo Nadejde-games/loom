@@ -1011,9 +1011,20 @@ WebSocket transport implementing the same `Handler` contract; emit `map` /
 `entities` channels for an ascii/2D client. Harden true multiplayer presence
 (players see and hear each other; per-room broadcast).
 
-### Phase 7 — Authoring tools  ○
+### Phase 7 — Authoring tools  ◐
 AI-assisted world creation and editing over the world schema — descriptions,
 regions, NPCs, story — with validation. The GM/creator toolkit.
+
+*Opened 2026-07-21.* Building the **read/validate side first**, then the AI author.
+- **B7 — the world atlas (BUILT 2026-07-21, offline-gated, commit pending).**
+  `loom/atlas.py` surveys a loaded world into a serialisable `AtlasView` (rooms +
+  exits, character sheets, item table, `meta`) and lints it (errors that break the
+  world · warnings for design oddities); `render_text` / `render_markdown` / `mermaid`
+  present it; `scripts/atlas.py` is the CLI (exits non-zero on error → CI-gateable).
+  611 offline green. Spike: `docs/spikes/atlas.md`; status: `docs/BACKLOG.md` B7.
+- **Next — the write side:** AI-assisted authoring (a brief → a valid `world.json`)
+  with a generate→validate→repair loop, using the atlas's findings as its judge. Its
+  own research + spike + sign-off when we reach it.
 
 ## Testing discipline — two gates, run BOTH after every implementation phase
 

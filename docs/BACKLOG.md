@@ -372,7 +372,35 @@ opposite of clean silence), B5 (action-selection reliability).
 ---
 
 ## B7 — World atlas / explorer (render a world.json into a readable overview)
-*Noticed 2026-07-12. Lands in **Phase 7 (authoring tools)**.*
+*Noticed 2026-07-12. **BUILT 2026-07-21** — the first slice of Phase 7 (authoring
+tools); commit pending.*
+
+> **Status — built & offline-gated 2026-07-21.** The read/validate side of the
+> authoring loop. Design spike: `docs/spikes/atlas.md`.
+> - **`loom/atlas.py` (framework, zero new deps):** `survey(world, start) ->
+>   AtlasView` — one pure pass gathering room records (exits + reciprocity flags),
+>   a character sheet per NPC, an item table, the `meta` blocks, summary counts, and
+>   a structural-lint report of `Finding{severity, code, where, message}`. Plus pure
+>   `render_text` / `render_markdown` / `mermaid` renderers (two surfaces, one survey
+>   — Phase 6's `map` channel can reuse `mermaid(view)`).
+> - **Validator** (the bridge to the write side — same findings feed a human *and*
+>   the future generate→validate→repair loop). Errors: `dangling-exit`, `bad-holder`,
+>   `bad-location`, `bad-start`, `bad-direction`, `id-collision`. Warnings:
+>   `unreachable-room` (BFS from start), `one-way-exit`, `reverse-mismatch`,
+>   `dead-end`, `no-entrance`, `thin-content`, `floating-item`.
+> - **`scripts/atlas.py`:** thin CLI — `PYTHONPATH=. python scripts/atlas.py [path]
+>   [--format text|md]`. Exits non-zero on any error, so it gates a generated world.
+> - **Gate:** offline **611 green** (582 + 29 new, `tests/test_atlas.py`); no live
+>   gate (no prompt/action/perception change, no model call). Shipped world surveys
+>   clean (0/0).
+> - **Prior art** (surveyed 2026-07-21): Inform's Index, Trizbort, Twine, TADS 3
+>   Cartographer, Evennia, CircleMUD `Fix_exits` → adjacency-listing + graph-dump is
+>   the accepted lightweight map; ship the validator alongside from day one.
+> - **Deferred:** a drawn 2D/grid map (steal Inform's separate layout-hint layer),
+>   region/zone colour-grouping (no region concept yet), DOT/SVG surfaces, and
+>   within-list duplicate-id detection (belongs in the loader).
+
+*Original note (2026-07-12):*
 
 **Want:** a way to *see* a whole world at a glance without playing through it — a
 map (rooms + exits), a character sheet per NPC (the persona: backstory, traits,
