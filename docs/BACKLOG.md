@@ -641,14 +641,21 @@ source that writes to the chronicle.
   (`tests/test_weather.py`, scripted RNG) + no new behavioral scenario (weather stirs
   the world exactly as the clock does → the reaction path, already `npc.reacts-to-world`;
   full harness re-run 20/20 regardless).
-- ~~**Idle NPC autonomy**~~ — **moved to Phase 5 (2026-07-12), see the CLOSED note at
-  the top of B9.** NPCs that act or speak unprompted (DikuMUD `mobact.c`: a separate,
-  slower, per-mob-gated pulse). Its *mechanism* is a cheap NPC-side lull mirror; its
-  *quality* wanted Phase 5's mind depth + act-gate. **Update 2026-07-20: every
-  prerequisite has now landed** — the model-side act-gate (B5/B8, `e94a218`), reflection
-  (`27fea59`, so an idle NPC stirs from a distilled goal, not mechanical recency), and
-  durable identity (`635ce82`). This is the last remaining Phase 5 thread and the natural
-  next build.
+- ~~**Idle NPC autonomy**~~ — **LANDED 2026-07-20 as Phase 5 slice 4 (uncommitted at
+  write; both gates green).** NPCs that act or speak unprompted (DikuMUD `mobact.c`: a
+  separate, slower, per-NPC-gated pulse). Its *mechanism* was a cheap NPC-side lull mirror;
+  its *quality* wanted Phase 5's mind depth + act-gate — all prerequisites landed first
+  (act-gate `e94a218`, reflection `27fea59`, identity `635ce82`). Built as a new `Idler`
+  system (`loom/ai/idle.py`, the `Reflector` skeleton) + `NpcMind.stir`: one NPC in a quiet,
+  player-occupied room stirs from its own goal (reflections surface via retrieval), most
+  often silent, delivered through `_deliver_turn` and cascading like any turn. **Peer to the
+  director's lull** (signed off) — both read room-quiet off the shared chronicle, so they
+  suppress each other; the settled "director shapes the world, minds move themselves" line
+  holds. **Wandering** (signed off): a roamer (authored `wanders` — Wren) may walk an exit,
+  an anchored one (Odd) is held by a hard rail. Gates: offline **552** (`tests/test_idle.py`,
+  17 tests) + live `idle.stirs-unbidden` 3/8 & `idle.reticent-stays-still` 6/8 (the
+  engagement/restraint pair). Spike: `docs/spikes/idle-npc.md`. **B9 is now fully closed** —
+  every autonomy thread, world-side and character-side, is in.
 
 **Related:** Phase 3 (director), B8 (restraint — the counter-force to balance),
 Phase 5 (deeper minds / autonomy).

@@ -85,6 +85,7 @@ def _ingest(world: World, data: dict) -> str | None:
             description=n.get("description", ""),
             location_id=n.get("location"),
             persona=n.get("persona", {}),
+            wanders=bool(n.get("wanders", False)),
         ))
     for it in data.get("items", []):
         world.add_entity(Item(

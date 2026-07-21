@@ -734,6 +734,80 @@ async def run_react_scenario(provider, sc: ReactScenario):
     return successes, samples
 
 
+# --- idle-NPC autonomy (Phase 5, slice 4) — the mind acts FIRST, unbidden ----------
+# The sibling of react: react answers an event; STIR springs from the NPC's own goal
+# with no event at all. Probes NpcMind.stir directly (the mind's *initiative*). A
+# tension pair, like the director act-gate and the react pair — it must DISCRIMINATE:
+#   * idle.stirs-unbidden       — a gregarious, goal-driven NPC (Wren) sometimes acts
+#                                 or speaks of its own accord in a quiet moment.
+#   * idle.reticent-stays-still — a reticent NPC (Odd) mostly stays silent when nothing
+#                                 prompts it — the high idle silence bar, so the world
+#                                 does not chatter.
+# The engine's plumbing (the per-room quiet clock, the audience gate, the wanders rail,
+# one stir/pulse) is the offline suite's job (tests/test_idle.py); this is the mind gate
+# the offline fake structurally cannot see — whether the model *chooses* to stir well.
+@dataclass
+class IdleScenario:
+    name: str
+    npc_id: str
+    check: Callable                 # Turn -> bool
+    desc: str
+    may_wander: bool = False        # whether the stir framing lets it leave (a roamer)
+    n: int = 8
+    threshold: int = 2
+    gated: bool = True              # False = measured but NOT a hard gate (a watch item)
+    tags: tuple = ("idle",)
+
+
+IDLE_SCENARIOS = [
+    IdleScenario(
+        # The engagement pole: does unbidden initiative ever fire? The stir nudge
+        # carries a high silence default (as it must — most idle moments produce
+        # nothing), so even the gregarious Wren will often stay quiet; the threshold is
+        # a COLLAPSE-detector (the stir path never engaging = the feature is dead), not
+        # a rate. may_wander on (Wren is authored to roam), so a stir may be a word, a
+        # gesture, or a step down a path — any engagement counts.
+        name="idle.stirs-unbidden", npc_id="guide", may_wander=True,
+        check=NOT(is_silent), n=8, threshold=2,
+        desc="a gregarious, goal-driven NPC sometimes acts or speaks unbidden in a "
+             "quiet moment (idle initiative engages, not always-silent)"),
+    IdleScenario(
+        # The restraint pole: the reticent hermit should MOSTLY do nothing when nothing
+        # has prompted him — the counter-force that keeps an idle world from chattering.
+        # The local model under-weights 'do nothing' (cf. B4/B8), so the threshold
+        # catches a collapse of restraint, not perfection. may_wander off (Odd anchors
+        # his cave).
+        name="idle.reticent-stays-still", npc_id="hermit", may_wander=False,
+        check=is_silent, n=8, threshold=4,
+        desc="a reticent NPC mostly stays silent when nothing prompts it (the idle "
+             "silence bar holds — the world does not chatter)"),
+]
+
+
+async def run_idle_scenario(provider, sc: IdleScenario):
+    world, start = load_world(WORLD)
+    engine = Engine(world, provider, start_location=start)
+    npc = world.entities[sc.npc_id]
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        # Fresh mind (fresh memory) per trial, offered the same action subset the
+        # engine gives NPCs — a stir may be a word OR a real deed (a step, a gesture).
+        scene = engine._scene_for(npc, npc.location_id)
+        mind = NpcMind(npc, provider, registry=engine.actions,
+                       offered=engine.npc_actions)
+        try:
+            turn = await mind.stir(scene, may_wander=sc.may_wander)
+            ok = bool(sc.check(turn))
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        acts = ",".join(f"{a.name}{a.args}" for a in turn.actions) or "-"
+        tag = "SILENT" if turn.is_silent else f'"{turn.speech}" [{acts}]'
+        samples.append((ok, tag))
+    return successes, samples
+
+
 async def run_scenario(provider, sc: Scenario):
     world, start = load_world(WORLD)
     if sc.setup:
@@ -1049,17 +1123,19 @@ async def main():
     chosen_dir = [s for s in DIRECTOR_SCENARIOS if picks(s)]
     chosen_gate = [s for s in GATE_SCENARIOS if picks(s)]
     chosen_react = [s for s in REACT_SCENARIOS if picks(s)]
+    chosen_idle = [s for s in IDLE_SCENARIOS if picks(s)]
     chosen_loot = [s for s in LOOT_SCENARIOS if picks(s)]
     chosen_mem = [s for s in MEMORY_SCENARIOS if picks(s)]
     chosen_refl = [s for s in REFLECTION_SCENARIOS if picks(s)]
     chosen_ident = [s for s in IDENTITY_SCENARIOS if picks(s)]
     if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react,
-                chosen_loot, chosen_mem, chosen_refl, chosen_ident)):
+                chosen_idle, chosen_loot, chosen_mem, chosen_refl, chosen_ident)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
                       | {t for s in GATE_SCENARIOS for t in s.tags}
                       | {t for s in REACT_SCENARIOS for t in s.tags}
+                      | {t for s in IDLE_SCENARIOS for t in s.tags}
                       | {t for s in LOOT_SCENARIOS for t in s.tags}
                       | {t for s in MEMORY_SCENARIOS for t in s.tags}
                       | {t for s in REFLECTION_SCENARIOS for t in s.tags}
@@ -1068,8 +1144,9 @@ async def main():
         return 2
 
     total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
-             + len(chosen_gate) + len(chosen_react) + len(chosen_loot)
-             + len(chosen_mem) + len(chosen_refl) + len(chosen_ident))
+             + len(chosen_gate) + len(chosen_react) + len(chosen_idle)
+             + len(chosen_loot) + len(chosen_mem) + len(chosen_refl)
+             + len(chosen_ident))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -1148,6 +1225,17 @@ async def main():
         if not ok:
             for hit, detail in samples:
                 print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    for sc in chosen_idle:
+        # Phase 5, slice 4: an NPC stirs of its own accord (stir, not react) — the
+        # engagement/restraint tension pair.
+        successes, samples = await run_idle_scenario(provider, sc)
+        ok, v = verdict(sc, successes)
+        print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        # Show the stirs even on a pass — the point is to read the unbidden lines.
+        for hit, detail in samples:
+            print(f"          {'ok ' if hit else 'MISS'} {detail}")
 
     for sc in chosen_loot:
         # Phase 4: the loot forge authors schema-valid, in-theme flavour for a

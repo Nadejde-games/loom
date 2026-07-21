@@ -21,6 +21,13 @@ class Npc(Character):
     # Free-form persona the AI layer turns into a system prompt.
     # Conventional keys: backstory, traits[], goals[], voice.
     persona: dict = field(default_factory=dict)
+    # Whether this NPC may wander of its own accord (idle-NPC autonomy, Phase 5):
+    # the SENTINEL mirror. Opt-in, default off — a base-engine or unauthored NPC
+    # never leaves its room on a lull. Authored true for a roamer (a wayfinder);
+    # a rooted character (a hermit, a quest-giver) stays put and only speaks/emotes
+    # in place. Enforced as a hard rail by the ``Idler`` (a move from a non-wanderer
+    # is stripped), never merely by the prompt.
+    wanders: bool = False
 
 
 @dataclass

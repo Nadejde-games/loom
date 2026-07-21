@@ -8,7 +8,7 @@
     ]
   },
   "clock": {
-    "factor": 2.0,
+    "factor": 1.0,
     "start_minute": 1050,
     "phases": [
       {
@@ -38,8 +38,8 @@
     ]
   },
   "weather": {
-    "period_pulses": 24,
-    "change_chance": 0.4,
+    "period_pulses": 36,
+    "change_chance": 0.3,
     "start_index": 1,
     "states": [
       {
@@ -142,6 +142,7 @@
       "name": "Wren the Wayfinder",
       "description": "A wiry, sun-browned young woman with a walking staff and a satchel of maps, always half-turned toward the next path.",
       "location": "cave_mouth",
+      "wanders": true,
       "persona": {
         "backstory": "You have guided travelers through these hills since you were a girl, for coin and for the pleasure of showing a stranger something new. You know every path, and you are the cheerful opposite of the old hermit who keeps to his cave.",
         "traits": ["cheerful", "obliging", "brisk", "curious", "quick to trust"],

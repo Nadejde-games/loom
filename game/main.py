@@ -10,6 +10,7 @@ from loom import GameServer, GameLoop, Engine, log
 from loom.ai import (get_default_provider, get_default_embedder, OllamaProvider,
                      VLLMProvider, OpenRouterProvider, MemoryStore)
 from loom.content import load_world
+from loom.world import Npc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -128,7 +129,9 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     # The lull trigger (B9): after this many quiet pulses since its last beat, the
     # director stirs a still room with one gentle beat — a liveliness floor beside
     # the world-clock's sparser turnings. 0 = off (pure restraint). We opt in here.
-    lull = int(os.environ.get("LOOM_DIRECTOR_LULL", "4"))
+    # Set to 6 (from 4) so a quiet room is poked less often — the ambient world was
+    # tuned calmer overall (slower clock/weather too), leaving room for idle-NPC stirs.
+    lull = int(os.environ.get("LOOM_DIRECTOR_LULL", "6"))
     # Off-screen staging (B9): let the director see and foreshadow into the empty
     # rooms just ahead of the players. On here; LOOM_DIRECTOR_FORESHADOW=0 to disable.
     foreshadow = os.environ.get("LOOM_DIRECTOR_FORESHADOW", "1") not in ("0", "", "false")
@@ -171,6 +174,26 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
         print(f"[game] memory reflection: every {r_period} ticks "
               f"(when an agent's accumulated importance >= {r_threshold}), NPCs + director"
               + (", with a visible tell" if r_tell else ""))
+
+    # Idle-NPC autonomy (Phase 5, slice 4): a character that moves *first*. On a slow
+    # cadence, one NPC in a quiet, occupied room acts or speaks unbidden from its own
+    # goal (grounded in its reflections) — the NPC-side mirror of the director's lull,
+    # and its peer: both read "room quiet" off the shared chronicle, so a director beat
+    # and an idle stir suppress each other. LOOM_IDLE_NPC is the quiet-pulse floor (0 =
+    # off); kept level with LOOM_DIRECTOR_LULL so neither always breaks the silence
+    # first. A roamer (an NPC authored "wanders" — Wren) may walk an exit; an anchored
+    # one (Odd) is held in place. On here; LOOM_IDLE_NPC=0 to disable.
+    idle_quiet = int(os.environ.get("LOOM_IDLE_NPC", "4"))
+    if idle_quiet > 0:
+        idle_period = int(os.environ.get("LOOM_IDLE_PERIOD", "12"))  # ticks between pulses
+        idle_cooldown = int(os.environ.get("LOOM_IDLE_COOLDOWN", "3"))
+        engine.attach_idler(loop, period_ticks=idle_period,
+                            quiet_pulses=idle_quiet, cooldown_pulses=idle_cooldown)
+        roamers = [e.name for e in world.entities.values()
+                   if isinstance(e, Npc) and getattr(e, "wanders", False)]
+        print(f"[game] idle-NPC autonomy: a stir every {idle_period} ticks after "
+              f"{idle_quiet} quiet pulses"
+              + (f"; roamers: {', '.join(roamers)}" if roamers else "; all NPCs stay put"))
 
     # The world-clock: the world's own time, advancing on the loop whether or not
     # anyone is present (B9). Time-of-day turns through a table authored in the

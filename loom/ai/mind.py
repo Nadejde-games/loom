@@ -502,6 +502,86 @@ class NpcMind:
                 self.memory.add(f'I said: "{speech}"', kind="speech")
         return turn
 
+    # ---- idle-NPC autonomy (Phase 5, slice 4): act first, of one's own accord ----
+    def _stir_query(self) -> str:
+        """The retrieval query for an idle stir: the NPC's own *purpose*, so recall
+        surfaces goal-bearing memory and distilled beliefs (reflections) rather than
+        the last thing that happened. Falls back to the backstory, then the
+        character's own name — enough to bias retrieval toward what concerns it even
+        with no authored goals."""
+        p = self.npc.persona or {}
+        if p.get("goals"):
+            return "What I want right now: " + "; ".join(str(g) for g in p["goals"])
+        if p.get("backstory"):
+            return str(p["backstory"])
+        return f"What is on {self.npc.name}'s mind, and what they would do now"
+
+    def _stir_nudge(self, may_wander: bool) -> str:
+        where = ('If your own purpose truly draws you elsewhere, you may leave — use '
+                 '"move" with one of the exits from your surroundings. '
+                 if may_wander else
+                 "You keep to this place; do not try to leave it. ")
+        return (
+            "The moment is quiet. No one has spoken to you and nothing has happened "
+            "— you are simply here, with your own thoughts and your own purpose.\n"
+            "Is there something you would do or say right now, entirely of your own "
+            "accord — a remark to yourself or to the room, a small deed, something "
+            "your character wants to see done? Act ONLY if it rises genuinely from "
+            "who you are and what you want. A real person mostly stands quiet in an "
+            "idle moment: silence is the honored default, and if nothing truly moves "
+            'you, reply with exactly {"speech": "", "actions": []}.\n'
+            + where +
+            "Never speak or act merely to fill the silence."
+        )
+
+    async def stir(self, scene: Scene | None = None,
+                   may_wander: bool = False) -> Turn:
+        """Act of the NPC's *own initiative* in a quiet moment — the idle-NPC
+        autonomy path (Phase 5, slice 4). Nothing has prompted this: no one has
+        spoken, no event has landed. Given who the character is and what it wants,
+        it may do or say something unbidden — or, as most often, stay silent.
+
+        Unlike ``react`` (an event to weigh) there is no stimulus at all; the turn
+        springs from the NPC's own goal and its distilled beliefs (reflections),
+        surfaced by retrieving against its *purpose* rather than a passing event.
+        The silence bar is deliberately high — an idle person mostly stands quiet —
+        so a barren pulse costs a single call and renders as nothing (B4). One
+        blended call, like ``react`` (not the two-pass gate): idle pulses are
+        frequent, so the stir is cheap. ``may_wander`` says whether this character
+        may leave its room of its own accord; when False the framing keeps it in
+        place (and the ``Idler`` strips any move as a hard rail regardless).
+        """
+        mems = await self._recall(self._stir_query(), scene)
+        system = self._system_prompt(scene, mems)
+        messages = [{"role": "user", "content": self._stir_nudge(may_wander)}]
+        schema = (self.registry.json_schema(self.offered)
+                  if self.registry is not None else None)
+
+        raw = await self.provider.complete(system, messages, schema=schema)
+        speech, actions, errors = self._parse_turn(raw)
+        if errors and self.registry is not None:
+            correction = ("Your previous reply proposed invalid actions:\n"
+                          + "\n".join(f"- {e}" for e in errors)
+                          + "\nReply again as a single JSON object; fix or omit "
+                            "those actions.")
+            retry = messages + [
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": correction},
+            ]
+            raw2 = await self.provider.complete(system, retry, schema=schema)
+            speech2, actions2, _ = self._parse_turn(raw2)
+            speech = speech2 or speech
+            actions = actions2
+
+        turn = Turn(speech=speech, actions=actions)
+        # Record only an engaged stir (a silent one writes nothing — no event to
+        # note, and idle silence must not flood the stream). The spoken line is
+        # marked unbidden so later recall and reflection can tell initiative from
+        # reply. A deed's effect is world state; nothing extra is recorded for it.
+        if not turn.is_silent and speech:
+            self.memory.add(f'Unbidden, I said: "{speech}"', kind="speech")
+        return turn
+
     def _parse_turn(self, raw: str) -> tuple[str, list, list]:
         """Return (speech, valid_intents, errors_for_invalid_proposals)."""
         return parse_turn(self.registry, raw)

@@ -3,10 +3,10 @@
 Living document. The reference for where we are and where we're going.
 Last updated: 2026-07-20.
 
-## Status snapshot — 2026-07-20 (Phase 5: persistence + memory depth + reflection + identity)
+## Status snapshot — 2026-07-20 (Phase 5: persistence + memory depth + reflection + identity + idle-NPC)
 
-**Phase 5 is underway** — five landed slices past the Phase 4 status block below, both gates
-green throughout (offline **535**):
+**Phase 5's headline threads are all in** — six landed slices past the Phase 4 status block
+below, both gates green throughout (offline **552**):
 - **Persistence (`fe07e0c`)** — the world survives a restart. A versioned JSON *overlay*
   of mutable runtime state (entity positions, forged loot, conditions, quests, clock/
   weather, chronicle) composed onto the authored `world.json` reloaded each boot; snapshot
@@ -30,7 +30,7 @@ green throughout (offline **535**):
   mirrors `Director`; NPCs and the director both reflect. Shipped with **real-time server
   logging** (`loom/log.py`: `event`/`debug` under `LOOM_VERBOSE`, flushed). Spike:
   `docs/spikes/reflection.md`.
-- **Durable player identity + accretion (uncommitted, both gates green)** — the DikuMUD line:
+- **Durable player identity + accretion (`635ce82`, both gates green)** — the DikuMUD line:
   the player's **name is the key**, identity == character, one durable `PlayerRecord` per name
   folded into the JSON overlay. An opt-in `require_login` flag (base engine unchanged — the
   anonymous Wanderer path all prior tests use is default): connect → name prompt (not auto-mint);
@@ -40,11 +40,21 @@ green throughout (offline **535**):
   existing memory line meaningful across sessions, surfaced by relevance retrieval — the world
   remembers you (reconnect seeds present NPCs with "<name> has returned"). No player memory stream
   (deferred — a recap feature). `loom/identity.py`. Spike: `docs/spikes/identity.md`.
-Live: `memory.paraphrase-relevance` 3/3, `reflection.distills-a-belief` 3/3, and
-`identity.remembers-a-returning-player` 3/3 on bge-m3 + qwen3.6, plus live restart proofs.
-**Remaining in Phase 5:** idle-NPC autonomy (reflection, its prerequisite, is now in), plus
-reflection polish (persist the watermark, fairer scheduling, depth>1, LLM importance) — and
-identity follow-ups (password auth, a player recap stream) — see the Phase 5 entry.
+- **Idle-NPC autonomy (uncommitted, both gates green)** — a character that moves **first**, the
+  last headline Phase-5 thread and the NPC-side mirror of the director's lull. A slow, opt-in
+  `Idler` (the `Reflector` skeleton) lets one NPC in a quiet, player-occupied room *stir* of its
+  own accord — act or speak unbidden from its own goal (`NpcMind.stir`, grounded by retrieving
+  against its purpose so reflections surface), most often choosing silence. Peer to the director:
+  both read "room quiet" off the shared chronicle, so a director beat and an idle stir suppress
+  each other. A roamer (an NPC authored `wanders` — Wren) may walk an exit; an anchored one (Odd)
+  is held by a hard rail. `loom/ai/idle.py`. Spike: `docs/spikes/idle-npc.md`.
+Live: `memory.paraphrase-relevance` 3/3, `reflection.distills-a-belief` 3/3,
+`identity.remembers-a-returning-player` 3/3 on bge-m3 + qwen3.6, `idle.stirs-unbidden` 3/8 +
+`idle.reticent-stays-still` 6/8 (the engagement/restraint pair), plus live restart proofs.
+**Remaining in Phase 5 (polish only — the headline threads are done):** reflection polish
+(persist the watermark, fairer scheduling, depth>1, LLM importance); identity follow-ups
+(password auth, a player recap stream); idle-NPC depth (multi-room pathing toward a goal, a real
+plan object) — see the Phase 5 entry.
 
 ## Status snapshot — line drawn 2026-07-14
 
@@ -820,7 +830,7 @@ already gives per-player context and a deterministic hook):
   unique/set fixed items; identification; a wider item-type/slot vocabulary. All grow the
   content later without moving the seam.
 
-### Phase 5 — Deeper minds & persistence  ▶ (persistence + memory depth + reflection + identity landed 2026-07-20; idle-NPC remains)
+### Phase 5 — Deeper minds & persistence  ▶ (persistence + memory depth + reflection + identity + idle-NPC landed 2026-07-20; polish remains)
 Importance scoring, embedding retrieval (SQLite + brute-force cosine), and reflection on
 the memory stream; persist world + memories across restarts; player personality/history
 accretion on the same substrate as NPCs. **The loose end it closes:** the world, all NPC
@@ -896,7 +906,7 @@ reflection is *just another memory*, so no memory-seam change.
   promises into grounded, in-voice beliefs that surface on a paraphrase query. Spike:
   `docs/spikes/reflection.md`.
 
-**Built — durable player identity + accretion (slice 3, uncommitted, both gates green).**
+**Built — durable player identity + accretion (slice 3, `635ce82`, both gates green).**
 The crux persistence deferred — a player who survives a disconnect and a restart, and whose
 history accretes on the same memory substrate as the NPCs. The DikuMUD line
 (`docs/spikes/identity.md`, from a two-front prior-art survey — MUD identity/login/link-dead
@@ -927,13 +937,54 @@ account object); one `PlayerRecord` per name, folded into the JSON overlay.
   memory above four others' purely by durable name (person-keyed recall). Spike:
   `docs/spikes/identity.md`.
 
-**Remaining in Phase 5 (start each with a prior-art survey + a design proposal for
-sign-off — the standing rule):**
-- **Idle-NPC autonomy (moved from B9, 2026-07-12)** — NPCs that act or speak *unprompted*
-  during a lull (a cheap `NpcMind.stir` reusing `_deliver_turn` + the reaction cascade).
-  The *mechanism* is cheap, but its *quality* wanted reflection + the model-side act-gate —
-  **both are now in**, so this is unblocked and the natural next thread. Prior art: DikuMUD
-  `mobact.c`; Generative Agents plans.
+**Built — idle-NPC autonomy (slice 4, uncommitted, both gates green).** The last headline
+Phase-5 thread: a character that moves **first**, unprompted, from its own goal — the missing
+half of a living world (the quiet room already breathes; the NPCs already *react*; what was
+absent was *initiative*). Its quality wanted reflection + the act-gate, both now in
+(`docs/spikes/idle-npc.md`, from a prior-art survey — DikuMUD `mobact.c`, Generative-Agents
+plans, The Sims' motives, L4D pacing).
+- **The `Idler`** (`loom/ai/idle.py`) copies the `Reflector` skeleton — install → `add_system` →
+  tick gated on `_ticks`/`_running`, one stir per pulse on a tracked background task. Each pulse
+  it reads **per-room quiet off the shared chronicle** (a room's max `seq` per pulse), and stirs
+  one NPC in a room that has been quiet `quiet_pulses` pulses, has a **player present** (a
+  per-room audience gate, stricter than the director's global one), and holds an NPC off its
+  per-NPC cooldown. Lazy first-sight init (never stirs on attach); one stir per pulse, no chorus.
+- **`NpcMind.stir`** — a single goal-grounded call (like `react`, not the two-pass gate: idle
+  pulses are frequent). It retrieves against the NPC's *purpose* so persona goals and distilled
+  reflections surface, frames "nothing prompted you — act unbidden or stay silent; silence is the
+  honored default", and returns a `Turn` usually empty. Delivered through `_deliver_turn` and
+  then `_spawn_reaction`, so a stir chronicles, records memory when engaged, and **cascades** like
+  any turn — nothing downstream can tell an unbidden beat from a reply.
+- **Coordination — peer systems, mutual suppression (signed off).** The director owns the
+  *environment's* initiative, the Idler a *character's*; both read the same chronicle quiet
+  signal, so a director beat resets a room's idle clock (the Idler skips it) and an idle stir
+  reads to the director as real activity — at most one silence-break per window, keeping the
+  Phase-3 line intact (the director shapes the world; minds move themselves). **Field-tuned
+  2026-07-21:** the quiet clock discounts pure atmosphere (`kind="ambient"` clock/weather),
+  which was starving the Idler in a world with a running clock; the director's beat records
+  `kind="action"` and still suppresses. Ambient cadence eased too (slower clock/weather, director
+  lull 4→6). See the spike's "Field tuning" note.
+- **Wandering — signed off (also wander).** A stir may take the existing validated `move`, so an
+  NPC walks an exit of its own accord (mobact's wander), with departure/arrival narration free via
+  `_deliver_turn`. Guarded by a per-NPC **`wanders` flag** (the `SENTINEL` mirror, opt-in default
+  off) enforced as a **hard rail** — the Idler strips any move from a non-`wanders` NPC. The game
+  authors the policy: Wren the Wayfinder roams, Odd the Hermit anchors his cave. `attach_idler`;
+  `game/main.py` opts in (`LOOM_IDLE_NPC`, level with `LOOM_DIRECTOR_LULL`).
+- **Gates.** Offline **552** (`tests/test_idle.py`, 17 tests: the quiet clock, the audience gate,
+  cadence, one-stir-per-pulse + rotation, non-overlap, director-beat suppression, the `wanders`
+  strip rail, wanderer-moves, silence honored, stir→cascade, and the flag's load). Live: the
+  engagement/restraint pair — `idle.stirs-unbidden` **3/8** (Wren stirred from her goal and walked
+  the path: *"Come along, the view is worth the climb!"* → move north) and
+  `idle.reticent-stays-still` **6/8** (Odd mostly still, never wandering) — a discriminating pair,
+  not always-on, not always-silent. Spike: `docs/spikes/idle-npc.md`.
+
+**Remaining in Phase 5 (polish only — the headline threads are done; start each with a
+prior-art survey + a design proposal for sign-off, the standing rule):**
+- **Idle-NPC depth (follow-ups to slice 4):** multi-room pathing (walk *several* rooms toward a
+  destination, not one adjacent step per stir); a real per-NPC plan/agenda object (the GA
+  hierarchical day-plan we approximate with retrieval); an optional two-pass act-gate on the stir
+  if the single-call silence bar proves too loose live; authored clock-hooked routines (Ultima-VII
+  schedules) if wanted. All refinements, not gaps.
 - **Reflection polish (follow-ups to `27fea59`):** persist the reflection watermark (in-memory
   today, resets on restart); fairer scheduling (one-agent-per-pulse lets the busiest agent
   monopolize); depth>1 (reflections on reflections — the GA tree); LLM importance for the
@@ -962,7 +1013,7 @@ regions, NPCs, story — with validation. The GM/creator toolkit.
 There are two layers to every feature, and they need two different gates.
 
 1. **The offline unit/integration suite** — `python -m unittest discover -s tests`
-   (535 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
+   (552 tests, no GPU, deterministic via `FakeProvider`). Proves the **engine**:
    given a valid action, the world changes correctly. Fast; run constantly.
 2. **The live behavioral harness** — `scripts/behavior_probe.py` against the real
    model. Proves the **mind**: does the model *choose* the right action and *use*
@@ -1012,7 +1063,8 @@ free of game-specific content.
 
 Unscheduled improvements noticed during review live in `docs/BACKLOG.md`. Open as
 of 2026-07-20: world atlas (B7) · exercising the `loom-gm` variant (B10) · plus the
-Phase 5 remaining threads (durable player identity · idle-NPC autonomy · reflection polish).
+Phase 5 polish (idle-NPC depth · reflection polish · identity follow-ups) — the headline
+threads (persistence · memory depth · reflection · identity · idle-NPC) are all landed.
 Done and folded in: B2 (fused rendering) · B3 (rich text) · B1 (command
 grammar), B4 (choice-to-react), **B5 (NPC `move` ceiling — the two-pass act-gate,
 2026-07-13: authoritative-action decision, 8/8 gated vs ~70% blended, no regressions,

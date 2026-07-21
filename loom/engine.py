@@ -23,6 +23,7 @@ from .ai import NpcMind, LLMProvider, ProviderError, Scene
 from .ai import intent
 from .ai.director import DirectorMind, Director
 from .ai.reflection import Reflector
+from .ai.idle import Idler
 from .ai import loot as loot_ai
 from . import command
 from . import log
@@ -159,6 +160,10 @@ class Engine:
         # has lived enough salient memory, distills it into higher-level "reflection"
         # memories on the same substrate. None until opted in.
         self.reflector: Reflector | None = None
+        # The idler (attach_idler; Phase 5, slice 4), if a game attaches one. On a slow
+        # cadence it lets one NPC in a quiet, occupied room act or speak unbidden from
+        # its own goal — the NPC-side mirror of the director's lull. None until opted in.
+        self.idler: Idler | None = None
         # The world's own clock, if a game attaches one (attach_clock; B9). It
         # advances time-of-day on the loop whether or not a player is present, so a
         # still world stirs on its own. None until wired — the base engine has no
@@ -872,6 +877,26 @@ class Engine:
             max_insights=max_insights, tell=tell)
         self.reflector.install(loop)
         return self.reflector
+
+    def attach_idler(self, loop, *, period_ticks: int = 12,
+                     quiet_pulses: int = 4, cooldown_pulses: int = 3) -> Idler:
+        """Give this world idle-NPC autonomy and hang it off ``loop`` (Phase 5, slice 4).
+
+        On a slow cadence (``period_ticks`` between pulses), the idler lets one NPC in a
+        quiet, player-occupied room *stir* of its own accord — act or speak unbidden from
+        its own goal (``NpcMind.stir``), most often choosing silence. A room is eligible
+        only after ``quiet_pulses`` pulses with no new chronicle event (so it never talks
+        over a live scene or a director beat — the two suppress each other off the shared
+        chronicle), and a stirred NPC then rests ``cooldown_pulses``. One stir per pulse,
+        on a background task, non-overlapping — the ``Reflector`` skeleton. A roamer (an
+        NPC authored ``wanders``) may move to an adjacent exit; an anchored one is held in
+        place by a hard rail. Off until a game opts in; the base engine has no idle
+        initiative. Returns the ``Idler`` (also on ``self.idler``)."""
+        self.idler = Idler(self, period_ticks=period_ticks,
+                           quiet_pulses=quiet_pulses,
+                           cooldown_pulses=cooldown_pulses)
+        self.idler.install(loop)
+        return self.idler
 
     async def narrate_reflection(self, agent_id: str) -> None:
         """A perceptible *tell* when an NPC reflects (Phase 5, slice 2): a quiet ambient
