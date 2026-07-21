@@ -691,5 +691,62 @@ world at once).
 
 ---
 
-*Add new observations below with an ID (`B11…`), a date, and the same
+## B11 — Compound & chained player commands (conjunctions, multiple verbs)
+*Noticed 2026-07-21 (playing the idle-NPC build).*
+
+**Want:** a player can issue more than one thing per line, the way people actually
+type:
+- **Conjoined objects** — `take lantern and key` → take BOTH (two `take_item`
+  proposals), not hunt for one item literally named "lantern and key".
+- **Chained commands** — `look at Wren and say what is this place?` → run TWO
+  commands in order (examine Wren; then say "what is this place?"), not treat the
+  whole tail as one target.
+
+**Today** the parser (`loom/command.py:parse`) is strictly one-verb-per-line: it
+matches a single verb, then splits the remainder into a direct/indirect object on
+the verb's preposition. So both examples fail — `take lantern and key` looks for an
+item called "lantern and key", and `look at Wren and say what is this place?`
+yields `You see no "Wren and say what is this place?" here.` (the observed error).
+B1 (DONE) gave synonym/phrasing flexibility for a SINGLE command; this is the
+orthogonal axis — MULTIPLE commands from one line.
+
+**The subtlety (why a naive split on "and" is wrong):** a free-text verb must still
+swallow its remainder verbatim — `say hello and goodbye` is ONE utterance, not "say
+hello" then a "goodbye" command. So the splitter must:
+- never split inside a free-text verb's payload (say/tell keep the rest verbatim);
+- treat "and" / "," / "then" between OBJECTS of the same verb as a conjunction
+  (multiple objects → repeat the action);
+- treat a segment that STARTS with a known verb as a new command (a chain);
+- degrade gracefully — an ambiguous line falls through to the B1b LLM interpreter,
+  which can decompose the harder cases into a command list.
+
+**Where it lands:**
+- `loom/command.py` — `parse` (or a new `parse_line`) returns a *sequence* of
+  `Parse` results, not one; a deterministic splitter on conjunction/chain markers
+  with the free-text-swallow rule above; object conjunction expands to repeated
+  actions.
+- The engine's command dispatch (`Engine.on_input` / the command executor) applies
+  the parsed sequence in order, reporting per-command (one unresolved object must
+  not silently drop the rest).
+- `loom/naming.py` resolution is unchanged (still per-object); the splitter feeds it
+  clean single-object phrases.
+- The B1b fallback (`interpret`) may gain a "decompose into commands" mode for the
+  genuinely ambiguous lines the deterministic splitter punts on.
+
+**Considerations for later:**
+- Partial-success semantics — `take lantern and key` where only the key is present:
+  take the key, report the lantern missing, do not abort the whole line.
+- A hard cap on commands-per-line (a runaway guard, like the cascade fuse).
+- Chains that move the player between rooms (`look and go north and look` — each
+  command re-perceives the new room).
+- Both gates: offline parser tests for the splitter (deterministic — its natural
+  home), plus a live command scenario if the LLM decomposition path is added.
+
+**Related:** B1 (single-command vocabulary/synonyms — DONE; this is the
+multi-command axis), B7 (a readable world view helps authoring), Phase 6 (a richer
+client could offer structured input, but text parsing is the base).
+
+---
+
+*Add new observations below with an ID (`B12…`), a date, and the same
 what / where-it-lands / considerations shape.*
