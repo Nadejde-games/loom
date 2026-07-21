@@ -169,5 +169,143 @@ class DescribeVerbsTests(unittest.TestCase):
         self.assertNotIn("give", text)
 
 
+class ParseLineTests(unittest.TestCase):
+    """B11: compound & chained commands. The splitter is pure syntax (world-free),
+    so it is tested here; the `all`-expansion and per-command dispatch (which need
+    the world) are tested at the engine level."""
+    def setUp(self):
+        self.verbs = default_verbs()
+
+    def pl(self, text):
+        return command.parse_line(text, self.verbs)
+
+    def _shape(self, text):
+        """A compact, assertion-friendly view of a parsed line."""
+        out = []
+        for p in self.pl(text):
+            if p.verb is None:
+                out.append(("?", p.unknown))
+            elif p.verb.kind == "text":
+                out.append((p.verb.canonical, p.words))
+            elif p.all_objects:
+                out.append((p.verb.target, "ALL", p.iobj))
+            else:
+                out.append((p.verb.target, p.dobj, p.iobj))
+        return out
+
+    # --- the single-command path is unchanged (identity) ---
+    def test_single_command_is_one_parse(self):
+        self.assertEqual(self._shape("take lantern"),
+                         [("take_item", "lantern", "")])
+
+    def test_empty_line_is_no_commands(self):
+        self.assertEqual(self.pl("   "), [])
+
+    def test_single_matches_parse(self):
+        # parse_line's one segment == what parse alone yields, field for field.
+        one = command.parse("give map to Wren", self.verbs)
+        got = self.pl("give map to Wren")
+        self.assertEqual(len(got), 1)
+        self.assertEqual((got[0].verb.target, got[0].dobj, got[0].iobj),
+                         (one.verb.target, one.dobj, one.iobj))
+
+    # --- conjoined objects -> repeated actions ---
+    def test_conjoined_objects_repeat_the_action(self):
+        self.assertEqual(self._shape("take lantern and key"),
+                         [("take_item", "lantern", ""),
+                          ("take_item", "key", "")])
+
+    def test_conjoined_objects_by_comma(self):
+        self.assertEqual(self._shape("take lantern, key, rope"),
+                         [("take_item", "lantern", ""),
+                          ("take_item", "key", ""),
+                          ("take_item", "rope", "")])
+
+    def test_conjunction_distributes_over_indirect_object(self):
+        self.assertEqual(self._shape("give sword and shield to Odd"),
+                         [("give_item", "sword", "Odd"),
+                          ("give_item", "shield", "Odd")])
+
+    def test_conjoined_objects_strip_articles(self):
+        self.assertEqual(self._shape("take the lantern and the brass key"),
+                         [("take_item", "lantern", ""),
+                          ("take_item", "brass key", "")])
+
+    # --- verb-led promotion: and + verb chains; and + noun conjoins ---
+    def test_and_before_a_verb_starts_a_new_command(self):
+        self.assertEqual(self._shape("look at Wren and say what is this place?"),
+                         [("examine", "Wren", ""),
+                          ("say", "what is this place?")])
+
+    def test_and_before_go_chains(self):
+        self.assertEqual(self._shape("take gold and go north"),
+                         [("take_item", "gold", ""),
+                          ("go", "north", "")])
+
+    # --- free-text verbs swallow their remainder verbatim ---
+    def test_say_swallows_and_verbatim(self):
+        self.assertEqual(self._shape("say hello and goodbye"),
+                         [("say", "hello and goodbye")])
+
+    def test_say_swallows_to_end_of_line(self):
+        # A free-text verb is the last command on its line — periods included.
+        self.assertEqual(self._shape("say hi. go north"),
+                         [("say", "hi. go north")])
+
+    def test_chain_into_a_final_say(self):
+        self.assertEqual(self._shape("look and say I see"),
+                         [("look", "", ""), ("say", "I see")])
+
+    # --- unconditional separators: . ; then ---
+    def test_period_chains_directions(self):
+        self.assertEqual(self._shape("n. e. take lamp"),
+                         [("go", "north", ""),
+                          ("go", "east", ""),
+                          ("take_item", "lamp", "")])
+
+    def test_then_and_semicolon_chain(self):
+        self.assertEqual(self._shape("look then go north; look"),
+                         [("look", "", ""),
+                          ("go", "north", ""),
+                          ("look", "", "")])
+
+    # --- bare all / everything ---
+    def test_all_is_a_quantifier_not_a_name(self):
+        [p] = self.pl("take all")
+        self.assertTrue(p.all_objects)
+        self.assertEqual(p.verb.target, "take_item")
+
+    def test_everything_is_all(self):
+        self.assertTrue(self.pl("drop everything")[0].all_objects)
+
+    def test_all_from_source_keeps_the_source(self):
+        [p] = self.pl("take all from chest")
+        self.assertTrue(p.all_objects)
+        self.assertEqual(p.iobj, "chest")
+
+    def test_all_is_not_conjunction_expanded(self):
+        self.assertEqual(len(self.pl("take all")), 1)
+
+    # --- the runaway fuse ---
+    def test_runaway_cap_truncates_and_flags(self):
+        line = " and ".join(["go north"] * (command.MAX_COMMANDS + 5))
+        parses = self.pl(line)
+        self.assertEqual(len(parses), command.MAX_COMMANDS)
+        self.assertTrue(parses[-1].truncated)
+
+    def test_within_cap_is_not_flagged(self):
+        parses = self.pl("look and look and look")
+        self.assertFalse(parses[-1].truncated)
+
+    # --- the B1b fallback gets the segment's own text, not the whole line ---
+    def test_unknown_segment_carries_its_own_source(self):
+        # An unknown verb only becomes its own segment past an unconditional
+        # separator (`and` + a non-verb would conjoin, not chain).
+        parses = self.pl("look then frobnicate the gizmo")
+        self.assertEqual(parses[0].verb.canonical, "look")
+        self.assertIsNone(parses[1].verb)
+        self.assertEqual(parses[1].source, "frobnicate the gizmo")
+
+
 if __name__ == "__main__":
     unittest.main()

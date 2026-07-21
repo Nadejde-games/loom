@@ -56,6 +56,13 @@ Live: `memory.paraphrase-relevance` 3/3, `reflection.distills-a-belief` 3/3,
 (password auth, a player recap stream); idle-NPC depth (multi-room pathing toward a goal, a real
 plan object) — see the Phase 5 entry.
 
+**Play-loop polish (agreed direction 2026-07-21 — before Phase 7 authoring, then Phase 6
+transport):** the papercuts that hit live play, tracked in `docs/BACKLOG.md` (B11+). First
+landed: **B11 — compound & chained player commands** (`take lantern and key`, `look at Wren and
+say …`, and bare `all`) via a deterministic verb-led splitter in `command.parse_line` +
+in-order per-command dispatch; offline **582**, live `command.*` 4/4 + a live compound E2E.
+Spike: `docs/spikes/commands.md`. More papercuts (B12+) as they surface in play.
+
 ## Status snapshot — line drawn 2026-07-14
 
 Committed through the vLLM backend (`98b2341`) + its README (`5ad200a`), with the

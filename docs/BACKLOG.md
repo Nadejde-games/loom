@@ -691,8 +691,33 @@ world at once).
 
 ---
 
-## B11 — Compound & chained player commands (conjunctions, multiple verbs)
+## B11 — Compound & chained player commands (conjunctions, multiple verbs)  — LANDED 2026-07-21
 *Noticed 2026-07-21 (playing the idle-NPC build).*
+
+**Status (2026-07-21): shipped — the first play-loop-polish papercut.** Both flagged
+examples now work. A new `command.parse_line` returns a **sequence** of `Parse`; a
+deterministic, **verb-led** splitter (the TADS 3 / Inform 7 model — see
+`docs/spikes/commands.md`) treats `.` `;` `then` as unconditional command separators and
+`and` / `,` as object-conjunctions **promoted to a command boundary only when the next
+token is a known verb**; a free-text verb (`say`) swallows its remainder verbatim and is
+never re-split. Conjoined objects expand to repeated actions sharing the indirect object
+(`give sword and shield to Odd` → two gives → Odd). `Engine.on_input` applies the sequence
+**in order** (a chain that moves rooms re-perceives), with **per-command reporting** and
+**partial success** (one unresolved object never aborts the rest — the Inform
+iterate-per-object shape), the B1b fallback firing per unknown segment on that segment's
+own text, and a `MAX_COMMANDS` runaway fuse (reported, not silent). Bare **`all` /
+`everything`** shipped in the same slice (Decision 2, signed off): it expands against the
+verb's own scope — `take all` (floor), `drop all` (inventory), `take all from chest`
+(contents), `give all to X` — addressing each item by **id** so two alike-named things are
+each acted on exactly once; fixed scenery is skipped. `loom/naming.py` unchanged (fed clean
+single-object phrases). Gates: offline **582** (`tests/test_command.py::ParseLineTests`, 22
+tests + `tests/test_engine.py::EngineCompoundCommandTests`, 8 — the splitter, verb-led
+promotion, free-text swallow, object expansion, `all`-expansion, in-order dispatch, partial
+success, the fuse) + live `command.*` 4/4 (the adjacent B1b surface, no regression) + a live
+E2E of the real compound path (`take lantern and key` → both; `look at Wren and say …` →
+examine, speak, and a grounded NPC reply). **Signed-off decisions:** verb-led promotion (vs
+explicit-markers-only), and `all` included now (vs deferred). Deferred (backlog): an LLM
+*decompose* mode, `but`/exclusion, stateful cross-chain disambiguation, dotted `N.item` forms.
 
 **Want:** a player can issue more than one thing per line, the way people actually
 type:

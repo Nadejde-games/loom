@@ -81,6 +81,97 @@ def build_item_engine():
     return Engine(world, FakeProvider(), start_location="room")
 
 
+def build_multi_item_engine():
+    """One room, NPC Odd (holding a map), two floor items — for the B11 compound
+    and `all` paths: conjoined objects, `take all`, chains, partial success."""
+    world = World()
+    world.add_location(Location(id="room", name="Room", description="A bare room."))
+    world.add_entity(Npc(id="odd", name="Odd", location_id="room",
+                         persona={"voice": "terse"}))
+    world.add_entity(Item(id="lantern", name="a rusty lantern", holder="room",
+                          aliases=["lantern", "lamp"]))
+    world.add_entity(Item(id="key", name="a brass key", holder="room",
+                          aliases=["key", "brass key"]))
+    world.add_entity(Item(id="map", name="an old map", holder="odd",
+                          aliases=["map"]))
+    return Engine(world, FakeProvider(), start_location="room")
+
+
+class EngineCompoundCommandTests(unittest.IsolatedAsyncioTestCase):
+    """B11: more than one command, or object, from a single line — through the
+    real on_input dispatch, on the same seam a single command uses."""
+    async def _connect(self, engine):
+        s = FakeSession()
+        await engine.on_connect(s)
+        s.sent.clear()
+        return s
+
+    async def test_conjoined_objects_take_both(self):
+        engine = build_multi_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "take lantern and key")
+        self.assertEqual(engine.world.entities["lantern"].holder, s.player_id)
+        self.assertEqual(engine.world.entities["key"].holder, s.player_id)
+        self.assertIn("You take a rusty lantern.", s.texts())
+        self.assertIn("You take a brass key.", s.texts())
+
+    async def test_take_all_takes_every_floor_item(self):
+        engine = build_multi_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "take all")
+        self.assertEqual(engine.world.entities["lantern"].holder, s.player_id)
+        self.assertEqual(engine.world.entities["key"].holder, s.player_id)
+        # The NPC's held map is NOT on the floor, so `take all` leaves it.
+        self.assertEqual(engine.world.entities["map"].holder, "odd")
+
+    async def test_take_all_reports_each_on_its_own_line(self):
+        engine = build_multi_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "take all")
+        self.assertIn("You take a rusty lantern.", s.texts())
+        self.assertIn("You take a brass key.", s.texts())
+
+    async def test_partial_success_does_not_abort_the_chain(self):
+        engine = build_multi_item_engine()
+        s = await self._connect(engine)
+        # The middle object is absent; the ones around it still resolve and run.
+        await engine.on_input(s, "take dragon and take key")
+        self.assertEqual(engine.world.entities["key"].holder, s.player_id)
+        self.assertIn("no", s.texts().lower())     # the dragon was reported missing
+
+    async def test_chain_runs_commands_in_order(self):
+        engine = build_multi_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "take lantern then take key")
+        self.assertEqual(engine.world.entities["lantern"].holder, s.player_id)
+        self.assertEqual(engine.world.entities["key"].holder, s.player_id)
+
+    async def test_take_all_on_empty_floor_reports_nothing(self):
+        engine = build_multi_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "take all")           # clears the floor
+        s.sent.clear()
+        await engine.on_input(s, "take all")           # nothing left
+        self.assertIn("nothing here", s.texts().lower())
+
+    async def test_drop_all_returns_everything_to_the_floor(self):
+        engine = build_multi_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "take all")
+        s.sent.clear()
+        await engine.on_input(s, "drop all")
+        self.assertEqual(engine.world.entities["lantern"].holder, "room")
+        self.assertEqual(engine.world.entities["key"].holder, "room")
+
+    async def test_take_all_from_a_source(self):
+        engine = build_multi_item_engine()
+        s = await self._connect(engine)
+        await engine.on_input(s, "take all from Odd")
+        self.assertEqual(engine.world.entities["map"].holder, s.player_id)
+        # Floor items are untouched — the scope was Odd's holdings, not the room.
+        self.assertEqual(engine.world.entities["lantern"].holder, "room")
+
+
 class SilentProvider:
     """A provider whose NPC always chooses silence — an empty structured turn."""
     name = "silent"

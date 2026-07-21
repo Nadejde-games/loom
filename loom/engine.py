@@ -431,20 +431,29 @@ class Engine:
         player = self.players.get(session.id)
         if not player:
             return
-        # Parse first (B1a): flexible player text -> a canonical verb + object
-        # phrases. World-changing verbs go through the same registry seam the
-        # NPCs use; queries are handled directly; free-text verbs (say) keep
+        # Parse first (B1a/B11): flexible player text -> a *sequence* of canonical
+        # commands (one line may carry several — "take lantern and key", "look at
+        # Wren and say hi"). World-changing verbs go through the same registry seam
+        # the NPCs use; queries are handled directly; free-text verbs (say) keep
         # their words. Noun resolution against scope happens here in the engine.
-        p = command.parse(text, self.verbs)
-        # B1b: an *unrecognised verb* gets one LLM interpretation against the
-        # command grammar before we give up. A recognised verb whose object
-        # doesn't resolve is NOT sent to the model — that is a legitimate "no
-        # such thing" / disambiguation, handled deterministically below.
-        if p.verb is None and p.unknown and self.intent_fallback:
-            interpreted = await self._interpret(player, text)
-            if interpreted is not None:
-                p = interpreted
-        await self._dispatch(session, player, p)
+        parses = command.parse_line(text, self.verbs)
+        for p in parses:
+            # B1b: an *unrecognised verb* gets one LLM interpretation against the
+            # command grammar before we give up — per segment, on that segment's
+            # own text. A recognised verb whose object doesn't resolve is NOT sent
+            # to the model — that is a legitimate "no such thing" / disambiguation,
+            # handled deterministically below. The chain runs in order, so a
+            # command that moves rooms re-perceives for the ones after it.
+            if p.verb is None and p.unknown and self.intent_fallback:
+                interpreted = await self._interpret(player, p.source or text)
+                if interpreted is not None:
+                    p = interpreted
+            await self._dispatch(session, player, p)
+        # The runaway fuse tripped: a line with more than MAX_COMMANDS commands ran
+        # the first MAX_COMMANDS and dropped the rest — reported, never silent.
+        if parses and parses[-1].truncated:
+            await session.send_system(
+                f"Only the first {command.MAX_COMMANDS} commands on a line are run.")
 
     async def _dispatch(self, session: Session, player, p: command.Parse) -> None:
         """Route a parsed command — whether it came from the deterministic parser
@@ -1279,6 +1288,11 @@ class Engine:
     async def _player_action(self, session: Session, player,
                              p: command.Parse) -> None:
         v = p.verb
+        # Bare "all"/"everything" (B11): expand against the verb's own scope and
+        # act on each — the Inform iterate-per-object shape, on the same seam.
+        if p.all_objects:
+            await self._player_action_all(session, player, p)
+            return
         resolved: dict = {}
         # Indirect object first, so a dependent direct object (take X from Y:
         # the item lives in Y's contents) has its source resolved in hand.
@@ -1335,6 +1349,66 @@ class Engine:
         ack = (v.ack_source if v.ack_source and v.iobj is not None
                and v.iobj.arg in resolved else v.ack)
         await session.send_text(self._style_ack(ack, v, resolved))
+
+    async def _player_action_all(self, session: Session, player,
+                                 p: command.Parse) -> None:
+        """``take all`` / ``drop all`` / ``take all from chest`` / ``give all to X``
+        (B11). Resolve any indirect object once, enumerate the direct-object scope
+        into a snapshot, then run the action per portable item — each acknowledged
+        on its own line (Inform's per-object reporting), skipping fixed scenery, and
+        never aborting the rest on one failure. Items are addressed by *id* so two
+        alike-named things in scope are each taken exactly once."""
+        v = p.verb
+        resolved: dict = {}
+        if v.iobj is not None and p.iobj:
+            cands = self._candidates(player, v.iobj.scope, resolved)
+            match = resolve(p.iobj, cands)
+            if isinstance(match, Ambiguous):
+                await session.send_text(self._which(match))
+                return
+            if not isinstance(match, Resolved):
+                await session.send_text(f'There is no "{p.iobj}" here.')
+                return
+            resolved[v.iobj.arg] = match.entity
+        elif v.iobj is not None and not v.dobj_from_iobj:
+            await session.send_text(self._usage(v))
+            return
+
+        dscope = (command.IOBJ_CONTENTS
+                  if (v.dobj_from_iobj and v.iobj is not None
+                      and v.iobj.arg in resolved)
+                  else v.dobj.scope)
+        # A snapshot: the world mutates as items are taken, so materialise first.
+        items = [e for e in self._candidates(player, dscope, resolved)
+                 if getattr(e, "portable", True)]
+        if not items:
+            await session.send_text(self._empty_scope_msg(v, dscope, resolved))
+            return
+        for item in items:
+            resolved[v.dobj.arg] = item
+            args = {v.dobj.arg: item.id or item.name}
+            if v.iobj is not None and v.iobj.arg in resolved:
+                src = resolved[v.iobj.arg]
+                args[v.iobj.arg] = src.id or src.name
+            intent = ActionIntent(name=v.target, args=args)
+            result = await self._perform(player.location_id, player, None, intent,
+                                         exclude_session=session.id)
+            if result is None:
+                continue
+            ack = (v.ack_source if v.ack_source and v.iobj is not None
+                   and v.iobj.arg in resolved else v.ack)
+            await session.send_text(self._style_ack(ack, v, resolved))
+
+    def _empty_scope_msg(self, v: command.Verb, dscope: str, resolved: dict) -> str:
+        """The 'nothing to act on' line for a bare ``all`` whose scope is empty,
+        phrased for the scope the verb draws from."""
+        if dscope == command.INVENTORY:
+            return "You aren't carrying anything."
+        if dscope == command.IOBJ_CONTENTS:
+            src = next(iter(resolved.values()), None)
+            return (f"There is nothing in {src.name}." if src is not None
+                    else "There is nothing there.")
+        return f"There is nothing here to {v.canonical}."
 
     def _style_ack(self, template: str, verb: command.Verb, resolved: dict) -> list:
         """Render a second-person action ack (e.g. ``You take {item} from {source}.``)

@@ -22,6 +22,7 @@ deterministic first tier, which handles the overwhelming majority of input with
 no model at all.
 """
 from __future__ import annotations
+import re
 from dataclasses import dataclass, field
 
 # --- symbolic scopes -------------------------------------------------------
@@ -44,6 +45,24 @@ DIRECTIONS = {
 }
 
 _ARTICLES = ("the ", "a ", "an ", "my ", "your ")
+
+# --- multi-command splitting (B11) -----------------------------------------
+# A line may carry more than one intent. Two mature IF parsers (TADS 3, Inform 7)
+# converge on the model we follow: `.` `;` and the word `then` are *unconditional*
+# command separators, while `and` / `,` are object-conjunctions by default and are
+# promoted to a command separator only when the next token is a known verb
+# (verb-led promotion). A free-text verb (say) swallows its remainder verbatim and
+# is never re-split. See docs/spikes/commands.md.
+MAX_COMMANDS = 16                # a runaway fuse (the cascade-fuse lesson)
+_SEPARATORS = {".", ";", ","}    # punctuation tokens (own tokens; `,` is soft)
+_CHAIN_WORDS = {"then"}          # word separators that always start a new command
+_ALL_WORDS = {"all", "everything"}   # bare quantifier — expands against scope
+# Split a direct-object phrase into conjoined objects: "X and Y", "X, Y".
+_CONJ_RE = re.compile(r"\s*,\s*|\s+and\s+", re.IGNORECASE)
+# One token = a run of non-space, non-separator chars, OR a single separator char.
+# Spans are kept so a free-text verb can reclaim its exact remainder from the
+# original line (commas/periods inside an utterance are preserved untouched).
+_TOKEN_RE = re.compile(r"[.;,]|[^\s.;,]+")
 
 
 @dataclass(frozen=True)
@@ -92,6 +111,9 @@ class Parse:
     iobj: str = ""                  # indirect-object phrase (raw)
     words: str = ""                 # free-text remainder (for kind == "text")
     unknown: str = ""               # the unrecognised first token, if any
+    all_objects: bool = False       # the direct object was bare "all"/"everything"
+    truncated: bool = False         # set on the last Parse when the runaway cap cut the line
+    source: str = ""                # the original segment text (for the B1b fallback)
 
 
 def _strip_article(phrase: str) -> str:
@@ -277,5 +299,128 @@ def parse(text: str, verbs: dict) -> Parse:
             head, _, tail = rest.partition(marker)
             dobj, iobj = head, tail
             break
+    dobj = _strip_article(dobj)
+    # A bare "all"/"everything" as a world-action's object is a quantifier, not a
+    # thing to name-resolve — the engine expands it against the verb's scope (B11).
+    all_objects = verb.kind == "action" and dobj.lower() in _ALL_WORDS
     return Parse(verb=verb, surface=surface,
-                 dobj=_strip_article(dobj), iobj=_strip_article(iobj))
+                 dobj=dobj, iobj=_strip_article(iobj), all_objects=all_objects)
+
+
+# --- multi-command entry (B11) ---------------------------------------------
+
+def _tokens_with_spans(text: str) -> list:
+    """Tokenise ``text`` into ``(token, start, end)`` spans over the *original*
+    string: runs of non-space/non-separator chars, and each ``. ; ,`` as its own
+    token. The spans let a free-text verb reclaim its exact remainder verbatim."""
+    return [(m.group(), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
+
+
+def _match_verb_tokens(toks: list, idx: int, verbs: dict):
+    """The greedy verb match of ``parse``, over the tokenised line: try a two-word
+    surface, then one word. Returns ``(Verb, n_tokens)`` or ``(None, 0)``. A
+    separator token is never a verb. Used both to start a segment and, crucially,
+    to look ahead past ``and``/``,`` — is the next thing a command, or an object?"""
+    if idx >= len(toks):
+        return (None, 0)
+    w0 = toks[idx][0]
+    if w0 in _SEPARATORS:
+        return (None, 0)
+    first = w0.lower()
+    if idx + 1 < len(toks):
+        w1 = toks[idx + 1][0]
+        if w1 not in _SEPARATORS:
+            two = f"{first} {w1.lower()}"
+            if two in verbs:
+                return (verbs[two], 2)
+    if first in verbs:
+        return (verbs[first], 1)
+    return (None, 0)
+
+
+def split_commands(text: str, verbs: dict) -> list:
+    """Split a line into command segments (raw strings) — the deterministic,
+    verb-led splitter (B11). ``. ; then`` always separate; ``and`` / ``,`` separate
+    only when the next token is a known verb, else they stay inside the current
+    segment as an object-conjunction; a free-text verb swallows the rest of the line.
+
+    Caps at ``MAX_COMMANDS`` + 1 segments so ``parse_line`` can flag a truncated
+    line rather than silently dropping the tail."""
+    toks = _tokens_with_spans(text)
+    segments: list = []
+    i, n = 0, len(toks)
+    while i < n and len(segments) <= MAX_COMMANDS:
+        # Skip whatever separator (or dangling and/then) ended the previous segment.
+        while i < n and (toks[i][0] in _SEPARATORS
+                         or toks[i][0].lower() in _CHAIN_WORDS
+                         or toks[i][0].lower() == "and"):
+            i += 1
+        if i >= n:
+            break
+        start = toks[i][1]
+        verb, vlen = _match_verb_tokens(toks, i, verbs)
+        # A free-text verb (say/tell) keeps everything after it, verbatim — one
+        # utterance, never re-split — so it is the last command on its line.
+        if verb is not None and verb.kind == "text":
+            seg = text[start:].strip()
+            if seg:
+                segments.append(seg)
+            break
+        consumed = vlen if verb is not None else 1
+        j = i + consumed
+        end = toks[i + consumed - 1][2]
+        while j < n:
+            w = toks[j][0]
+            wl = w.lower()
+            if w in (".", ";") or wl in _CHAIN_WORDS:
+                break
+            if w == "," or wl == "and":
+                nxt, _ = _match_verb_tokens(toks, j + 1, verbs)
+                if nxt is not None:                 # verb-led: a new command begins
+                    break
+                # else: a conjunction inside this command's object phrase — keep it.
+            end = toks[j][2]
+            j += 1
+        seg = text[start:end].strip()
+        if seg:
+            segments.append(seg)
+        i = j
+    return segments
+
+
+def _expand_conjunction(p: Parse) -> list:
+    """A single world-action whose direct object is ``X and Y`` / ``X, Y`` becomes
+    one ``Parse`` per object, sharing the verb and indirect object (``give sword and
+    shield to Odd`` → two gives → Odd). Returns ``[p]`` when there is nothing to
+    expand (not an action, no object, a bare ``all``, or a single object)."""
+    if (p.verb is None or p.verb.kind != "action" or p.verb.dobj is None
+            or p.all_objects or not p.dobj):
+        return [p]
+    parts = [_strip_article(x) for x in _CONJ_RE.split(p.dobj)]
+    parts = [x for x in parts if x]
+    if len(parts) <= 1:
+        return [p]
+    return [Parse(verb=p.verb, surface=p.surface, dobj=obj, iobj=p.iobj,
+                  source=p.source) for obj in parts]
+
+
+def parse_line(text: str, verbs: dict) -> list:
+    """Parse a whole line of player input into a *sequence* of ``Parse`` (B11).
+
+    Splits the line into command segments (verb-led), parses each with the
+    single-command ``parse``, and expands object-conjunctions into repeated
+    actions. A line with no separators yields exactly what ``parse`` alone would,
+    wrapped in a one-element list — so the single-command path is unchanged. The
+    last ``Parse`` carries ``truncated=True`` if the runaway cap cut the line."""
+    segments = split_commands(text, verbs)
+    truncated = len(segments) > MAX_COMMANDS
+    if truncated:
+        segments = segments[:MAX_COMMANDS]
+    parses: list = []
+    for seg in segments:
+        p = parse(seg, verbs)
+        p.source = seg
+        parses.extend(_expand_conjunction(p))
+    if truncated and parses:
+        parses[-1].truncated = True
+    return parses
