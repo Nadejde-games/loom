@@ -1,9 +1,39 @@
 # Spike — the authoring workbench (Phase 8): one text-mode home for world-building
 
-*Opened 2026-07-22. Status: **PLANNED — researched, forks signed off; build deferred until
-go.** Decisions (2026-07-22): substrate **Textual**; first slice the **Explorer**. The
-successor to Phase 7 (the atlas read the world, the author wrote it — both via clumsy CLIs);
-this makes them usable. Nothing is built yet — this document is the plan.*
+*Opened 2026-07-22. Status: **slice 1 (the Explorer) BUILT & offline-green 2026-07-22;
+slices 2–3 planned.** Decisions (2026-07-22): substrate **Textual**; first slice the
+**Explorer**. The successor to Phase 7 (the atlas read the world, the author wrote it —
+both via clumsy CLIs); this makes them usable.*
+
+## Slice 1 as built (2026-07-22)
+
+The Explorer ships as a read-only Textual three-pane workbench over one `atlas.survey`:
+
+- **`loom/explore.py`** (framework, pure, zero new deps — stdlib `difflib` for fuzzy): the
+  game-agnostic logic. `map_model(view)` derives a navigable graph (nodes = rooms; the
+  survey's out-edges + their reciprocity/one-way flags, plus the **in-edges/entrances** the
+  survey does not name; per-node reachability and dead-end/no-entrance/unreachable badges).
+  `search(view, query, *, scope, kinds, tag, limit)` ranks every entity across id / name /
+  alias / tag / tier / description / persona with a fuzzy fallback and a local-vs-global
+  `scope`; an empty query is a pure browse. `location_index(view)` resolves an item's
+  holder chain to the room it sits in.
+- **`authoring/`** (the TUI tool — imports `loom`, never the reverse): `cards.py` (pure
+  `(text, links)` per entity, unit-tested Textual-free) and `app.py` (the `WorkbenchApp`:
+  search box → live-filtered navigator tree; inspector card; a jump-link option-list that
+  turns exits/occupants/contents into one-keystroke moves). `python -m authoring [world]`.
+- **Gates:** offline only (no model call). `tests/test_explore.py` (30, the logic on a
+  crafted world + the shipped world) and `tests/test_workbench.py` (12 = 7 pure cards +
+  5 UI smoke via `App.run_test()`+`Pilot`, skipped cleanly when the extra is absent).
+  Full suite 681 green. Textual added as the `authoring` optional extra (not core).
+- **Known gap → next slice: selection↔navigator sync.** `_select` repaints the inspector
+  but does not move the tree cursor, so selecting via search-submit or a jump-link leaves
+  the navigator highlight out of step with the card. A `g` "home to start room" binding
+  was tried and **cut** in slice 1: it only half-worked (swallowed while the search box
+  held focus; moved the inspector but not the tree). The fix is one change — make
+  `_select` drive the tree cursor onto the chosen entity — which keeps every path (search,
+  jump-link, and any future home key) in sync for free. Folded into the next slice.
+
+*Below is the original plan (slices 2–3 remain as written).*
 
 ## Why
 
@@ -155,3 +185,6 @@ and is deferred (see Deferrals).
 - **`textual serve` / browser** — the same app serves to a browser for free, but ship the TUI
   first.
 - **Reference-spawns-node, drag-to-link, undo-tree depth, multi-author** — grow after the spine.
+- **Selection↔navigator sync + a home-to-start key** — carried from slice 1 (see the build
+  note above): `_select` should move the tree cursor so search / jump-link / home all keep
+  the navigator highlight in step with the inspector. First task of the next slice.

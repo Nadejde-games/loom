@@ -48,6 +48,12 @@ Application (`game/`, in `pyproject.toml → optional-dependencies.game`):
 |----------------|-----|
 | `python-dotenv`| Loads a repo-root `.env` (e.g. `OPENROUTER_API_KEY`) in `game/main.py`. Zero sub-dependencies, frozen API, ubiquitous. App-layer, so it never touches the library budget. |
 
+Authoring tool (`authoring/`, in `pyproject.toml → optional-dependencies.authoring`):
+
+| Package   | Why |
+|-----------|-----|
+| `textual` | The substrate of the Phase 8 authoring workbench — the only Python TUI with clickable widgets (a genuinely selectable map node), the Tree/Input/OptionList the panes need, and one codebase for terminal *and* browser (`textual serve`). It is heavier than the core budget allows (pulls `rich`/`markdown-it-py`/`pygments`) and moves fast — but it is a **tool** dependency, held to the loose policy, not the library one. The rule that keeps it honest: **`loom/` never imports Textual** — the UI in `authoring/` imports `loom` (its survey, its `loom.explore` map-model/search), never the reverse, so the framework stays UI-agnostic and offline-capable. Install only when authoring: `pip install -e ".[authoring]"`. |
+
 Optional (`pyproject.toml → optional-dependencies.anthropic`): `anthropic`, imported
 lazily only when an `AnthropicProvider` is instantiated.
 

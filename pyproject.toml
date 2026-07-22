@@ -28,6 +28,13 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
 game = ["python-dotenv>=1.0"]
+# The authoring workbench (Phase 8) — a Textual text-mode UI over the atlas + author.
+# A TOOL dependency, deliberately kept OUT of the core budget: `loom/` never imports
+# Textual (the UI imports `loom`, never the reverse), so the framework stays UI-agnostic
+# and offline-capable. Textual pulls rich/markdown-it-py/pygments and moves fast, which
+# is acceptable for a tool but not for the library. Install with:
+#   pip install -e ".[authoring]"
+authoring = ["textual>=1.0,<9"]
 
 [build-system]
 requires = ["setuptools>=61"]
