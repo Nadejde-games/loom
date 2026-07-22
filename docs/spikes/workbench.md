@@ -1,9 +1,13 @@
 # Spike — the authoring workbench (Phase 8): one text-mode home for world-building
 
-*Opened 2026-07-22. Status: **slice 1 (the Explorer) BUILT & offline-green 2026-07-22;
-slices 2–3 planned.** Decisions (2026-07-22): substrate **Textual**; first slice the
-**Explorer**. The successor to Phase 7 (the atlas read the world, the author wrote it —
-both via clumsy CLIs); this makes them usable.*
+*Opened 2026-07-22. Status: **slices 1 (the Explorer) & 2 (play-in-editor) BUILT & both-gate
+green 2026-07-22; slice 3 (the authoring agent) next.** Decisions (2026-07-22): substrate
+**Textual**; first slice the **Explorer**. The successor to Phase 7 (the atlas read the world,
+the author wrote it — both via clumsy CLIs); this makes them usable.*
+
+Per-slice detail: slice 1 below; **slice 2 in `docs/spikes/play-in-editor.md`** (its own spike,
+with the in-repo recon and the three signed-off forks — still world / live-minds-with-a-dry-run
+toggle / modal screen).
 
 ## Slice 1 as built (2026-07-22)
 
@@ -25,15 +29,13 @@ The Explorer ships as a read-only Textual three-pane workbench over one `atlas.s
   crafted world + the shipped world) and `tests/test_workbench.py` (12 = 7 pure cards +
   5 UI smoke via `App.run_test()`+`Pilot`, skipped cleanly when the extra is absent).
   Full suite 681 green. Textual added as the `authoring` optional extra (not core).
-- **Known gap → next slice: selection↔navigator sync.** `_select` repaints the inspector
-  but does not move the tree cursor, so selecting via search-submit or a jump-link leaves
-  the navigator highlight out of step with the card. A `g` "home to start room" binding
-  was tried and **cut** in slice 1: it only half-worked (swallowed while the search box
-  held focus; moved the inspector but not the tree). The fix is one change — make
-  `_select` drive the tree cursor onto the chosen entity — which keeps every path (search,
-  jump-link, and any future home key) in sync for free. Folded into the next slice.
+- **Selection↔navigator sync — DONE in slice 2.** `_select` now drives the tree cursor
+  (`move_cursor`, guarded against re-firing selection), so search, jump-links, and the
+  play-target all keep the navigator highlight in step with the card. (The half-working `g`
+  "home to start room" binding tried in slice 1 stayed cut.)
 
-*Below is the original plan (slices 2–3 remain as written).*
+*Below is the original plan (slice 3, the authoring agent, remains as written; slice 2 landed
+per `docs/spikes/play-in-editor.md`).*
 
 ## Why
 
@@ -137,13 +139,15 @@ policy on core unchanged.
   checkpoint. Tool catalogue over `survey`/search/`author_region`/edit/spawn/`preview`.
 
 **Slice plan (each its own build + gates):**
-1. **Explorer** — the Textual app: map (clickable) + inspector (read) + search, over
-   `atlas.survey`. Read-only, no model call. Proves the substrate; builds the surface the agent
-   will inhabit. *(Recommended first slice.)*
-2. **Experience it** — the play-in-editor sandbox (jump-to-room, ephemeral state, discard on
-   exit, seeded RNG).
+1. **Explorer** ✓ — the Textual app: navigator + inspector + search, over `atlas.survey`.
+   Read-only, no model call. Proved the substrate; built the surface the agent will inhabit.
+   *(Built & offline-green 2026-07-22.)*
+2. **Experience it** ✓ — the play-in-editor sandbox (jump-to-room, ephemeral deep-copied
+   world, discard on exit, live minds with a dry-run toggle). *(Built & both-gate green
+   2026-07-22; `docs/spikes/play-in-editor.md`.)*
 3. **The authoring agent** — the NL chat: tool catalogue + shadow-validate-confirm-apply +
-   checkpoint/undo. The write half; the live gate returns here.
+   checkpoint/undo. The write half; the live gate deepens here. **NEXT.** Reuses slice 2's
+   `loom/sandbox.py` as its `preview_play` tool.
 
 ## Decisions — signed off 2026-07-22
 
@@ -185,6 +189,7 @@ and is deferred (see Deferrals).
 - **`textual serve` / browser** — the same app serves to a browser for free, but ship the TUI
   first.
 - **Reference-spawns-node, drag-to-link, undo-tree depth, multi-author** — grow after the spine.
-- **Selection↔navigator sync + a home-to-start key** — carried from slice 1 (see the build
-  note above): `_select` should move the tree cursor so search / jump-link / home all keep
-  the navigator highlight in step with the inspector. First task of the next slice.
+- **From slice 2 (play-in-editor):** a living/ticking world toggle (director/clock/weather/
+  wandering), inventory injection / "play as this character", save-a-walk, seeded live
+  reproducibility, and an `autonomous_reactions`/`npc_act_gate` fidelity toggle — the still,
+  bare-engine sandbox is the baseline; these layer on after.

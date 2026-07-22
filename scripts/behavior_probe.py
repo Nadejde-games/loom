@@ -54,6 +54,7 @@ from typing import Callable
 
 from loom.content import load_world
 from loom.engine import Engine
+from loom.sandbox import Sandbox
 from loom.ai import get_default_provider, NpcMind
 from loom.ai.director import DirectorMind
 from loom.ai.embedding import get_default_embedder
@@ -999,6 +1000,60 @@ async def run_author_scenario(provider, sc: AuthorScenario):
 
 
 @dataclass
+class PlayScenario:
+    name: str
+    room: str                       # room to jump into
+    line: str                       # what the player says on arrival
+    npc_names: tuple                # display names of NPCs expected present there
+    desc: str
+    n: int = 2
+    threshold: int = 1
+    gated: bool = True
+    tags: tuple = ("play",)
+
+
+PLAY_SCENARIOS = [
+    PlayScenario(
+        name="play.npc-answers-in-sandbox",
+        room="cave_mouth",
+        line="say Well met — who tends this place?",
+        npc_names=("Odd the Hermit", "Wren the Wayfinder"),
+        desc="jump into a room and a live NPC answers over the real engine in the "
+             "play-in-editor sandbox (Phase 8, slice 2)"),
+]
+
+
+async def run_play_scenario(provider, sc: PlayScenario):
+    """Boot the real engine in an ephemeral :class:`~loom.sandbox.Sandbox` at the room,
+    say a line, and confirm a live NPC reply lands — the whole point of play-in-editor.
+    A reply is a post-arrival, non-system line that names one of the present NPCs or
+    carries quoted speech that is not the player's own echo."""
+    successes, samples = 0, []
+    first_names = tuple(n.split()[0] for n in sc.npc_names)
+    for _ in range(sc.n):
+        lines = []
+        sb = Sandbox.from_path(WORLD, sc.room, provider,
+                               lambda t, s, _l=lines: _l.append((t, s)))
+        try:
+            await sb.start()
+            mark = len(lines)
+            await sb.send(sc.line)
+            await sb.drain(timeout=45.0)         # a live mind can take seconds
+            await sb.close()
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        post = [t for t, s in lines[mark:] if not s]
+        reply = next((t for t in post
+                      if any(fn in t for fn in first_names)
+                      or ('"' in t and not t.lower().lstrip().startswith("you"))), "")
+        ok = bool(reply)
+        successes += ok
+        samples.append((ok, (reply or "(no reply landed)")[:120]))
+    return successes, samples
+
+
+@dataclass
 class MemoryScenario:
     """Phase 5 memory depth: a REAL embedder must rank the on-topic memory top for
     *paraphrase* queries that share no exact words with it — the semantic relevance the
@@ -1208,9 +1263,10 @@ async def main():
     chosen_refl = [s for s in REFLECTION_SCENARIOS if picks(s)]
     chosen_ident = [s for s in IDENTITY_SCENARIOS if picks(s)]
     chosen_author = [s for s in AUTHOR_SCENARIOS if picks(s)]
+    chosen_play = [s for s in PLAY_SCENARIOS if picks(s)]
     if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react,
                 chosen_idle, chosen_loot, chosen_mem, chosen_refl, chosen_ident,
-                chosen_author)):
+                chosen_author, chosen_play)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
@@ -1221,14 +1277,15 @@ async def main():
                       | {t for s in MEMORY_SCENARIOS for t in s.tags}
                       | {t for s in REFLECTION_SCENARIOS for t in s.tags}
                       | {t for s in IDENTITY_SCENARIOS for t in s.tags}
-                      | {t for s in AUTHOR_SCENARIOS for t in s.tags})
+                      | {t for s in AUTHOR_SCENARIOS for t in s.tags}
+                      | {t for s in PLAY_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
     total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
              + len(chosen_gate) + len(chosen_react) + len(chosen_idle)
              + len(chosen_loot) + len(chosen_mem) + len(chosen_refl)
-             + len(chosen_ident) + len(chosen_author))
+             + len(chosen_ident) + len(chosen_author) + len(chosen_play))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -1339,6 +1396,18 @@ async def main():
         print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
               f"  — {sc.desc}")
         # Show the survey line even on a pass — the point is to read the region.
+        for hit, detail in samples:
+            print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    for sc in chosen_play:
+        # Phase 8 slice 2: play-in-editor — the workbench boots the real engine in an
+        # ephemeral sandbox at a room and a live NPC answers. Proves the harness drives the
+        # real minds end to end (isolation is the offline suite's job).
+        successes, samples = await run_play_scenario(provider, sc)
+        ok, v = verdict(sc, successes)
+        print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        # Show the NPC's reply even on a pass — the point is to read the live line.
         for hit, detail in samples:
             print(f"          {'ok ' if hit else 'MISS'} {detail}")
 

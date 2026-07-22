@@ -169,6 +169,62 @@ class WorkbenchAppTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             self.assertTrue(str(app.query_one("#card", Static).render()).strip())
 
+    async def test_selection_syncs_tree_cursor(self):
+        # Carried from slice 1: selecting via a non-tree path must move the navigator
+        # cursor onto that entity, keeping the two panes in step.
+        from textual.widgets import Tree
+        app = self._app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._select("room", "cave")
+            await pilot.pause()
+            self.assertEqual(app.query_one("#nav", Tree).cursor_node.data, ("room", "cave"))
+            app._select("npc", "guard")
+            await pilot.pause()
+            self.assertEqual(app.query_one("#nav", Tree).cursor_node.data, ("npc", "guard"))
+
+
+@unittest.skipUnless(_HAS_TEXTUAL, "textual (the authoring extra) is not installed")
+class PlayScreenTests(unittest.IsolatedAsyncioTestCase):
+    """The modal play screen boots the sandbox and wires it to the transcript. Dry-run
+    (FakeProvider) so it makes no model call; the sandbox itself is tested at the text
+    level in tests/test_sandbox.py."""
+
+    async def test_enter_play_boots_and_leaves(self):
+        from authoring.app import WorkbenchApp
+        from authoring.play import PlayScreen
+        from textual.widgets import RichLog, Input
+        app = WorkbenchApp.from_path(GAME_WORLD)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._dry_run = True                 # offline, no model call
+            app.action_play()                   # push the play screen for the start room
+            await pilot.pause()
+            self.assertIsInstance(app.screen, PlayScreen)
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            log = app.screen.query_one("#transcript", RichLog)
+            self.assertGreater(len(log.lines), 0)       # the boot look rendered
+
+            app.screen.set_focus(app.screen.query_one("#cmd", Input))
+            await pilot.press("l", "o", "o", "k", "enter")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+            self.assertGreater(len(log.lines), 0)       # still rendering, no crash
+
+            app.screen.action_exit_play()
+            await pilot.pause()
+            self.assertNotIsInstance(app.screen, PlayScreen)   # back to the Explorer
+
+    async def test_play_target_is_selected_entitys_room(self):
+        # An NPC/item selection plays that entity's room, not the entity.
+        from authoring.app import WorkbenchApp
+        app = WorkbenchApp.from_path(GAME_WORLD)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._select("npc", "hermit")        # Odd the Hermit sits in cave_mouth
+            self.assertEqual(app._target_room(), "cave_mouth")
+
 
 if __name__ == "__main__":
     unittest.main()
