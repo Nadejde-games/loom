@@ -371,12 +371,42 @@ opposite of clean silence), B5 (action-selection reliability).
 
 ---
 
-## B7 — World atlas / explorer (render a world.json into a readable overview)
-*Noticed 2026-07-12. **BUILT 2026-07-21** — the first slice of Phase 7 (authoring
-tools); commit pending.*
+## B7 — AI-assisted world authoring (read side = the atlas; write side = the author)
+*Noticed 2026-07-12. **Read side BUILT & committed 2026-07-21 (`94e9635`); write side
+BUILT & both-gate green 2026-07-22.** The first two slices of Phase 7 (authoring).*
 
-> **Status — built & offline-gated 2026-07-21.** The read/validate side of the
-> authoring loop. Design spike: `docs/spikes/atlas.md`.
+> **Write side — built & both-gate green 2026-07-22.** Brief → a valid region, merged
+> into the existing world. **Skeleton-first** (the signed-off architecture): code
+> *generates* the graph, the model authors only flavour. Design spike:
+> `docs/spikes/authoring.md`.
+> - **`loom/authoring.py` (framework, pure, zero deps):** `frame_skeleton` — a plan →
+>   a graph valid *by construction* (code-owned ids, reciprocal exit **pairs**,
+>   connectivity guaranteed, orphans wired in code, a reciprocal attach edge). Plus the
+>   `plan_schema`/`flavour_schema` grammars, `apply_flavour`/`assemble`, and the repair
+>   helpers (`repair_targets`, `stalled`, `distinct_where`, `format_report`).
+> - **`loom/ai/author.py` (world-free, sibling of `loot.py`/`intent.py`):** the plan
+>   pass, per-entity flavour passes, and `author_region` — plan → frame → flavour →
+>   `survey` → a bounded repair loop (the atlas is the judge; cap 3, targeted
+>   re-flavour, stop on clean/stall, freeze the existing world). Authoring model the
+>   GM tier `qwen/qwen3.6-27b`.
+> - **`scripts/author.py`:** the CLI — a brief in, a validated region out; extend-mode
+>   default, large token budget; exits non-zero unless the region surveys clean; `--out`
+>   writes the combined world.
+> - **Gate:** offline **639** (611 + 28, `tests/test_authoring.py`); live
+>   `behavior_probe.py author` **2/2** on the GM model — 6- and 8-room regions, each
+>   **0 errors / 0 warnings, fully reachable, 0 repair rounds** (clean by construction).
+> - **Prior art** (two sweeps, 2026-07-21): generation side — skeleton-first/staged,
+>   code-owns-connectivity (Word2World, *Bringing Stories Alive*, Dormans graph-grammars,
+>   RogueBasin; reciprocity a known MUD bug); repair side — external-validator repair is
+>   *sound* where intrinsic self-correction is not (Kamoi vs Huang), cap ~3 (Arimbur),
+>   targeted patch over whole-doc regen.
+> - **Deferred:** greenfield authoring (the framer already serves it — no anchor, entry
+>   becomes `start`); meta-block authoring (director/clock/weather/loot/quests);
+>   quest authoring; reason-in-prose-then-serialize for the plan pass; region-file
+>   (directory) output instead of a combined world.
+
+> **Status — read side, built & offline-gated 2026-07-21 (committed `94e9635`).** The
+> read/validate side of the authoring loop. Design spike: `docs/spikes/atlas.md`.
 > - **`loom/atlas.py` (framework, zero new deps):** `survey(world, start) ->
 >   AtlasView` — one pure pass gathering room records (exits + reciprocity flags),
 >   a character sheet per NPC, an item table, the `meta` blocks, summary counts, and

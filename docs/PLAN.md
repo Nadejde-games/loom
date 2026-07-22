@@ -1015,16 +1015,26 @@ WebSocket transport implementing the same `Handler` contract; emit `map` /
 AI-assisted world creation and editing over the world schema — descriptions,
 regions, NPCs, story — with validation. The GM/creator toolkit.
 
-*Opened 2026-07-21.* Building the **read/validate side first**, then the AI author.
-- **B7 — the world atlas (BUILT 2026-07-21, offline-gated, commit pending).**
+*Opened 2026-07-21.* Built the **read/validate side first**, then the AI author — both
+in.
+- **B7 read side — the world atlas (BUILT & committed 2026-07-21, `94e9635`).**
   `loom/atlas.py` surveys a loaded world into a serialisable `AtlasView` (rooms +
   exits, character sheets, item table, `meta`) and lints it (errors that break the
   world · warnings for design oddities); `render_text` / `render_markdown` / `mermaid`
   present it; `scripts/atlas.py` is the CLI (exits non-zero on error → CI-gateable).
-  611 offline green. Spike: `docs/spikes/atlas.md`; status: `docs/BACKLOG.md` B7.
-- **Next — the write side:** AI-assisted authoring (a brief → a valid `world.json`)
-  with a generate→validate→repair loop, using the atlas's findings as its judge. Its
-  own research + spike + sign-off when we reach it.
+  Spike: `docs/spikes/atlas.md`; status: `docs/BACKLOG.md` B7.
+- **B7 write side — the AI author (BUILT & both-gate green 2026-07-22).** Brief → a
+  valid region, merged into the existing world. **Skeleton-first** (signed off): code
+  *generates* the graph (ids, reciprocal exits, connectivity — all by construction);
+  the model authors only flavour. `loom/authoring.py` (pure framer + schemas + repair
+  helpers) · `loom/ai/author.py` (`author_region`: plan → frame → flavour → survey →
+  bounded repair, cap 3, atlas as judge) · `scripts/author.py` (CLI). Authoring model
+  the GM tier `qwen/qwen3.6-27b`. **Gate:** offline **639** (611 + 28,
+  `tests/test_authoring.py`); live `behavior_probe.py author` **2/2** — 6- and 8-room
+  regions, each 0 errors / 0 warnings, fully reachable, 0 repair rounds (clean by
+  construction). Spike: `docs/spikes/authoring.md`; status: `docs/BACKLOG.md` B7.
+- **Next — grow the world for real** (author regions with the CLI to feed the sim),
+  then greenfield authoring, then meta-block / quest authoring.
 
 ## Testing discipline — two gates, run BOTH after every implementation phase
 

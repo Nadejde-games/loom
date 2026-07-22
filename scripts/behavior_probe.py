@@ -64,6 +64,7 @@ from loom.action import default_registry
 from loom.command import command_schema, describe_verbs, default_verbs
 from loom import loot
 from loom.ai import loot as loot_ai
+from loom.ai.author import author_region
 
 WORLD = os.path.join(os.path.dirname(__file__), "..", "game", "world", "world.json")
 
@@ -919,6 +920,84 @@ async def run_loot_scenario(provider, sc: LootScenario):
     return successes, samples
 
 
+# --- Phase 7: the world author — a brief -> a valid region (the write side, B7) ------
+# The live counterpart of the offline authoring suite (tests/test_authoring.py). The
+# offline gate proves the code-owned half — the skeleton framer's reciprocity, ids and
+# connectivity, and the repair loop's control flow — against a scripted provider. This is
+# the half the fake structurally cannot see: whether the REAL model produces a usable
+# region PLAN and real per-entity FLAVOUR, such that the whole pipeline (plan -> code-
+# framed skeleton -> flavour -> atlas -> repair) yields a region that surveys CLEAN and
+# fully reachable, wired into the existing world by a code-written edge. Run it with the
+# GM tier (the authoring model, Decision 3):
+#     LOOM_PROVIDER=openrouter LOOM_OPENROUTER_MODEL=qwen/qwen3.6-27b \
+#         python scripts/behavior_probe.py author
+# A COLLAPSE-detector: skeleton-first makes structural errors near-impossible by
+# construction, so a miss means the model returned no plan at all (a throttle), or the
+# assembled region did not survey clean/reachable — not a flavour-quality nitpick.
+@dataclass
+class AuthorScenario:
+    name: str
+    brief: str
+    attach: str                     # existing room the region joins
+    check: Callable                 # (AuthorResult) -> bool
+    desc: str
+    n: int = 2
+    threshold: int = 1
+    gated: bool = True              # False = measured but NOT a hard gate (a watch item)
+    tags: tuple = ("author",)
+
+
+def _clean_and_reachable(res) -> bool:
+    """The authored region assembled into a world that surveys with zero errors and
+    every room reachable from the start — the code-owned structure held under a real,
+    model-authored plan."""
+    if not res.ok or res.view is None:
+        return False
+    s = res.view.summary()
+    return s["errors"] == 0 and s["reachable"] == s["locations"]
+
+
+AUTHOR_SCENARIOS = [
+    AuthorScenario(
+        name="author.region-surveys-clean",
+        brief=("Past the hilltop lies a windswept moor that runs to a ruined "
+               "watchtower. A lonely beacon-keeper tends a cold signal-fire there, "
+               "and a cracked signal-horn lies among the stones."),
+        attach="hilltop", check=_clean_and_reachable, n=2, threshold=1,
+        desc="the model authors a region that surveys clean and fully reachable, "
+             "wired into the existing world by a code-written edge (write side, B7)"),
+]
+
+
+async def run_author_scenario(provider, sc: AuthorScenario):
+    # Authoring a whole region is many model calls (a plan + one per entity), and a
+    # persona is far larger than an NPC's one-line turn — so lift the token budget off
+    # the harness default (400 would truncate a persona) for this family. Harmless to
+    # any other family in a combined run; a no-op on a provider without the knob.
+    if hasattr(provider, "max_tokens"):
+        provider.max_tokens = max(getattr(provider, "max_tokens", 0), 1200)
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        world, start = load_world(WORLD)
+        try:
+            res = await author_region(provider, sc.brief, base_world=world,
+                                      start=start, attach_to=sc.attach, cap=3)
+            ok = bool(sc.check(res))
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        if res.view is not None:
+            st = res.view.summary()
+            detail = (f"{st['locations']} rooms, reachable "
+                      f"{st['reachable']}/{st['locations']}, {st['errors']} err / "
+                      f"{st['warnings']} warn, {res.rounds} repair round(s)")
+        else:
+            detail = f"no region: {res.reason}"
+        samples.append((ok, detail))
+    return successes, samples
+
+
 @dataclass
 class MemoryScenario:
     """Phase 5 memory depth: a REAL embedder must rank the on-topic memory top for
@@ -1128,8 +1207,10 @@ async def main():
     chosen_mem = [s for s in MEMORY_SCENARIOS if picks(s)]
     chosen_refl = [s for s in REFLECTION_SCENARIOS if picks(s)]
     chosen_ident = [s for s in IDENTITY_SCENARIOS if picks(s)]
+    chosen_author = [s for s in AUTHOR_SCENARIOS if picks(s)]
     if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react,
-                chosen_idle, chosen_loot, chosen_mem, chosen_refl, chosen_ident)):
+                chosen_idle, chosen_loot, chosen_mem, chosen_refl, chosen_ident,
+                chosen_author)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
@@ -1139,14 +1220,15 @@ async def main():
                       | {t for s in LOOT_SCENARIOS for t in s.tags}
                       | {t for s in MEMORY_SCENARIOS for t in s.tags}
                       | {t for s in REFLECTION_SCENARIOS for t in s.tags}
-                      | {t for s in IDENTITY_SCENARIOS for t in s.tags})
+                      | {t for s in IDENTITY_SCENARIOS for t in s.tags}
+                      | {t for s in AUTHOR_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
     total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
              + len(chosen_gate) + len(chosen_react) + len(chosen_idle)
              + len(chosen_loot) + len(chosen_mem) + len(chosen_refl)
-             + len(chosen_ident))
+             + len(chosen_ident) + len(chosen_author))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -1245,6 +1327,18 @@ async def main():
         print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
               f"  — {sc.desc}")
         # Show the forged items even on a pass — the point is to read the loot.
+        for hit, detail in samples:
+            print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    for sc in chosen_author:
+        # Phase 7: the write side — the model authors a whole region and the code-framed
+        # skeleton + atlas make it survey clean (the framer/loop are the offline suite's
+        # job). Slow: each trial is many model calls, so keep the selection narrow.
+        successes, samples = await run_author_scenario(provider, sc)
+        ok, v = verdict(sc, successes)
+        print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        # Show the survey line even on a pass — the point is to read the region.
         for hit, detail in samples:
             print(f"          {'ok ' if hit else 'MISS'} {detail}")
 
