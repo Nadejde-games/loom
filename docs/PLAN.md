@@ -1,7 +1,25 @@
 # Project plan — Loom engine & the forever game
 
 Living document. The reference for where we are and where we're going.
-Last updated: 2026-07-20.
+Last updated: 2026-07-23.
+
+## Status snapshot — 2026-07-23 (Phases 7 & 8: authoring tools + the workbench — complete)
+
+**Phase 7 (authoring tools) and Phase 8 (the authoring workbench) are both in**, both gates green
+throughout (offline **731**; live families on OpenRouter). HEAD `18fd2a7` on `master`.
+- **Phase 7 — the authoring tools.** The world **atlas** (read/validate; `loom/atlas.py`, `94e9635`)
+  and the AI **author** (brief → a skeleton-first, atlas-validated region; `loom/authoring.py` +
+  `loom/ai/author.py`, `0a179a6`). CLIs: `scripts/atlas.py`, `scripts/author.py`.
+- **Phase 8 — the workbench** (a Textual text-mode app; the `authoring` optional extra): **see** a
+  world (slice 1, the Explorer, `aaf4803`), **stand in it** (slice 2, play-in-editor, `cde281d`),
+  and **build it by asking or by hand** (slice 3, the authoring agent + inspector editing, `d51b8ef`).
+  The agent is a SEPARATE native-tool-calling stack (Pydantic-AI over `qwen/qwen3.6-27b`), and both
+  the agent and direct inspector editing share ONE `loom.worlddraft` shadow-validate-apply gate — a
+  candidate that does not survey clean never touches the staged world. Live: `author-agent` 2/2 edit
+  + 1/2 region; `play` 2/2. Details in the spikes (`docs/spikes/workbench.md`, `authoring-agent.md`,
+  `play-in-editor.md`) and the project memory.
+
+*(Earlier snapshots below.)*
 
 ## Status snapshot — 2026-07-20 (Phase 5: persistence + memory depth + reflection + identity + idle-NPC)
 
@@ -1011,7 +1029,7 @@ WebSocket transport implementing the same `Handler` contract; emit `map` /
 `entities` channels for an ascii/2D client. Harden true multiplayer presence
 (players see and hear each other; per-room broadcast).
 
-### Phase 7 — Authoring tools  ◐
+### Phase 7 — Authoring tools  ✓ (2026-07-22 — the atlas read side + the AI author; usable UI is Phase 8)
 AI-assisted world creation and editing over the world schema — descriptions,
 regions, NPCs, story — with validation. The GM/creator toolkit.
 
@@ -1033,8 +1051,28 @@ in.
   `tests/test_authoring.py`); live `behavior_probe.py author` **2/2** — 6- and 8-room
   regions, each 0 errors / 0 warnings, fully reachable, 0 repair rounds (clean by
   construction). Spike: `docs/spikes/authoring.md`; status: `docs/BACKLOG.md` B7.
-- **Next — grow the world for real** (author regions with the CLI to feed the sim),
-  then greenfield authoring, then meta-block / quest authoring.
+- **Grew into Phase 8 — the workbench** (the usable UI over these tools), rather than a
+  CLI-only "grow the world" thread. Greenfield / meta-block / quest authoring remain open.
+
+### Phase 8 — The authoring workbench  ✓ (2026-07-23 — Explorer · play-in-editor · authoring agent + hand-editing)
+One Textual text-mode app (`python -m authoring`; the `authoring` optional extra) that makes the
+Phase 7 tools usable without CLI incantations — the successor surface to `scripts/atlas.py` +
+`scripts/author.py`. Three slices, each both-gate green:
+- **Slice 1 — the Explorer (`aaf4803`).** Read-only navigation over one `atlas.survey`: a navigator
+  tree + entity cards + fuzzy search, all on `loom/explore.py` (map-model + search, game-agnostic).
+- **Slice 2 — play-in-editor (`cde281d`).** Jump into any room and play it live in a throwaway
+  `loom.sandbox.Sandbox` (real engine, live NPC minds), discarded on exit — the authored world is
+  never touched. Spike: `docs/spikes/play-in-editor.md`.
+- **Slice 3 — the authoring agent + hand-editing (`d51b8ef`).** A natural-language agent — a
+  SEPARATE stack (Pydantic-AI NATIVE tool-calling over `qwen/qwen3.6-27b`, *not* loom's slim
+  single-shot `LLMProvider`) — grounds a request, calls read/author tools, and stages a change that
+  surveys clean; plus direct `e`-toggled inspector editing. **Both share the pure `loom/worlddraft.py`
+  gate** (Draft + shadow-validate → commit-with-checkpoint; a dirty candidate is rejected without
+  touching the staged world). Live: a `behavior_probe.py author-agent` family. Spike:
+  `docs/spikes/authoring-agent.md`.
+Umbrella spike: `docs/spikes/workbench.md`. Deferrals (next candidates): a drawn 2D map layout,
+`textual serve` browser, git-backed undo, structural hand-edits (exits / relocation, currently
+agent-only). `pydantic-ai-slim[openai]` joined the `authoring` extra alongside Textual.
 
 ## Testing discipline — two gates, run BOTH after every implementation phase
 
