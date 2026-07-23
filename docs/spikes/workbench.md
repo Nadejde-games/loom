@@ -1,13 +1,15 @@
 # Spike — the authoring workbench (Phase 8): one text-mode home for world-building
 
-*Opened 2026-07-22. Status: **slices 1 (the Explorer) & 2 (play-in-editor) BUILT & both-gate
-green 2026-07-22; slice 3 (the authoring agent) next.** Decisions (2026-07-22): substrate
-**Textual**; first slice the **Explorer**. The successor to Phase 7 (the atlas read the world,
-the author wrote it — both via clumsy CLIs); this makes them usable.*
+*Opened 2026-07-22. Status: **slices 1 (the Explorer), 2 (play-in-editor) & 3 (the authoring
+agent) all BUILT & both-gate green (slices 1-2 2026-07-22, slice 3 2026-07-23).** Decisions
+(2026-07-22): substrate **Textual**; first slice the **Explorer**. The successor to Phase 7 (the
+atlas read the world, the author wrote it — both via clumsy CLIs); this makes them usable.*
 
 Per-slice detail: slice 1 below; **slice 2 in `docs/spikes/play-in-editor.md`** (its own spike,
 with the in-repo recon and the three signed-off forks — still world / live-minds-with-a-dry-run
-toggle / modal screen).
+toggle / modal screen); **slice 3 in `docs/spikes/authoring-agent.md`** (the authoring agent — the
+separate-stack reframe, native tool-calling via Pydantic-AI, and the shadow-validate-apply gate;
+BUILT & both-gate green 2026-07-23).
 
 ## Slice 1 as built (2026-07-22)
 
@@ -145,9 +147,12 @@ policy on core unchanged.
 2. **Experience it** ✓ — the play-in-editor sandbox (jump-to-room, ephemeral deep-copied
    world, discard on exit, live minds with a dry-run toggle). *(Built & both-gate green
    2026-07-22; `docs/spikes/play-in-editor.md`.)*
-3. **The authoring agent** — the NL chat: tool catalogue + shadow-validate-confirm-apply +
-   checkpoint/undo. The write half; the live gate deepens here. **NEXT.** Reuses slice 2's
-   `loom/sandbox.py` as its `preview_play` tool.
+3. **The authoring agent** ✓ — the NL chat: tool catalogue + shadow-validate-confirm-apply +
+   checkpoint/undo. The write half; the live gate deepened here. **BUILT & both-gate green
+   2026-07-23. See `docs/spikes/authoring-agent.md`.** A separate agent stack (native tool-calling
+   via **Pydantic-AI**, *not* the engine's `LLMProvider`); `loom/` keeps only the pure capabilities
+   + the safety gate (`loom/worlddraft.py`). Reuses slice 2's `loom/sandbox.py` as its `preview_play`
+   tool. Offline 719; live `author-agent` 2/2 + 2/2 on qwen/qwen3.6-27b.
 
 ## Decisions — signed off 2026-07-22
 
@@ -182,8 +187,10 @@ and is deferred (see Deferrals).
 
 ## Deferrals (out of the first slices)
 
-- **Direct field editing in the inspector** (vs editing through the agent) — start read-only +
-  agent-mediated; add hand-editing once the apply-gate is proven.
+- **Direct field editing in the inspector** — ✓ DONE (2026-07-23, slice 3 refinement). Once the
+  apply-gate was proven, the inspector grew an `e`-toggled edit form (name/description, the npc
+  persona + wanders, item aliases/portable) routed through the *same* `loom.worlddraft` gate as the
+  agent; `ctrl+s` saves. Structural graph edits (exits, relocation) stay agent-mediated by design.
 - **Map layout** — a stylised auto-layout first (adjacency / the atlas `mermaid`), not a hand-
   placed 2D canvas; per-node layout hints (Twee-style, in metadata) later.
 - **`textual serve` / browser** — the same app serves to a browser for free, but ship the TUI

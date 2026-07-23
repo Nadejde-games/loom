@@ -1053,6 +1053,92 @@ async def run_play_scenario(provider, sc: PlayScenario):
     return successes, samples
 
 
+# --- Phase 8 slice 3: the authoring agent — NL -> tools -> a clean, staged change ----
+# The live counterpart of the offline agent suite (tests/test_agent.py). The offline gate
+# drives the whole loop on a FAKE model (Pydantic-AI's FunctionModel) — it proves the
+# dispatch, the read-free/write-gated split, and the propose->confirm flow, but structurally
+# CANNOT show whether a REAL model grounds a request, picks the right tool, and drives a
+# change the atlas passes. That is this gate. The agent runs on its OWN stack — native
+# tool-calling via Pydantic-AI over qwen/qwen3.6-27b (NOT the engine's loom provider) — while
+# the region_author tool authors through the loom GM-tier provider; the loom.worlddraft gate
+# is the sole merge authority. Success = the agent STAGED a change that surveys clean (the
+# human would then confirm); nothing is committed. Run it with the GM tier:
+#     LOOM_PROVIDER=openrouter LOOM_OPENROUTER_MODEL=qwen/qwen3.6-27b \
+#         python scripts/behavior_probe.py author-agent
+# A COLLAPSE-detector (n=2/threshold=1, like `author`): a miss means the model staged nothing
+# clean — it never chose a write tool, mis-grounded the referent, or the change failed the
+# survey — not a wording nitpick.
+@dataclass
+class AuthorAgentScenario:
+    name: str
+    request: str                    # the natural-language authoring ask
+    check: Callable                 # (AuthoringSession) -> bool
+    desc: str
+    n: int = 2
+    threshold: int = 1
+    gated: bool = True              # False = measured but NOT a hard gate (a watch item)
+    tags: tuple = ("author-agent",)
+
+
+def _staged_clean(session) -> bool:
+    """The agent grounded, chose a write tool, and the change surveyed clean — a pending
+    proposal exists and passed the gate (nothing committed; the human would confirm)."""
+    return session.pending is not None and session.pending.ok
+
+
+AUTHOR_AGENT_SCENARIOS = [
+    AuthorAgentScenario(
+        name="author-agent.edits-an-entity",
+        request="Give the hilltop room a grander name — call it 'The Windy Tor'.",
+        check=_staged_clean, n=2, threshold=1,
+        desc="the agent grounds an entity, proposes a clean entity_edit, and stages it "
+             "for confirmation (ground -> edit -> gate)"),
+    AuthorAgentScenario(
+        name="author-agent.authors-a-region",
+        request=("Off the hilltop, add a small windswept moor that runs to a ruined "
+                 "watchtower, where a lonely beacon-keeper tends a cold signal-fire."),
+        check=_staged_clean, n=2, threshold=1,
+        desc="the agent authors a whole new region (region_author) off a real room and "
+             "stages a change that surveys clean (NL -> author -> gate)"),
+]
+
+
+async def run_author_agent_scenario(provider, sc: AuthorAgentScenario):
+    """Drive the LIVE authoring agent through a natural-language request and check it staged
+    a clean change. The agent's own model is Pydantic-AI/OpenRouter (built here, thinking
+    bounded); the region_author tool authors through the loom GM-tier ``provider``; the
+    worlddraft gate judges the merge. Nothing is committed — the point is that a real model
+    grounds, picks the right tool, and produces a change the atlas passes."""
+    from authoring.agent import AuthoringSession, build_agent, build_model, run_turn
+    model = build_model()
+    if model is None:
+        return 0, [(False, "no OPENROUTER_API_KEY — cannot build the live agent model")]
+    # region_author authors a region (a plan + one call per entity, personas larger than a
+    # one-line turn); lift the loom provider's token budget like the `author` family so a
+    # persona is not truncated at the 400 default.
+    if hasattr(provider, "max_tokens"):
+        provider.max_tokens = max(getattr(provider, "max_tokens", 0), 1200)
+    successes, samples = 0, []
+    for _ in range(sc.n):
+        session = AuthoringSession.from_path(WORLD, author_provider=provider,
+                                             engine_provider=provider)
+        try:
+            result = await run_turn(build_agent(model), session, sc.request)
+            ok = bool(sc.check(session))
+        except Exception as exc:
+            samples.append((False, f"ERROR: {exc!r}"))
+            continue
+        successes += ok
+        if session.pending is not None:
+            diff = "; ".join(session.pending.diff) or "(no structural change)"
+            detail = f"staged {'clean' if session.pending.ok else 'DIRTY'}: {diff[:88]}"
+        else:
+            reply = (getattr(result, "output", "") or "")[:88]
+            detail = f"nothing staged — reply: {reply!r}"
+        samples.append((ok, detail))
+    return successes, samples
+
+
 @dataclass
 class MemoryScenario:
     """Phase 5 memory depth: a REAL embedder must rank the on-topic memory top for
@@ -1264,9 +1350,10 @@ async def main():
     chosen_ident = [s for s in IDENTITY_SCENARIOS if picks(s)]
     chosen_author = [s for s in AUTHOR_SCENARIOS if picks(s)]
     chosen_play = [s for s in PLAY_SCENARIOS if picks(s)]
+    chosen_author_agent = [s for s in AUTHOR_AGENT_SCENARIOS if picks(s)]
     if not any((chosen, chosen_cmds, chosen_dir, chosen_gate, chosen_react,
                 chosen_idle, chosen_loot, chosen_mem, chosen_refl, chosen_ident,
-                chosen_author, chosen_play)):
+                chosen_author, chosen_play, chosen_author_agent)):
         tags = sorted({t for s in SCENARIOS for t in s.tags}
                       | {t for s in COMMAND_SCENARIOS for t in s.tags}
                       | {t for s in DIRECTOR_SCENARIOS for t in s.tags}
@@ -1278,14 +1365,16 @@ async def main():
                       | {t for s in REFLECTION_SCENARIOS for t in s.tags}
                       | {t for s in IDENTITY_SCENARIOS for t in s.tags}
                       | {t for s in AUTHOR_SCENARIOS for t in s.tags}
-                      | {t for s in PLAY_SCENARIOS for t in s.tags})
+                      | {t for s in PLAY_SCENARIOS for t in s.tags}
+                      | {t for s in AUTHOR_AGENT_SCENARIOS for t in s.tags})
         print(f"No scenarios match {selector!r}. Known tags: {tags}")
         return 2
 
     total = (len(chosen) + len(chosen_cmds) + len(chosen_dir)
              + len(chosen_gate) + len(chosen_react) + len(chosen_idle)
              + len(chosen_loot) + len(chosen_mem) + len(chosen_refl)
-             + len(chosen_ident) + len(chosen_author) + len(chosen_play))
+             + len(chosen_ident) + len(chosen_author) + len(chosen_play)
+             + len(chosen_author_agent))
     print(f"=== Loom behavioral regression — provider {pname} ===")
     if pname.startswith("fake"):
         print("WARNING: FakeProvider is scripted — this harness only means "
@@ -1408,6 +1497,20 @@ async def main():
         print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
               f"  — {sc.desc}")
         # Show the NPC's reply even on a pass — the point is to read the live line.
+        for hit, detail in samples:
+            print(f"          {'ok ' if hit else 'MISS'} {detail}")
+
+    for sc in chosen_author_agent:
+        # Phase 8 slice 3: the authoring agent — a natural-language request drives native
+        # tool-calling (Pydantic-AI, qwen3.6-27b) to author + validate a change that surveys
+        # clean, staged for confirmation. The loop + gate are the offline suite's job; this
+        # proves the real model grounds and picks the right tool. Slow (region authoring is
+        # many calls); keep the selection narrow.
+        successes, samples = await run_author_agent_scenario(provider, sc)
+        ok, v = verdict(sc, successes)
+        print(f"[{v:>5}] {sc.name:<28} {successes}/{sc.n} (need >={sc.threshold})"
+              f"  — {sc.desc}")
+        # Show the staged change even on a pass — the point is to read what it proposed.
         for hit, detail in samples:
             print(f"          {'ok ' if hit else 'MISS'} {detail}")
 

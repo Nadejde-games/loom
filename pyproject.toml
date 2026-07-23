@@ -28,13 +28,20 @@ dependencies = [
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
 game = ["python-dotenv>=1.0"]
-# The authoring workbench (Phase 8) — a Textual text-mode UI over the atlas + author.
-# A TOOL dependency, deliberately kept OUT of the core budget: `loom/` never imports
-# Textual (the UI imports `loom`, never the reverse), so the framework stays UI-agnostic
-# and offline-capable. Textual pulls rich/markdown-it-py/pygments and moves fast, which
-# is acceptable for a tool but not for the library. Install with:
+# The authoring workbench (Phase 8) — a Textual text-mode UI over the atlas + author,
+# plus (slice 3) the authoring AGENT. TOOL dependencies, deliberately kept OUT of the
+# core budget: `loom/` never imports either (the UI + agent import `loom`, never the
+# reverse), so the framework stays UI-agnostic and offline-capable. These pull heavier
+# trees (Textual → rich/pygments; pydantic-ai → openai/pydantic/opentelemetry) and move
+# fast, which is acceptable for a tool but not for the library. The agent is a SEPARATE
+# stack from the engine's slim LLMProvider — the authoring layer may carry heavier deps.
+# Install with:
 #   pip install -e ".[authoring]"
-authoring = ["textual>=1.0,<9"]
+authoring = [
+    "textual>=1.0,<9",                 # the text-mode UI (Explorer, play-in-editor, chat)
+    "pydantic-ai-slim[openai]>=2.15",  # the authoring agent (slice 3): native tool-calling
+                                       # over OpenRouter via the OpenAI-compatible provider
+]
 
 [build-system]
 requires = ["setuptools>=61"]

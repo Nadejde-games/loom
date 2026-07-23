@@ -171,6 +171,14 @@ def _unique_id(base: str, taken: set) -> str:
     return f"{root}_{n}"
 
 
+def mint_id(base: str, taken) -> str:
+    """A collision-free id from ``base``, against the ``taken`` ids — the public seam onto
+    the code-owned namespace. The staging surface (``loom/worlddraft.py``) mints a spawned
+    entity's id through this, so a new thing can never collide with the world it joins,
+    exactly as the framer's own ids cannot. Thin public wrapper over :func:`_unique_id`."""
+    return _unique_id(base, set(taken))
+
+
 def normalize_plan(plan: dict | None) -> dict:
     """Coerce a raw (model-authored) plan into a well-formed one — dropping malformed
     entries, deduping room slugs, and defaulting the entry — so the framer can trust
