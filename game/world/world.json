@@ -1,5 +1,4 @@
 {
-  "start_location": "cave_mouth",
   "director": {
     "tone": "a hushed, folkloric wilderness where small omens carry weight and the land seems half-awake",
     "goals": [
@@ -66,51 +65,95 @@
   },
   "loot": {
     "tiers": [
-      { "name": "common",   "rank": 1, "weight": 60, "max_tags": 1 },
-      { "name": "uncommon", "rank": 2, "weight": 30, "max_tags": 2 },
-      { "name": "rare",     "rank": 3, "weight": 10, "max_tags": 3 }
+      {
+        "name": "common",
+        "rank": 1,
+        "weight": 60,
+        "max_tags": 1
+      },
+      {
+        "name": "uncommon",
+        "rank": 2,
+        "weight": 30,
+        "max_tags": 2
+      },
+      {
+        "name": "rare",
+        "rank": 3,
+        "weight": 10,
+        "max_tags": 3
+      }
     ],
-    "themes": ["relic", "charm", "token", "curio", "talisman"],
+    "themes": [
+      "relic",
+      "charm",
+      "token",
+      "curio",
+      "talisman"
+    ],
     "tags": [
-      { "tag": "rain-beaded",   "group": "weather", "when": ["weather"] },
-      { "tag": "storm-worn",    "group": "weather", "when": ["weather"], "min_rank": 2 },
-      { "tag": "dusk-touched",  "group": "time",    "when": ["time"] },
-      { "tag": "night-cold",    "group": "time",    "when": ["time"], "min_rank": 2 },
-      { "tag": "moss-grown",    "group": "make" },
-      { "tag": "iron-bound",    "group": "make" },
-      { "tag": "bone-pale",     "group": "make" },
-      { "tag": "hand-worn",     "group": "make" },
-      { "tag": "luck-bringing", "group": "omen" },
-      { "tag": "ill-omened",    "group": "omen", "min_rank": 2 },
-      { "tag": "rune-marked",   "group": "omen", "min_rank": 3 }
+      {
+        "tag": "rain-beaded",
+        "group": "weather",
+        "when": [
+          "weather"
+        ]
+      },
+      {
+        "tag": "storm-worn",
+        "group": "weather",
+        "when": [
+          "weather"
+        ],
+        "min_rank": 2
+      },
+      {
+        "tag": "dusk-touched",
+        "group": "time",
+        "when": [
+          "time"
+        ]
+      },
+      {
+        "tag": "night-cold",
+        "group": "time",
+        "when": [
+          "time"
+        ],
+        "min_rank": 2
+      },
+      {
+        "tag": "moss-grown",
+        "group": "make"
+      },
+      {
+        "tag": "iron-bound",
+        "group": "make"
+      },
+      {
+        "tag": "bone-pale",
+        "group": "make"
+      },
+      {
+        "tag": "hand-worn",
+        "group": "make"
+      },
+      {
+        "tag": "luck-bringing",
+        "group": "omen"
+      },
+      {
+        "tag": "ill-omened",
+        "group": "omen",
+        "min_rank": 2
+      },
+      {
+        "tag": "rune-marked",
+        "group": "omen",
+        "min_rank": 3
+      }
     ]
   },
-  "locations": [
-    {
-      "id": "cave_mouth",
-      "name": "The Cave Mouth",
-      "description": "A jagged opening in the hillside breathes cold air. Moss clings to wet stone, and somewhere within, water drips in no particular rhythm. A thin trail leads out to the north; the dark slopes down deeper in.",
-      "exits": { "north": "hill_path", "down": "cave_interior" }
-    },
-    {
-      "id": "hill_path",
-      "name": "The Hill Path",
-      "description": "A muddy path winds along the hillside under a bruised evening sky. It climbs on, up toward the bald crown of the hill; the cave mouth yawns back to the south.",
-      "exits": { "south": "cave_mouth", "up": "hilltop" }
-    },
-    {
-      "id": "hilltop",
-      "name": "The Hilltop",
-      "description": "The path gives out on the bald, windswept crown of the hill. A ring of blackened, tumbled stones marks where a signal-fire once burned, long cold now. From here the whole valley lies open below, grey and folded, and the wind never quite stops. The path falls away downward to the south.",
-      "exits": { "down": "hill_path" }
-    },
-    {
-      "id": "cave_interior",
-      "name": "Inside the Cave",
-      "description": "Darkness, and the smell of old smoke. A dead fire pit sits at the center, ringed by blackened stones. The only way out is up.",
-      "exits": { "up": "cave_mouth" }
-    }
-  ],
   "start_quests": [
     {
       "title": "The Old Signal-Fire",
@@ -123,6 +166,81 @@
       "destination": "cave_interior"
     }
   ],
+  "start_location": "cave_mouth",
+  "locations": [
+    {
+      "id": "cave_mouth",
+      "name": "The Cave Mouth",
+      "description": "A jagged opening in the hillside breathes cold air. Moss clings to wet stone, and somewhere within, water drips in no particular rhythm. A thin trail leads out to the north; the dark slopes down deeper in.",
+      "exits": {
+        "north": "hill_path",
+        "down": "cave_interior"
+      }
+    },
+    {
+      "id": "hill_path",
+      "name": "The Hill Path",
+      "description": "A muddy path winds along the hillside under a bruised evening sky. It climbs on, up toward the bald crown of the hill; the cave mouth yawns back to the south.",
+      "exits": {
+        "south": "cave_mouth",
+        "up": "hilltop"
+      }
+    },
+    {
+      "id": "hilltop",
+      "name": "The Hilltop",
+      "description": "The path gives out on the bald, windswept crown of the hill. A ring of blackened, tumbled stones marks where a signal-fire once burned, long cold now. From here the whole valley lies open below, grey and folded, and the wind never quite stops. The path falls away downward to the south.",
+      "exits": {
+        "down": "hill_path"
+      }
+    },
+    {
+      "id": "cave_interior",
+      "name": "Inside the Cave",
+      "description": "Darkness, and the smell of old smoke. A dead fire pit sits at the center, ringed by blackened stones. The only way out is up.",
+      "exits": {
+        "up": "cave_mouth",
+        "north": "narrow_passage"
+      }
+    },
+    {
+      "id": "narrow_passage",
+      "name": "Narrow Passage",
+      "description": "A tight corridor descends before you, its low ceiling heavy with dripping stalactites that send cold water pattering onto the rocks below. You must duck to proceed, the air thick with the scent of wet stone and decay.",
+      "exits": {
+        "east": "echoing_cavern",
+        "west": "deep_chamber",
+        "south": "cave_interior"
+      }
+    },
+    {
+      "id": "echoing_cavern",
+      "name": "Echoing Cavern",
+      "description": "You step into a small, round chamber where your footsteps ring out with disproportionate clarity, bouncing off the curved stone walls. To the north, a solid rock face bears the faint, weathered scratches of ancient markings, marking the end of this path.",
+      "exits": {
+        "west": "narrow_passage",
+        "north": "hidden_grotto"
+      }
+    },
+    {
+      "id": "deep_chamber",
+      "name": "Deep Chamber",
+      "description": "The tunnel opens into a vast, shadowy chamber dominated by a still underground pool. Faint light from above filters down to shimmer across the dark water's surface. The air here is cool and carries the heavy scent of wet stone.",
+      "exits": {
+        "east": "narrow_passage",
+        "south": "hidden_grotto"
+      }
+    },
+    {
+      "id": "hidden_grotto",
+      "name": "Hidden Grotto",
+      "description": "You step into a cozy, intimate alcove where the air feels still and warm. Clusters of glowing crystals embedded in the walls cast a soft, ethereal light that dances across the smooth stone floor, creating a serene sanctuary amidst the labyrinth.",
+      "exits": {
+        "north": "deep_chamber",
+        "south": "echoing_cavern"
+      }
+    }
+  ],
   "npcs": [
     {
       "id": "hermit",
@@ -131,25 +249,114 @@
       "location": "cave_mouth",
       "persona": {
         "backstory": "You have lived alone at this cave for thirty winters, since the war took your village. You trust slowly and you remember everything.",
-        "traits": ["wary", "dryly humorous", "observant", "lonely but proud"],
-        "goals": ["protect your solitude", "judge whether this stranger is a threat", "hint that you know these hills better than you let on"],
+        "traits": [
+          "wary",
+          "dryly humorous",
+          "observant",
+          "lonely but proud"
+        ],
+        "goals": [
+          "protect your solitude",
+          "judge whether this stranger is a threat",
+          "hint that you know these hills better than you let on"
+        ],
         "voice": "terse, old-fashioned, fond of short proverbs",
         "disposition": "deeply reticent. You rarely speak first and you do not answer idle chatter or remarks not aimed at you. Most of the time you say nothing at all, and only break silence when directly addressed or when something truly touches your solitude or safety."
-      }
+      },
+      "wanders": false
     },
     {
       "id": "guide",
       "name": "Wren the Wayfinder",
       "description": "A wiry, sun-browned young woman with a walking staff and a satchel of maps, always half-turned toward the next path.",
       "location": "cave_mouth",
-      "wanders": true,
       "persona": {
         "backstory": "You have guided travelers through these hills since you were a girl, for coin and for the pleasure of showing a stranger something new. You know every path, and you are the cheerful opposite of the old hermit who keeps to his cave.",
-        "traits": ["cheerful", "obliging", "brisk", "curious", "quick to trust"],
-        "goals": ["make newcomers feel welcome", "gladly set off walking to lead a traveler wherever they wish to go", "show off the hills you love", "keep those in your charge safe on the paths"],
+        "traits": [
+          "cheerful",
+          "obliging",
+          "brisk",
+          "curious",
+          "quick to trust"
+        ],
+        "goals": [
+          "make newcomers feel welcome",
+          "gladly set off walking to lead a traveler wherever they wish to go",
+          "show off the hills you love",
+          "keep those in your charge safe on the paths"
+        ],
         "voice": "warm, quick, encouraging, fond of pointing things out",
         "disposition": "gregarious and forthcoming. You greet newcomers readily, chime in on almost anything said nearby, and are quick to offer help or a friendly word — you would rather speak up than let a silence sit."
-      }
+      },
+      "wanders": true
+    },
+    {
+      "id": "narrow_passage_2",
+      "name": "Kaelen",
+      "description": "A gaunt figure crouching low to avoid the dripping stalactites, wiping water from their goggles with a grimy sleeve.",
+      "location": "narrow_passage",
+      "persona": {
+        "backstory": "Kaelen grew up in the deep caverns beneath the mountain, where echoes were not mere reverberations but warnings. As a child, she heard an echo repeat her own voice back to her — but the words were wrong, twisted into a prophecy of her family's death in a cave-in. The echo had spoken the truth before it happened. Since then, she has believed that echoes carry fragments of fate, and to ignore them is to invite disaster. She listens carefully to every echo, searching for omens, and avoids speaking in places where her voice might return to her altered.",
+        "traits": [
+          "observant",
+          "patient",
+          "cash-strapped",
+          "superstitious about echoes"
+        ],
+        "goals": [
+          "Find the source of the faint light in the Deep Chamber",
+          "Avoid getting lost in the loop forever",
+          "Equipped with a lantern that is running low on oil"
+        ],
+        "voice": "Speaks in hushed, urgent tones, often commenting on the acoustics or the dampness of the air; uses short, practical sentences."
+      },
+      "wanders": true
+    },
+    {
+      "id": "echoing_cavern_2",
+      "name": "Orrin the Listener",
+      "description": "A blindfolded man sits cross-legged on the stone floor, his head tilted as if catching the scent of a distant storm.",
+      "location": "echoing_cavern",
+      "persona": {
+        "backstory": "You were once a cartographer who lost your sight in a cave-in, but gained a hyper-sensitive attunement to acoustics. You retreated to this round chamber because its perfect geometry amplifies the subtle vibrations of the labyrinth, allowing you to 'see' the movement of water, bats, and people through echo alone. You are not lost; you are the map.",
+        "traits": [
+          "Hyper-aware",
+          "Patient",
+          "Eccentric",
+          "Defensive",
+          "Whispering"
+        ],
+        "goals": [
+          "To maintain the silence of the cavern for accurate listening",
+          "To warn travelers of structural weaknesses they cannot see",
+          "To catalog the unique 'sound' of every visitor who passes"
+        ],
+        "voice": "Soft, rhythmic, and precise; you rarely shout, preferring to mimic the tone and pitch of those who speak to you, adding slight delays as if testing the acoustics of their words."
+      },
+      "wanders": false
+    },
+    {
+      "id": "hidden_grotto_2",
+      "name": "Elara the Light-Weaver",
+      "description": "A solitary figure draped in luminous silks, sitting cross-legged amidst the glowing crystals, their hands gently resting on the pulsating stone.",
+      "location": "hidden_grotto",
+      "persona": {
+        "backstory": "You are Elara, once a healer from the surface who fled a plague that consumed your village. You descended into these caves, not seeking gold, but silence. The crystals here do not just glow; they hum with a calming frequency that healed your mind when nothing else could. You have lived here for years, tending to the light, believing you are the only one who understands the language of the stones.",
+        "traits": [
+          "Contemplative",
+          "Guardian-like",
+          "Melancholic",
+          "Sensory-focused",
+          "Isolationist"
+        ],
+        "goals": [
+          "Maintain the harmony of the crystal song",
+          "Protect the grotto from intruders who might shatter the peace",
+          "Decipher the ancient markings found in the Echoing Cavern to find a way to cure the surface plague"
+        ],
+        "voice": "Soft-spoken and rhythmic, often using metaphors related to light, sound, and growth. You speak slowly, as if testing the air with each word, and rarely raise your voice, preferring the hum of the crystals to carry your presence."
+      },
+      "wanders": false
     }
   ],
   "items": [
@@ -158,21 +365,60 @@
       "name": "a rusty lantern",
       "description": "A dented tin lantern, its glass smoked but its wick still good. It would light the way into the dark.",
       "holder": "cave_mouth",
-      "aliases": ["lantern", "lamp", "light"]
+      "aliases": [
+        "lantern",
+        "lamp",
+        "light"
+      ],
+      "portable": true
     },
     {
       "id": "brass_key",
       "name": "an ornate brass key",
       "description": "A heavy key of tarnished brass, its bow worked into the shape of a coiled serpent. It fits no lock you can see.",
       "holder": "cave_mouth",
-      "aliases": ["key", "brass key", "brass"]
+      "aliases": [
+        "key",
+        "brass key",
+        "brass"
+      ],
+      "portable": true
     },
     {
       "id": "wren_map",
       "name": "a worn hill-map",
       "description": "A much-folded map of the hills in Wren's hand, the ink soft at the creases, every path she knows marked in a careful hand.",
       "holder": "guide",
-      "aliases": ["map", "hill-map", "hill map"]
+      "aliases": [
+        "map",
+        "hill-map",
+        "hill map"
+      ],
+      "portable": true
+    },
+    {
+      "id": "deep_chamber_2",
+      "name": "a submerged iron key",
+      "description": "Rusted shut and heavy with silt, this key rests undisturbed on the pool's bottom. Its teeth are worn smooth by time, suggesting it has not turned a lock in centuries.",
+      "holder": "deep_chamber",
+      "aliases": [
+        "key",
+        "iron key"
+      ],
+      "portable": true
+    },
+    {
+      "id": "hidden_grotto_3",
+      "name": "a shard of blue quartz",
+      "description": "This jagged fragment glows with the same soft, bioluminescent hum as the surrounding crystals. It feels warm to the touch, pulsing gently like a sleeping heartbeat.",
+      "holder": "hidden_grotto",
+      "aliases": [
+        "shard",
+        "quartz",
+        "crystal",
+        "fragment"
+      ],
+      "portable": true
     }
   ]
 }

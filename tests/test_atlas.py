@@ -49,14 +49,19 @@ class DemoWorldTests(unittest.TestCase):
         self.view = survey(world, start, source="game")
 
     def test_counts(self):
+        # Baseline of the shipped world. Grew 2026-07-23: the authoring agent (Phase 8 slice 3)
+        # expanded cave_interior into a 4-room labyrinth (narrow_passage, echoing_cavern,
+        # deep_chamber, hidden_grotto, + their inhabitants), authored + confirmed + saved. The
+        # world still surveys clean (see test_shipped_world_is_clean); these are the new golden
+        # counts.
         s = self.view.summary()
-        self.assertEqual(s["locations"], 4)
-        self.assertEqual(s["npcs"], 2)
-        self.assertEqual(s["items"], 3)
-        self.assertEqual(s["exits"], 6)
+        self.assertEqual(s["locations"], 8)
+        self.assertEqual(s["npcs"], 5)
+        self.assertEqual(s["items"], 5)
+        self.assertEqual(s["exits"], 16)
 
     def test_all_rooms_reachable(self):
-        self.assertEqual(self.view.summary()["reachable"], 4)
+        self.assertEqual(self.view.summary()["reachable"], 8)
 
     def test_shipped_world_is_clean(self):
         self.assertEqual(self.view.errors, [], msg=[f.message for f in self.view.errors])
