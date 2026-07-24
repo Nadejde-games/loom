@@ -1,0 +1,51 @@
+# Run the offline test suite (gate 1 — no network, no GPU) on every push and PR,
+# and publish the test count as a badge.
+#
+# Two badges ride on this workflow (both in the README):
+#   - the workflow status badge (passing/failing), served by GitHub
+#   - a "N passing" count badge: the main-branch run force-pushes a one-commit
+#     `badges` branch holding tests.json, which shields.io renders via its
+#     /endpoint API. If the suite fails, the push step never runs — the count
+#     badge keeps the last green number while the status badge goes red.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "**.md"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (all extras, so no tests skip)
+        run: pip install -e ".[authoring,game]"
+      - name: Run the offline suite
+        run: python -m unittest discover -s tests 2>&1 | tee test-output.txt
+      - name: Publish the count badge (main only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          count=$(grep -Eo 'Ran [0-9]+ tests' test-output.txt | grep -Eo '[0-9]+')
+          test -n "$count"
+          mkdir /tmp/badges && cd /tmp/badges
+          git init -q -b badges
+          printf '{"schemaVersion": 1, "label": "tests", "message": "%s passing", "color": "brightgreen"}\n' "$count" > tests.json
+          git -c user.name=github-actions -c user.email=actions@users.noreply.github.com add tests.json
+          git -c user.name=github-actions -c user.email=actions@users.noreply.github.com commit -q -m "tests badge: $count passing"
+          git push -q --force "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges

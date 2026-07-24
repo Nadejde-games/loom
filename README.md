@@ -1,5 +1,7 @@
 # Loom + the forever game
 
+[![tests](https://github.com/Nadejde-games/loom/actions/workflows/tests.yml/badge.svg)](https://github.com/Nadejde-games/loom/actions/workflows/tests.yml)
+[![test count](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNadejde-games%2Floom%2Fbadges%2Ftests.json)](https://github.com/Nadejde-games/loom/actions/workflows/tests.yml)
 [![docs](https://github.com/Nadejde-games/loom/actions/workflows/docs.yml/badge.svg)](https://nadejde-games.github.io/loom/)
 
 Four things live here:
