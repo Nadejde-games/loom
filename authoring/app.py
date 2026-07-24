@@ -401,15 +401,17 @@ class WorkbenchApp(App):
         falls back to the offline fake. Distinct from the agent's own Pydantic-AI model, which
         the ChatPanel builds itself."""
         if _is_ollama():
-            gm = (os.environ.get("LOOM_GM_MODEL") or os.environ.get("LOOM_OLLAMA_MODEL")
-                  or "qwen3.6:27b")
+            author_tag = (os.environ.get("LOOM_AUTHOR_MODEL") or os.environ.get("LOOM_GM_MODEL")
+                          or os.environ.get("LOOM_OLLAMA_MODEL") or "qwen3.6:27b")
             host = os.environ.get("LOOM_OLLAMA_HOST", "http://localhost:11434")
-            author = OllamaProvider(model=gm, host=host, max_tokens=1200)
+            author = OllamaProvider(model=author_tag, host=host, max_tokens=1200)
             return author, _live_provider()
         key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LOOM_OPENROUTER_API_KEY")
         if not key:
             return None, None
-        author = OpenRouterProvider(model="qwen/qwen3.6-27b", api_key=key, max_tokens=1200)
+        author_slug = (os.environ.get("LOOM_AUTHOR_MODEL") or os.environ.get("LOOM_GM_MODEL")
+                       or "qwen/qwen3.6-27b")
+        author = OpenRouterProvider(model=author_slug, api_key=key, max_tokens=1200)
         return author, _live_provider()
 
     # -- hand-editing (the inspector edit form) ----------------------------------

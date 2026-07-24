@@ -84,40 +84,78 @@ set_env_var() {
 }
 
 # ── Ollama model menu ───────────────────────────────────────────────────────
-# The models offered for the director + authoring-agent tier. EDIT THIS TABLE
-# freely — one entry per line as "tag|approx VRAM|note". VRAM figures are rough
-# q4 estimates; confirm against your own hardware and the tags in your Ollama
-# library (https://ollama.com/library). A "custom" entry is always appended so
-# you can type any tag at runtime.
+# The models offered for the director + authoring-agent tier. EDIT THIS TABLE freely to add
+# sizes that suit your GPU — one entry per line as "tag|approx VRAM|note". A wrong tag no
+# longer aborts the wizard (it just re-prompts), and a "custom" entry is always appended so
+# you can type any tag at runtime. VRAM figures are rough q4 estimates.
 OLLAMA_DIRECTOR_MODELS=(
-    "qwen3.6:27b|~17 GB|dense — best judgment for authoring (recommended)"
-    "qwen3.6:14b|~9 GB|dense — a lighter middle option"
-    "qwen3.6:8b|~5 GB|dense — fits a modest GPU / laptop"
-    "qwen3.5:35b-a3b|~24 GB|MoE — fastest, most memory; may be more hit-and-miss for authoring"
+    "qwen3.6:27b|~17 GB|dense — strong judgment; best for authoring"
+    "qwen3.5:35b-a3b|~24 GB|MoE — fastest, heaviest; can be more hit-and-miss for authoring"
+    "qwen3.5:9b|~6 GB|dense — a lighter option for a smaller GPU"
+    "qwen3.5:4b|~3 GB|dense — the smallest, for a modest GPU / laptop"
 )
-MOE_MODEL="qwen3.5:35b-a3b"   # the fast MoE NPC tier (also a director-menu option)
+# macOS only: Apple-Silicon Metal (MLX) builds — the preferred models on a Mac, so they are
+# prepended to the menu on Darwin (shown first). VRAM ~= unified memory used.
+OLLAMA_DIRECTOR_MODELS_MACOS=(
+    "qwen3.5:35b-mlx|~20 GB|MLX — fastest on Metal if you have the RAM, but only 3b active params so may be less reliable for authoring"
+    "qwen3.5:27b-mlx|~16 GB|MLX — will feel very slow during gameplay on Metal; OK for authoring"
+    "qwen3.5:9b-mlx|~6 GB|MLX — a lighter middle option on Metal"
+    "qwen3.5:4b-mlx|~3 GB|MLX — good for quick-and-dirty gameplay on Metal; probably not OK for authoring"
+)
+# Hosted OpenRouter slugs for the three roles — the same sizes as the portable local menu,
+# as OpenRouter model IDs (no Metal builds; those are Mac-local only). NOT pulled: an invalid
+# slug surfaces at first inference, not at setup. Edit freely; a "custom" entry is appended.
+OPENROUTER_MODELS=(
+    "qwen/qwen3.6-27b|dense|strong judgment; best for authoring"
+    "qwen/qwen3.6-35b-a3b|MoE|fastest; the default NPC tier"
+    "qwen/qwen3.5-9b|dense|a lighter, cheaper option"
+)
 
-# select_director_model — print the menu, read a choice, set REPLY_MODEL to the tag.
-select_director_model() {
-    local i=1 entry tag vram note count choice
-    for entry in "${OLLAMA_DIRECTOR_MODELS[@]}"; do
-        IFS='|' read -r tag vram note <<< "$entry"
-        printf '    %b%d)%b %-16s %b%-7s%b %s\n' "$BOLD" "$i" "$RESET" "$tag" "$DIM" "$vram" "$RESET" "$note"
+# select_model — print MODEL_MENU (entries "tag|col|note"), read a choice, set REPLY_MODEL.
+# MODEL_KIND names the thing typed for a custom pick; MODEL_CUSTOM_DEFAULT seeds it.
+# MODEL_DEFAULT (a tag) marks the per-role suggested option and pre-selects its number.
+select_model() {
+    local i=1 entry tag col note choice default_idx=1 mark
+    for entry in "${MODEL_MENU[@]}"; do
+        IFS='|' read -r tag col note <<< "$entry"
+        mark=""
+        if [ "$tag" = "${MODEL_DEFAULT:-}" ]; then
+            default_idx=$i
+            mark=" ${DIM}(suggested)${RESET}"
+        fi
+        printf '    %b%d)%b %-21s %b%-5s%b %s%s\n' "$BOLD" "$i" "$RESET" "$tag" "$DIM" "$col" "$RESET" "$note" "$mark"
         i=$((i + 1))
     done
-    count=${#OLLAMA_DIRECTOR_MODELS[@]}
-    printf '    %b%d)%b %-16s %b%-7s%b %s\n' "$BOLD" "$i" "$RESET" "custom" "$DIM" "" "$RESET" "type your own Ollama tag"
-    choice="$(ask_val 'Model number' 1)"
+    printf '    %b%d)%b %-21s %b%-5s%b %s\n' "$BOLD" "$i" "$RESET" "custom" "$DIM" "" "$RESET" "type your own ${MODEL_KIND:-tag}"
+    choice="$(ask_val 'Model number' "$default_idx")"
     if ! printf '%s' "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "$i" ]; then
-        warn "not a valid choice — using option 1 (${OLLAMA_DIRECTOR_MODELS[0]%%|*})"
-        choice=1
+        warn "not a valid choice — using the suggested option $default_idx"
+        choice=$default_idx
     fi
     if [ "$choice" -eq "$i" ]; then
-        REPLY_MODEL="$(ask_val 'Ollama tag' qwen3.6:27b)"
+        REPLY_MODEL="$(ask_val "${MODEL_KIND:-tag}" "${MODEL_CUSTOM_DEFAULT:-}")"
     else
-        entry="${OLLAMA_DIRECTOR_MODELS[$((choice - 1))]}"
+        entry="${MODEL_MENU[$((choice - 1))]}"
         REPLY_MODEL="${entry%%|*}"
     fi
+}
+
+# select_and_pull_model — menu-pick a model and pull it, re-prompting on a bad tag; sets
+# REPLY_MODEL. Deduplicates: a tag already pulled this run (a role reusing another's model)
+# is not fetched again. PULLED_MODELS is the space-delimited set of tags pulled so far.
+PULLED_MODELS=" "
+select_and_pull_model() {
+    while :; do
+        select_model
+        case "$PULLED_MODELS" in
+            *" $REPLY_MODEL "*) break ;;              # already pulled this run
+        esac
+        if pull_model "$REPLY_MODEL"; then
+            PULLED_MODELS="$PULLED_MODELS$REPLY_MODEL "
+            break
+        fi
+        say "  pick another model, or enter a tag that exists in your library."
+    done
 }
 
 # ── Port helpers ────────────────────────────────────────────────────────────
@@ -146,6 +184,17 @@ next_free_port() {
         p=$((p + 1))
     done
     printf '%s' "$1"
+}
+
+# pull_model TAG — pull TAG, returning non-zero (WITHOUT aborting the wizard) when it does
+# not exist in the Ollama library, so the caller can re-prompt instead of the whole run dying.
+pull_model() {
+    if run ollama pull "$1"; then
+        return 0
+    fi
+    warn "could not pull '$1' — that tag may not exist in the Ollama library."
+    say "  Browse valid tags at https://ollama.com/library (e.g. .../library/qwen3)."
+    return 1
 }
 
 # warm_model MODEL — preload MODEL into Ollama's memory so the first real inference doesn't
@@ -235,11 +284,6 @@ fi
 case "$BACKEND" in
     openrouter|1|OpenRouter|OPENROUTER)
         set_env_var LOOM_PROVIDER openrouter
-        # Pin the director/author tier to the hosted slug. This also clears any stale Ollama
-        # tag a previous local run left in LOOM_GM_MODEL (an Ollama tag like "qwen3.6:27b" is
-        # NOT a valid OpenRouter slug, and LOOM_GM_MODEL is read on both backends). The NPC
-        # tier uses its code default (qwen/qwen3.6-35b-a3b); override via LOOM_OPENROUTER_MODEL.
-        set_env_var LOOM_GM_MODEL qwen/qwen3.6-27b
         say "  Get a key at ${BLUE}https://openrouter.ai/keys${RESET}"
         read -r -s -p "$(printf '%b?%b OpenRouter API key (leave blank to add later): ' "$BLUE" "$RESET")" OR_KEY || OR_KEY=''
         echo
@@ -248,6 +292,36 @@ case "$BACKEND" in
         else
             warn "no key entered — set OPENROUTER_API_KEY in ${ENV_FILE/#$REPO_ROOT\//} before running live."
         fi
+
+        # Three model choices, same three roles as the local path — hosted OpenRouter slugs.
+        # Not pulled (hosted); an invalid slug surfaces at first inference, not here. Setting all
+        # three also overwrites any stale Ollama tags a previous local run left behind.
+        step "Choosing models — author, director, NPCs"
+        say "  Pick a hosted model for each of the three roles. They can be the same or different."
+        MODEL_MENU=("${OPENROUTER_MODELS[@]}")
+        MODEL_KIND="OpenRouter slug"
+        MODEL_CUSTOM_DEFAULT="qwen/qwen3.6-27b"
+
+        say ""
+        say "  ${BOLD}1/3 · authoring agent${RESET} — the workbench's AI world-author (wants reliable judgment)"
+        MODEL_DEFAULT="qwen/qwen3.6-27b"
+        select_model
+        set_env_var LOOM_AUTHOR_MODEL "$REPLY_MODEL"
+        ok "authoring agent: $REPLY_MODEL"
+
+        say ""
+        say "  ${BOLD}2/3 · game master / director${RESET} — the unseen hand shaping ambient world beats"
+        MODEL_DEFAULT="qwen/qwen3.6-27b"
+        select_model
+        set_env_var LOOM_GM_MODEL "$REPLY_MODEL"
+        ok "director: $REPLY_MODEL"
+
+        say ""
+        say "  ${BOLD}3/3 · NPC reactions${RESET} — character dialogue in the world (wants speed)"
+        MODEL_DEFAULT="qwen/qwen3.6-35b-a3b"
+        select_model
+        set_env_var LOOM_OPENROUTER_MODEL "$REPLY_MODEL"
+        ok "NPCs: $REPLY_MODEL"
         ;;
 
     ollama|2|Ollama|OLLAMA)
@@ -285,47 +359,61 @@ case "$BACKEND" in
             fi
             ollama list >/dev/null 2>&1 || warn "ollama daemon not reachable yet — start it with 'ollama serve' before running the game."
         fi
-        # 5c. Q1 — the director + authoring-agent tier. This one model powers both the
-        #     game-master director and the workbench's AI world-author. Pick by memory:
-        #     a dense model judges better; the MoE is faster but hungrier.
-        step "Choosing the director + authoring-agent model"
-        say "  Drives the game director ${BOLD}and${RESET} the authoring agent (the workbench's AI"
-        say "  world-author). Dense models tend to author more reliably; the MoE trades some of"
-        say "  that for speed and needs the most memory. Pick by your GPU:"
-        select_director_model                         # sets REPLY_MODEL
-        DIRECTOR_MODEL="$REPLY_MODEL"
-        run ollama pull "$DIRECTOR_MODEL"
-        set_env_var LOOM_GM_MODEL "$DIRECTOR_MODEL"
-        ok "director + author model: $DIRECTOR_MODEL"
-
-        # 5d. Q2 — an optional SECOND model, the fast MoE, dedicated to the NPCs, so dialogue
-        #     stays snappy while the director/author thinks on the denser one. Only offered if
-        #     the MoE was not already chosen above.
-        NPC_MODEL="$DIRECTOR_MODEL"
-        if [ "$DIRECTOR_MODEL" != "$MOE_MODEL" ]; then
-            step "A separate model for the NPCs?"
-            say "  You can run the NPCs on a second, faster model so their dialogue stays snappy"
-            say "  while the director/author reasons on the denser one. This adds ${BOLD}$MOE_MODEL${RESET}"
-            say "  (${DIM}~24 GB, MoE${RESET}) alongside — only worth it if you have the memory for both."
-            if ask_yn "Install a separate MoE model just for the NPCs ($MOE_MODEL)?" n; then
-                run ollama pull "$MOE_MODEL"
-                NPC_MODEL="$MOE_MODEL"
-                ok "NPC model: $MOE_MODEL (separate, faster)"
-            else
-                ok "NPCs will share the director model: $DIRECTOR_MODEL"
-            fi
+        # 5c. Three model choices — the author, the director, and the NPCs each run their own
+        #     model (the same tag for two roles is fine; it is pulled once). The menu notes
+        #     weigh authoring reliability against gameplay speed.
+        step "Choosing models — author, director, NPCs"
+        say "  Pick a model for each of the three roles. They can be the same or different;"
+        say "  the menu notes flag which sizes suit authoring (reliable) vs gameplay (fast)."
+        # Menu = the portable list, with the Metal-optimised MLX builds surfaced first on a Mac.
+        # Per-role suggested defaults: a reliable dense model for the author, a lighter one for
+        # the director, and a fast/small one for the NPCs (Mac defaults stay memory-conscious).
+        if [ "$OS" = macos ]; then
+            MODEL_MENU=("${OLLAMA_DIRECTOR_MODELS_MACOS[@]}" "${OLLAMA_DIRECTOR_MODELS[@]}")
+            AUTHOR_DEFAULT="qwen3.5:27b-mlx"
+            GM_DEFAULT="qwen3.5:9b-mlx"
+            NPC_DEFAULT="qwen3.5:4b-mlx"
         else
-            ok "NPCs will share the MoE model: $DIRECTOR_MODEL"
+            MODEL_MENU=("${OLLAMA_DIRECTOR_MODELS[@]}")
+            AUTHOR_DEFAULT="qwen3.6:27b"
+            GM_DEFAULT="qwen3.6:27b"
+            NPC_DEFAULT="qwen3.5:35b-a3b"
         fi
-        set_env_var LOOM_OLLAMA_MODEL "$NPC_MODEL"
+        MODEL_KIND="Ollama tag"
+        MODEL_CUSTOM_DEFAULT="qwen3.6:27b"
 
-        # 5e. Optional warm-up: preload the configured model(s) into memory now so the first
-        #     response isn't slowed by loading weights into VRAM. Warms each distinct model.
+        say ""
+        say "  ${BOLD}1/3 · authoring agent${RESET} — the workbench's AI world-author (wants reliable judgment)"
+        MODEL_DEFAULT="$AUTHOR_DEFAULT"
+        select_and_pull_model
+        AUTHOR_MODEL="$REPLY_MODEL"
+        set_env_var LOOM_AUTHOR_MODEL "$AUTHOR_MODEL"
+        ok "authoring agent: $AUTHOR_MODEL"
+
+        say ""
+        say "  ${BOLD}2/3 · game master / director${RESET} — the unseen hand shaping ambient world beats"
+        MODEL_DEFAULT="$GM_DEFAULT"
+        select_and_pull_model
+        GM_MODEL="$REPLY_MODEL"
+        set_env_var LOOM_GM_MODEL "$GM_MODEL"
+        ok "director: $GM_MODEL"
+
+        say ""
+        say "  ${BOLD}3/3 · NPC reactions${RESET} — character dialogue in the world (wants speed)"
+        MODEL_DEFAULT="$NPC_DEFAULT"
+        select_and_pull_model
+        NPC_MODEL="$REPLY_MODEL"
+        set_env_var LOOM_OLLAMA_MODEL "$NPC_MODEL"
+        ok "NPCs: $NPC_MODEL"
+
+        # 5d. Optional warm-up: preload the distinct set of chosen models into memory now, so
+        #     the first response isn't slowed by loading weights. Each distinct tag once.
         step "Warming up"
         if ask_yn "Preload the model(s) into Ollama now so the first response is fast?" y; then
-            WARM_MODELS="$DIRECTOR_MODEL"
-            [ "$NPC_MODEL" != "$DIRECTOR_MODEL" ] && WARM_MODELS="$WARM_MODELS $NPC_MODEL"
-            for m in $WARM_MODELS; do
+            WARMED=" "
+            for m in "$AUTHOR_MODEL" "$GM_MODEL" "$NPC_MODEL"; do
+                case "$WARMED" in *" $m "*) continue ;; esac
+                WARMED="$WARMED$m "
                 say "  warming $m (loading into memory — this can take a moment)…"
                 warm_model "$m"
             done

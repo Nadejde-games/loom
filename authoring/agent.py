@@ -313,13 +313,15 @@ def _ollama_v1() -> str:
 
 
 def author_model_name() -> str:
-    """The director/author tier tag for the current backend — the model that drives the
-    authoring agent. On Ollama it is the game-master tier (LOOM_GM_MODEL), falling back to the
-    NPC tag then a dense default; on OpenRouter it is the hosted GM slug (AGENT_MODEL)."""
+    """The tag for the authoring agent's OWN model. ``LOOM_AUTHOR_MODEL`` selects it directly
+    (the wizard's dedicated authoring choice), then it falls back to the director tier
+    (``LOOM_GM_MODEL``) and — on Ollama — the NPC tag and a dense default; on OpenRouter the
+    hosted author slug (``AGENT_MODEL``)."""
     if _is_ollama():
-        return (os.environ.get("LOOM_GM_MODEL") or os.environ.get("LOOM_OLLAMA_MODEL")
-                or "qwen3.6:27b")
-    return os.environ.get("LOOM_GM_MODEL") or AGENT_MODEL
+        return (os.environ.get("LOOM_AUTHOR_MODEL") or os.environ.get("LOOM_GM_MODEL")
+                or os.environ.get("LOOM_OLLAMA_MODEL") or "qwen3.6:27b")
+    return (os.environ.get("LOOM_AUTHOR_MODEL") or os.environ.get("LOOM_GM_MODEL")
+            or AGENT_MODEL)
 
 
 def build_model(model_name: str | None = None, api_key: str | None = None):

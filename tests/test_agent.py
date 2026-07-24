@@ -170,7 +170,7 @@ class BackendSelectionTests(unittest.TestCase):
     hosted OpenRouter. All offline — building a model/provider makes no network call."""
 
     _KEYS = ("LOOM_PROVIDER", "LOOM_OLLAMA_HOST", "LOOM_OLLAMA_MODEL", "LOOM_GM_MODEL",
-             "OPENROUTER_API_KEY", "LOOM_OPENROUTER_API_KEY")
+             "LOOM_AUTHOR_MODEL", "OPENROUTER_API_KEY", "LOOM_OPENROUTER_API_KEY")
 
     def setUp(self):
         self._saved = {k: os.environ.get(k) for k in self._KEYS}
@@ -209,7 +209,9 @@ class BackendSelectionTests(unittest.TestCase):
         os.environ["LOOM_OLLAMA_MODEL"] = "qwen3.5:35b-a3b"
         self.assertEqual(author_model_name(), "qwen3.5:35b-a3b")        # falls to NPC tag
         os.environ["LOOM_GM_MODEL"] = "loom-gm"
-        self.assertEqual(author_model_name(), "loom-gm")               # GM tier wins
+        self.assertEqual(author_model_name(), "loom-gm")               # director over NPC
+        os.environ["LOOM_AUTHOR_MODEL"] = "qwen3.5:27b-mlx"
+        self.assertEqual(author_model_name(), "qwen3.5:27b-mlx")       # author var wins over all
 
     def test_openrouter_without_key_is_none(self):
         from authoring.agent import build_model
