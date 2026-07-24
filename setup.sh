@@ -102,6 +102,17 @@ OLLAMA_DIRECTOR_MODELS_MACOS=(
     "qwen3.5:9b-mlx|~6 GB|MLX — a lighter middle option on Metal"
     "qwen3.5:4b-mlx|~3 GB|MLX — good for quick-and-dirty gameplay on Metal; probably not OK for authoring"
 )
+# NPC-ONLY extras — tiny, fast, low-quality models. Worth it only for dialogue speed / tight
+# memory, never for the author or director, so they are appended to the NPC menu alone.
+# Standard tags on any platform; the MLX builds are surfaced on macOS.
+OLLAMA_NPC_EXTRAS=(
+    "qwen3.5:2b|~1.5 GB|dense — really dirty-quick dialogue"
+    "qwen3.5:0.8b|~0.7 GB|dense — smallest; good luck"
+)
+OLLAMA_NPC_EXTRAS_MACOS=(
+    "qwen3.5:2b-mlx|~1.5 GB|MLX — really dirty-quick dialogue on Metal"
+    "qwen3.5:0.8b-mlx|~0.7 GB|MLX — smallest; good luck"
+)
 # Hosted OpenRouter slugs for the three roles — the same sizes as the portable local menu,
 # as OpenRouter model IDs (no Metal builds; those are Mac-local only). NOT pulled: an invalid
 # slug surfaces at first inference, not at setup. Edit freely; a "custom" entry is appended.
@@ -123,10 +134,10 @@ select_model() {
             default_idx=$i
             mark=" ${DIM}(suggested)${RESET}"
         fi
-        printf '    %b%d)%b %-21s %b%-5s%b %s%s\n' "$BOLD" "$i" "$RESET" "$tag" "$DIM" "$col" "$RESET" "$note" "$mark"
+        printf '    %b%2d)%b %-21s %b%-5s%b %s%s\n' "$BOLD" "$i" "$RESET" "$tag" "$DIM" "$col" "$RESET" "$note" "$mark"
         i=$((i + 1))
     done
-    printf '    %b%d)%b %-21s %b%-5s%b %s\n' "$BOLD" "$i" "$RESET" "custom" "$DIM" "" "$RESET" "type your own ${MODEL_KIND:-tag}"
+    printf '    %b%2d)%b %-21s %b%-5s%b %s\n' "$BOLD" "$i" "$RESET" "custom" "$DIM" "" "$RESET" "type your own ${MODEL_KIND:-tag}"
     choice="$(ask_val 'Model number' "$default_idx")"
     if ! printf '%s' "$choice" | grep -qE '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "$i" ]; then
         warn "not a valid choice — using the suggested option $default_idx"
@@ -370,11 +381,13 @@ case "$BACKEND" in
         # the director, and a fast/small one for the NPCs (Mac defaults stay memory-conscious).
         if [ "$OS" = macos ]; then
             MODEL_MENU=("${OLLAMA_DIRECTOR_MODELS_MACOS[@]}" "${OLLAMA_DIRECTOR_MODELS[@]}")
+            NPC_MENU=("${MODEL_MENU[@]}" "${OLLAMA_NPC_EXTRAS_MACOS[@]}")
             AUTHOR_DEFAULT="qwen3.5:27b-mlx"
             GM_DEFAULT="qwen3.5:9b-mlx"
             NPC_DEFAULT="qwen3.5:4b-mlx"
         else
             MODEL_MENU=("${OLLAMA_DIRECTOR_MODELS[@]}")
+            NPC_MENU=("${MODEL_MENU[@]}" "${OLLAMA_NPC_EXTRAS[@]}")
             AUTHOR_DEFAULT="qwen3.6:27b"
             GM_DEFAULT="qwen3.6:27b"
             NPC_DEFAULT="qwen3.5:35b-a3b"
@@ -400,6 +413,7 @@ case "$BACKEND" in
 
         say ""
         say "  ${BOLD}3/3 · NPC reactions${RESET} — character dialogue in the world (wants speed)"
+        MODEL_MENU=("${NPC_MENU[@]}")          # NPC menu adds the tiny quick-and-dirty models
         MODEL_DEFAULT="$NPC_DEFAULT"
         select_and_pull_model
         NPC_MODEL="$REPLY_MODEL"
