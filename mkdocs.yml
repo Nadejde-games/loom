@@ -1,0 +1,86 @@
+# Documentation site — built with MkDocs Material, deployed to GitHub Pages
+# by .github/workflows/docs.yml. Local preview: make docs (or: mkdocs serve).
+#
+# When the repo gets a GitHub remote, set these two lines to the real URLs:
+# site_url: https://<user>.github.io/forever-unstarted-game/
+# repo_url: https://github.com/<user>/forever-unstarted-game
+
+site_name: Loom
+site_description: >-
+  A reusable, game-agnostic framework for AI-driven, text-first,
+  server-client worlds — LLM-driven NPCs, a game-master director,
+  and an authoring workbench.
+
+docs_dir: docs
+
+# docs/ also holds internal engineering notes (the roadmap sources, design
+# spikes, benchmarks). They stay out of the published site; the website pages
+# quote or summarize them instead.
+exclude_docs: |
+  PLAN.md
+  BACKLOG.md
+  DEPENDENCIES.md
+  PROMPTING.md
+  WALKTHROUGH.md
+  spikes/
+  benchmarks/
+
+validation:
+  links:
+    anchors: warn
+
+nav:
+  - Introduction: index.md
+  - Setup:
+      - Quick start: setup/quickstart.md
+      - Setup in detail: setup/details.md
+      - Choosing models: setup/models.md
+  - Loom engine:
+      - Overview: engine/index.md
+      - Capabilities: engine/capabilities.md
+      - Configuration: engine/configuration.md
+      - Roadmap: engine/roadmap.md
+  - Workbench:
+      - Overview: workbench/index.md
+      - Using the workbench: workbench/usage.md
+      - Roadmap: workbench/roadmap.md
+  - Development: development.md
+  - Demo game: demo-game.md
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - search.suggest
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.keys
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true

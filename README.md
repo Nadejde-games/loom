@@ -14,6 +14,10 @@ The framework core keeps a **small, deliberate dependency budget** (see
 deterministic `FakeProvider`. Point it at a real model — hosted or local — and every
 NPC upgrades with no code change.
 
+**Full documentation** — setup, model selection, the engine, the workbench — lives in
+`docs/` as an MkDocs site, deployed to GitHub Pages by CI. Preview locally with
+`make docs` (needs `pip install -e ".[docs]"`).
+
 ## Quick start
 
 ```bash

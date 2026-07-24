@@ -21,3 +21,5 @@ world.memory.db
 *.memory.db
 *.memory.db-wal
 *.memory.db-shm
+# MkDocs build output (the docs site is built by CI, never committed).
+site/

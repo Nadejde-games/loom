@@ -3,7 +3,7 @@
 PY := .venv/bin/python
 
 .DEFAULT_GOAL := help
-.PHONY: help setup server play workbench test smoke _venv
+.PHONY: help setup server play workbench test smoke docs _venv
 
 help:  ## List these targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -26,6 +26,15 @@ test: _venv  ## Run the offline test suite (no network, no GPU)
 
 smoke: _venv  ## End-to-end smoke check (the server must already be running)
 	$(PY) scripts/smoke.py
+
+DOCS_PORT ?=
+
+docs: _venv  ## Preview the documentation site locally (needs the [docs] extra; picks a free port, or pin one: make docs DOCS_PORT=8080)
+	@port="$(DOCS_PORT)"; \
+	if [ -z "$$port" ]; then \
+		port=$$($(PY) -c "import socket; print(next(p for p in range(8000, 8051) if socket.socket().connect_ex(('127.0.0.1', p))))"); \
+	fi; \
+	$(PY) -m mkdocs serve -a 127.0.0.1:$$port
 
 _venv:
 	@test -x $(PY) || { echo "No virtualenv found — run ./setup.sh first."; exit 1; }

@@ -27,7 +27,7 @@ Textual text-mode workbench to explore and edit a world, including an AI world-a
 | `client/terminal.py` | the reference play client. |
 | `authoring/` | the workbench (`python -m authoring`) + the authoring agent (Pydantic-AI). |
 | `scripts/` | dev tools — `behavior_probe.py`, `bench_inference.py`, `smoke.py`, `try_provider.py`, `atlas.py`, `author.py`, `wire_demo.py`. |
-| `docs/` | `PLAN.md` (roadmap), `DEPENDENCIES.md` (dep policy), `PROMPTING.md`, `WALKTHROUGH.md`, `spikes/` (design notes), `benchmarks/`. |
+| `docs/` | `PLAN.md` (roadmap), `DEPENDENCIES.md` (dep policy), `PROMPTING.md`, `WALKTHROUGH.md`, `spikes/` (design notes), `benchmarks/` — plus the **documentation website** (`index.md`, `setup/`, `engine/`, `workbench/`, `development.md`, `demo-game.md`), built by MkDocs Material (`mkdocs.yml`, deployed to GitHub Pages by `.github/workflows/docs.yml`; `make docs` to preview). Keep the site pages in sync with user-facing changes; the internal notes are excluded from the published site. |
 | `ops/` | legacy local-inference config (Ollama/vLLM) — not the primary path. |
 
 ## Setup & running

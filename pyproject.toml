@@ -42,6 +42,9 @@ authoring = [
     "pydantic-ai-slim[openai]>=2.15",  # the authoring agent (slice 3): native tool-calling
                                        # over OpenRouter via the OpenAI-compatible provider
 ]
+# The documentation site (docs/ + mkdocs.yml, published by CI to GitHub Pages).
+# A tool dependency like the workbench's: never imported by loom/.
+docs = ["mkdocs-material>=9"]
 
 [build-system]
 requires = ["setuptools>=61"]
