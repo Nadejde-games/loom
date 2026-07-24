@@ -108,6 +108,16 @@ def _extract_json(text: str) -> dict | None:
         obj = repair_json(s[start:], return_objects=True)
     except Exception:
         return None
+    if isinstance(obj, list):
+        # A reply with two top-level values — the object closed early, then the rest
+        # (a weak model's ``{"speech": "…"}", "actions": […]}``) — repairs to a list.
+        # Recover the envelope: the first object, plus any trailing array as its actions.
+        envelope = next((x for x in obj if isinstance(x, dict)), None)
+        if isinstance(envelope, dict) and "actions" not in envelope:
+            arr = next((x for x in obj if isinstance(x, list)), None)
+            if arr is not None:
+                envelope = {**envelope, "actions": arr}
+        obj = envelope
     return obj if isinstance(obj, dict) and obj else None
 
 
@@ -123,8 +133,15 @@ def parse_turn(registry: ActionRegistry | None, raw: str) -> tuple[str, list, li
     """
     obj = _extract_json(raw)
     if obj is None:
+        stripped = _strip_fences(raw).strip()
+        # In structured mode, a reply that still LOOKS like a JSON envelope but would not
+        # extract is a malformed turn, not prose — never speak the raw JSON at the player.
+        # Signal an error so the caller retries; it falls silent if the retry also fails.
+        # A plain conversationalist (no registry) still speaks genuine prose.
+        if registry is not None and stripped.startswith("{"):
+            return "", [], ["reply was not a single valid JSON object; return one clean object"]
         # No JSON at all: treat the whole reply as spoken text. Never crash.
-        return _strip_fences(raw).strip(), [], []
+        return stripped, [], []
     speech = obj.get("speech")
     speech = speech.strip() if isinstance(speech, str) else ""
     proposed = obj.get("actions")

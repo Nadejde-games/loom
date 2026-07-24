@@ -78,6 +78,24 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(turn.speech, "Hi.")
         self.assertEqual([a.name for a in turn.actions], ["emote"])
 
+    def test_early_closed_object_with_trailing_actions(self):
+        # The shape a weak (4b) model emitted live: the speech object closed early with a
+        # stray '"}', then the actions trailed OUTSIDE it. json_repair returns a LIST of the
+        # two top-level values; the extractor must recover the envelope (speech + actions),
+        # not leak the whole raw JSON as spoken text.
+        reply = ('{"speech": "I\'d be delighted to show you,"}", '
+                 '"actions": [{"name": "emote", "args": {"text": "beams"}}]}')
+        turn = run(mind(ScriptedProvider([reply])).converse("W", "hello"))
+        self.assertEqual(turn.speech, "I'd be delighted to show you,")
+        self.assertEqual([a.name for a in turn.actions], ["emote"])
+
+    def test_json_looking_garbage_retries_never_leaks(self):
+        # A reply that still looks like an envelope but cannot be extracted must NOT be
+        # spoken raw — it errors, the one bounded retry fires, and the clean retry wins.
+        turn = run(mind(ScriptedProvider(
+            ["{", '{"speech":"There you are.","actions":[]}'])).converse("W", "hello"))
+        self.assertEqual(turn.speech, "There you are.")     # the retry's line, not "{"
+
     def test_actions_capped(self):
         many = ",".join(['{"name":"emote","args":{"text":"nods"}}'] * 5)
         reply = '{"speech":"Hi.","actions":[' + many + ']}'
