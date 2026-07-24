@@ -15,12 +15,36 @@ model call never freezes the screen.
 """
 from __future__ import annotations
 import io
+from time import monotonic
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, TextArea
+from textual.widgets import Button, Input, Static, TextArea
 
+from loom.ai import InferenceReporter, get_reporter, set_reporter
 from .agent import build_agent, build_model, run_turn
+
+
+class _PanelLoomReporter(InferenceReporter):
+    """Route the loom tool-tier calls (region authoring, preview play — they run on the
+    engine's provider, not the agent's own model) into the panel's live token count, so a
+    slow local generation shows progress there too. Accumulates each call's streamed tokens
+    without double-counting across its progress ticks."""
+
+    def __init__(self, panel: "ChatPanel"):
+        self._panel = panel
+        self._seen: dict[int, int] = {}
+
+    def _bump(self, call) -> None:
+        prev = self._seen.get(call.id, 0)
+        self._panel._add_tokens(max(0, call.tokens - prev))
+        self._seen[call.id] = call.tokens
+
+    def progress(self, call) -> None:
+        self._bump(call)
+
+    def finish(self, call) -> None:
+        self._bump(call)
 
 
 class ChatPanel(Vertical):
@@ -50,6 +74,7 @@ class ChatPanel(Vertical):
         background: transparent;
     }
     ChatPanel #controls Button:hover { color: $text; background: $boost; }
+    ChatPanel #infer-status { height: auto; color: $text-muted; padding: 0 1; }
     ChatPanel #msg { border: none; }
     """
 
@@ -61,6 +86,14 @@ class ChatPanel(Vertical):
         self.agent = None
         self._history = None                  # threaded message history across turns
         self._lines: list[str] = []           # the transcript, line by line (also the save-log)
+        # Live inference feedback: the moment a turn is submitted, a status line ticks with
+        # elapsed seconds + tokens generated (from the agent's own model deltas AND the loom
+        # tool-tier calls), finalising with a tally. So the author is never left staring at a
+        # frozen screen wondering whether a slow local model is working.
+        self._infer = {"active": False, "started": 0.0, "tokens": 0}
+        self._infer_timer = None
+        self._loom_reporter = None
+        self._prev_reporter = None
 
     def compose(self) -> ComposeResult:
         # A read-only TextArea (not RichLog) so the transcript is terminal-like: the author can
@@ -75,10 +108,16 @@ class ChatPanel(Vertical):
             yield Button("discard", id="reject")
             yield Button("undo", id="undo")
             yield Button("save", id="save")
+        yield Static("", id="infer-status")
         yield Input(placeholder="ask the agent to change the world …  (Esc → navigator)",
                     id="msg")
 
     def on_mount(self) -> None:
+        # Route loom tool-tier inference into this panel's live status while it is open;
+        # restore whatever was installed before, so nothing leaks between panels or tests.
+        self._prev_reporter = get_reporter()
+        self._loom_reporter = _PanelLoomReporter(self)
+        set_reporter(self._loom_reporter)
         if self._injected_agent is not None:
             self.agent = self._injected_agent
         else:
@@ -93,6 +132,12 @@ class ChatPanel(Vertical):
             self._log_system(f"Staged world: {self._summary()}. "
                              "Tell me what to build or change.")
         self._refresh_controls()
+
+    def on_unmount(self) -> None:
+        set_reporter(self._prev_reporter)
+        if self._infer_timer is not None:
+            self._infer_timer.stop()
+            self._infer_timer = None
 
     def focus_input(self) -> None:
         """Put the cursor in the message box — called by the Explorer when it reveals us."""
@@ -170,13 +215,55 @@ class ChatPanel(Vertical):
         """Pydantic-AI's event stream — surface live progress so the builder can see the agent
         is working (region authoring can take many seconds with no other output). A tool CALL
         and its RESULT fire from the agent graph regardless of the provider, so this activity
-        line is reliable even when a backend streams text in coarse chunks."""
-        from pydantic_ai.messages import FunctionToolCallEvent, FunctionToolResultEvent
+        line is reliable even when a backend streams text in coarse chunks. Model output deltas
+        also tick the live token counter (one delta ≈ one token)."""
+        from pydantic_ai.messages import (FunctionToolCallEvent, FunctionToolResultEvent,
+                                          PartDeltaEvent, TextPartDelta, ToolCallPartDelta)
         async for ev in events:
             if isinstance(ev, FunctionToolCallEvent):
                 self._log_system(f"⏳ {ev.part.tool_name}…")
             elif isinstance(ev, FunctionToolResultEvent):
                 self._log_system(f"✓ {getattr(ev.part, 'tool_name', 'tool')}")
+            elif isinstance(ev, PartDeltaEvent) and isinstance(
+                    ev.delta, (TextPartDelta, ToolCallPartDelta)):
+                self._add_tokens(1)
+
+    # -- live inference status ---------------------------------------------------
+    def _add_tokens(self, n: int) -> None:
+        """Accumulate generated tokens for the in-flight turn (agent model + tool tiers)."""
+        if self._infer["active"]:
+            self._infer["tokens"] += n
+
+    def _start_infer(self) -> None:
+        self._infer = {"active": True, "started": monotonic(), "tokens": 0}
+        if self._loom_reporter is not None:
+            self._loom_reporter._seen.clear()
+        if self._infer_timer is None:
+            self._infer_timer = self.set_interval(0.25, self._tick_status)
+        self._render_status()
+
+    def _stop_infer(self, ok: bool = True) -> None:
+        self._infer["active"] = False
+        if self._infer_timer is not None:
+            self._infer_timer.stop()
+            self._infer_timer = None
+        self._render_status(final=True, ok=ok)
+
+    def _tick_status(self) -> None:
+        if self._infer["active"]:
+            self._render_status()
+
+    def _render_status(self, final: bool = False, ok: bool = True) -> None:
+        elapsed = monotonic() - self._infer["started"]
+        tok = self._infer["tokens"]
+        rate = f" · {tok / elapsed:.0f} tok/s" if elapsed > 0 and tok else ""
+        tail = f"{elapsed:.0f}s" + (f" · {tok} tok" if tok else "") + rate
+        text = (f"{'✓' if ok else '✗'} done in {tail}" if final
+                else f"⏳ thinking… {tail}")
+        try:
+            self.query_one("#infer-status", Static).update(text)
+        except Exception:
+            pass                # the panel may be tearing down; a status update must not crash
 
     async def _turn(self, msg: str) -> None:
         """Run one agent turn off the UI thread: echo the author's line, send the message,
@@ -186,6 +273,8 @@ class ChatPanel(Vertical):
         self._log_author(msg)
         box = self.query_one("#msg", Input)
         box.disabled = True
+        self._start_infer()
+        ok = True
         try:
             result = await run_turn(self.agent, self.session, msg, history=self._history,
                                     event_handler=self._on_agent_event)
@@ -195,8 +284,10 @@ class ChatPanel(Vertical):
                 diff = "\n".join(self.session.pending.diff) or "(no structural change)"
                 self._log_system("Proposed (awaiting your confirmation):\n" + diff)
         except Exception as exc:
+            ok = False
             self._log_system(f"Error: {exc}")
         finally:
+            self._stop_infer(ok=ok)
             box.disabled = False
             box.focus()
             self._refresh_controls()

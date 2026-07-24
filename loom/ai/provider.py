@@ -143,6 +143,12 @@ class OpenAICompatibleProvider:
         self.retries = max(1, retries)
         self.name = f"openai-compat:{model}"
         self._client = None   # lazy httpx.AsyncClient, reused for connection pooling
+        # Whether to STREAM the reply when an inference reporter is watching, so a live
+        # token count can be surfaced. On for slow local backends (Ollama/vLLM), where the
+        # per-second feedback matters; off for the hosted OpenRouter tier, which is fast and
+        # only wants the end tally (its non-streamed response carries usage). Never streams
+        # when no reporter is installed — the offline/plain path is untouched.
+        self.stream_progress = False
 
     def _schema_payload(self, schema: dict) -> dict:
         """Payload fields that constrain generation to ``schema``, in the OpenAI
@@ -176,14 +182,128 @@ class OpenAICompatibleProvider:
         }
         if schema is not None:
             payload.update(self._schema_payload(schema))
-        data = await self._post(payload)
+
+        from . import telemetry
+        reporter = telemetry.get_reporter()
+        if reporter is None:
+            # The plain path — unchanged, and what the offline suite exercises.
+            return self._clean(self._content(await self._post(payload)))
+
+        # A reporter is watching: announce the call, keep a live elapsed/token heartbeat,
+        # and finalise with a tally. Slow local backends stream so tokens climb in view;
+        # the hosted tier stays non-streamed and reports its token count from usage.
+        call = telemetry.new_call(self.model)
+        reporter.start(call)
+        heartbeat = asyncio.create_task(self._heartbeat(call, reporter))
         try:
-            text = data["choices"][0]["message"]["content"] or ""
+            if self.stream_progress:
+                text = await self._post_streamed(payload, call)
+            else:
+                data = await self._post(payload)
+                usage = (data or {}).get("usage") or {}
+                if usage.get("completion_tokens"):
+                    call.tokens = int(usage["completion_tokens"])
+                text = self._content(data)
+            call.ok = True
+            return self._clean(text)
+        except BaseException:
+            call.ok = False
+            raise
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+            call.stop(ok=call.ok)
+            reporter.finish(call)
+
+    def _content(self, data: dict) -> str:
+        """The message content out of a chat-completions response, or a clear error."""
+        try:
+            return data["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"unexpected response shape: {data!r}") from exc
+
+    def _clean(self, text: str) -> str:
+        """Post-process reply text: drop <think> blocks (when configured) and trim."""
         if self.strip_think:
             text = _strip_think(text)
         return text.strip()
+
+    @staticmethod
+    def _stream_delta(line: str):
+        """Parse one SSE ``data:`` line into ``(piece, usage)`` — ``piece`` is the content
+        fragment (``"[DONE]"`` for the terminator, ``None`` for a keepalive/parse miss),
+        ``usage`` the token accounting when a final chunk carries it. Pure, so the stream
+        parse is unit-tested without a socket."""
+        line = line.strip()
+        if not line or not line.startswith("data:"):
+            return None, None
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            return "[DONE]", None
+        try:
+            obj = json.loads(payload)
+        except ValueError:
+            return None, None
+        piece = None
+        for ch in obj.get("choices") or []:
+            frag = (ch.get("delta") or {}).get("content")
+            if frag:
+                piece = (piece or "") + frag
+        return piece, obj.get("usage")
+
+    async def _post_streamed(self, payload: dict, call) -> str:
+        """Stream the reply, counting content deltas into ``call.tokens`` as they arrive so
+        a watcher sees the token count climb, and returning the accumulated text. Retries
+        only apply to opening the stream (``_post`` owns the non-streamed retry loop); a
+        mid-stream failure raises, which the engine's validate/retry already tolerates."""
+        import httpx
+        body = {**payload, "stream": True, "stream_options": {"include_usage": True}}
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        client = self._get_client()
+        await self._pace_wait()
+        parts: list[str] = []
+        usage: dict = {}
+        try:
+            async with client.stream("POST", self.url, json=body, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    detail = (await resp.aread()).decode("utf-8", "replace")[:200]
+                    self._pace_note(self._is_retryable(resp.status_code, detail))
+                    raise ProviderError(f"HTTP {resp.status_code} from {self.url}: {detail}")
+                self._pace_note(False)
+                async for line in resp.aiter_lines():
+                    piece, u = self._stream_delta(line)
+                    if u:
+                        usage = u
+                    if piece == "[DONE]":
+                        break
+                    if piece:
+                        parts.append(piece)
+                        call.tokens += 1        # one content delta ≈ one token (live proxy)
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"cannot reach {self.url}: {exc}") from exc
+        if usage.get("completion_tokens"):
+            call.tokens = int(usage["completion_tokens"])   # exact count if the tail gave it
+        return "".join(parts)
+
+    async def _heartbeat(self, call, reporter, period: float = 1.0, after: float = 1.0) -> None:
+        """Emit a ``progress`` tick every ``period`` seconds once the call has run longer
+        than ``after`` — so fast calls stay quiet (start + finish only) and a slow one shows
+        a live, ticking elapsed/token line. Cancelled when the call finishes."""
+        try:
+            await asyncio.sleep(after)
+            while True:
+                try:
+                    reporter.progress(call)
+                except Exception:
+                    pass            # a reporter must never break the inference path
+                await asyncio.sleep(period)
+        except asyncio.CancelledError:
+            return
 
     def _get_client(self):
         """The shared ``httpx.AsyncClient`` for this provider, created on first use
@@ -271,6 +391,8 @@ class OllamaProvider(OpenAICompatibleProvider):
                          api_key="ollama", timeout=timeout, extra_body=extra, **kw)
         self.host = host
         self.name = f"ollama:{model}"
+        # Local + slow: stream when a reporter watches, so the token count ticks live.
+        self.stream_progress = True
 
 
 class VLLMProvider(OpenAICompatibleProvider):
@@ -310,6 +432,8 @@ class VLLMProvider(OpenAICompatibleProvider):
                          api_key=api_key, timeout=timeout, extra_body=extra, **kw)
         self.host = host
         self.name = f"vllm:{model}"
+        # Local + slow: stream when a reporter watches, so the token count ticks live.
+        self.stream_progress = True
 
 
 class OpenRouterProvider(OpenAICompatibleProvider):

@@ -75,6 +75,15 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
     world, start = load_world(WORLD_FILE)
     provider = get_default_provider()
     print(f"[game] AI provider: {getattr(provider, 'name', type(provider).__name__)}")
+
+    # Inference telemetry: surface every model call in the server log in real time — elapsed
+    # seconds, tokens as they stream (local backends), and a final tok/s tally — so gameplay
+    # shows what the model is doing and how fast. A slow local call ticks live; a fast hosted
+    # call shows just its start and end tally. LOOM_INFER_LOG=0 to silence.
+    if os.environ.get("LOOM_INFER_LOG", "1") not in ("0", "", "false"):
+        from loom.ai import LogInferenceReporter, set_reporter
+        set_reporter(LogInferenceReporter())
+        print("[game] inference telemetry: on (per-call elapsed + tokens; LOOM_INFER_LOG=0 to silence)")
     if log.VERBOSE:
         print("[game] verbose logging on (LOOM_VERBOSE) — full debug trace")
 

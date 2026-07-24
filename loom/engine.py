@@ -19,7 +19,7 @@ from .weather import WeatherSystem, Weather
 from .quest import COMPLETE
 from .compose import compose_beat
 from .style import Style, span, styled, join_styled
-from .ai import NpcMind, LLMProvider, ProviderError, Scene
+from .ai import NpcMind, LLMProvider, ProviderError, Scene, inference_label
 from .ai import intent
 from .ai.director import DirectorMind, Director
 from .ai.reflection import Reflector
@@ -610,6 +610,8 @@ class Engine:
         # Out-of-band "thinking" beat covers the inference latency.
         await self._broadcast(location_id, "system", f"{npc.name} is considering your words…")
         scene = self._scene_for(npc, location_id)
+        # Tag the inference so the server-log telemetry names this NPC, not just the model.
+        label_tok = inference_label.set(npc.name)
         try:
             turn = await mind.converse(speaker_name, words, scene=scene,
                                        addressed=addressed)
@@ -621,6 +623,8 @@ class Engine:
             log.event(f"NPC {npc.id} unexpected error: {exc!r}")
             await self._broadcast(location_id, "text", f"{npc.name} frowns, at a loss for words.")
             return
+        finally:
+            inference_label.reset(label_tok)
         observed = await self._deliver_turn(location_id, npc, mind, turn)
         # The NPC's own word or deed is itself something the others present may
         # answer, of their own volition (B9) — kick off a bounded cascade from it.
