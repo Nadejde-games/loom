@@ -1,5 +1,7 @@
 # Loom + the forever game
 
+[![docs](https://github.com/Nadejde-games/loom/actions/workflows/docs.yml/badge.svg)](https://nadejde-games.github.io/loom/)
+
 Four things live here:
 
 - **`loom/`** — a reusable, game-agnostic framework for AI-driven, text-first,
@@ -14,9 +16,9 @@ The framework core keeps a **small, deliberate dependency budget** (see
 deterministic `FakeProvider`. Point it at a real model — hosted or local — and every
 NPC upgrades with no code change.
 
-**Full documentation** — setup, model selection, the engine, the workbench — lives in
-`docs/` as an MkDocs site, deployed to GitHub Pages by CI. Preview locally with
-`make docs` (needs `pip install -e ".[docs]"`).
+> **📖 Full documentation: [nadejde-games.github.io/loom](https://nadejde-games.github.io/loom/)** —
+> setup, choosing models for your hardware, the engine, the workbench, and the
+> development guide. (Source in `docs/`, deployed by CI; `make docs` to preview locally.)
 
 ## Quick start
 
