@@ -89,7 +89,25 @@ async def main(host: str, port: int) -> None:
         t.cancel()
 
 
+def _load_env(root: str | None = None) -> None:
+    """Load repo-root .env (LOOM_HOST/LOOM_PORT) so the client reaches the server on the port
+    the setup wizard configured — no shell export needed. A minimal KEY=VALUE parser keeps the
+    reference client dependency-free; a value already in the real environment always wins."""
+    root = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with open(os.path.join(root, ".env"), "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+    except FileNotFoundError:
+        pass
+
+
 if __name__ == "__main__":
+    _load_env()
     host = os.environ.get("LOOM_HOST", "127.0.0.1")
     port = int(os.environ.get("LOOM_PORT", "4000"))
     try:
