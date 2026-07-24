@@ -101,6 +101,46 @@ class CallRecordTests(unittest.TestCase):
         self.assertEqual(first, c.elapsed)      # frozen after stop
 
 
+class LogReporterTests(unittest.TestCase):
+    """The log reporter: ▶/✓ are permanent lines; the live tick is one in-place status line
+    that shows every in-flight call and clears when the last finishes. Injected sinks, so no
+    stdout or TTY is involved."""
+
+    def _reporter(self):
+        from loom.ai import LogInferenceReporter
+        self.emitted, self.status = [], []
+        return LogInferenceReporter(emit=self.emitted.append, status=self.status.append)
+
+    def _call(self, cid, label, tokens=0):
+        import time
+        return InferenceCall(id=cid, label=label, model="qwen", started=time.perf_counter(),
+                             tokens=tokens)
+
+    def test_concurrent_calls_share_one_status_line(self):
+        r = self._reporter()
+        a, b = self._call(1, "Kaelen"), self._call(2, "Odd")
+        r.start(a)
+        r.start(b)
+        self.assertEqual(len(self.emitted), 2)               # two permanent ▶ lines
+        self.assertTrue(self.emitted[0].startswith("llm ▶ Kaelen"))
+        self.assertIn("Kaelen", self.status[-1])
+        self.assertIn("Odd", self.status[-1])                # both on one line
+
+    def test_finish_emits_tally_and_shrinks_then_clears(self):
+        r = self._reporter()
+        a, b = self._call(1, "Kaelen"), self._call(2, "Odd")
+        r.start(a)
+        r.start(b)
+        b.tokens = 10
+        r.finish(b)
+        self.assertTrue(self.emitted[-1].startswith("llm ✓ Odd"))
+        self.assertIn("10 tok", self.emitted[-1])
+        self.assertIn("Kaelen", self.status[-1])
+        self.assertNotIn("Odd", self.status[-1])             # Odd dropped from the live line
+        r.finish(a)
+        self.assertEqual(self.status[-1], "")                # last one out clears the line
+
+
 class StreamDeltaParseTests(unittest.TestCase):
     def _d(self, line):
         return OpenAICompatibleProvider._stream_delta(line)

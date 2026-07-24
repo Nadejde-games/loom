@@ -42,8 +42,54 @@ def real_time_stdout() -> None:
             pass
 
 
+# A transient one-line status pinned at the bottom of the terminal (live inference
+# progress), rewritten in place with a carriage return rather than scrolled. Permanent
+# event lines clear it, print above it, then redraw it — so a slow model's ticking
+# elapsed/token counter never floods the log. TTY-only: piped/redirected output has no
+# cursor to move, so there the live line is suppressed and only the permanent ▶/✓ lines
+# (which still carry the tally) appear.
+_status: str = ""
+
+
+def _tty() -> bool:
+    try:
+        return sys.stdout.isatty()
+    except Exception:
+        return False
+
+
+def _term_width() -> int:
+    try:
+        return os.get_terminal_size().columns
+    except Exception:
+        return 80
+
+
+def set_status(text: str) -> None:
+    """Set (or clear, with ``""``) the pinned live status line. A no-op off a TTY."""
+    global _status
+    text = text or ""
+    if not _tty():
+        _status = ""
+        return
+    if text:
+        text = text[:_term_width() - 1]          # keep it to one visual row (no wrap)
+    _status = text
+    sys.stdout.write("\r\033[K" + text)          # CR, clear the row, write the status
+    sys.stdout.flush()
+
+
 def _emit(msg: str, mark: str = "") -> None:
-    print(f"[loom {time.strftime('%H:%M:%S')}]{mark} {msg}", flush=True)
+    line = f"[loom {time.strftime('%H:%M:%S')}]{mark} {msg}"
+    if _status and _tty():
+        # Clear the pinned status line, print the permanent line above it, then redraw the
+        # status on the new bottom row so it stays anchored while the log scrolls past.
+        sys.stdout.write("\r\033[K")
+        print(line, flush=True)
+        sys.stdout.write(_status)
+        sys.stdout.flush()
+    else:
+        print(line, flush=True)
 
 
 def event(msg: str) -> None:

@@ -93,17 +93,18 @@ def get_reporter() -> InferenceReporter | None:
 
 
 class LogInferenceReporter(InferenceReporter):
-    """Render each call to the server log as it happens: a start line, a per-second live
-    line (elapsed · tokens · tok/s) once a call runs long enough to matter, and a final
-    tally. Append-only and concurrency-safe — each line carries the call's label and id, so
-    overlapping NPC turns stay legible. A slow local (streamed) call shows its token count
-    climbing; a fast hosted call shows just start and the end tally."""
+    """Render calls to the server log without flooding it. Each call gets one permanent
+    line when it begins (▶) and one when it ends (✓/✗, with the tok/s tally). The live
+    ticking — elapsed and tokens as they stream — is a single status line **rewritten in
+    place** at the bottom of the terminal, showing every in-flight call at once. So two
+    NPCs answering together read as one updating line, not two-a-second of scroll. Off a
+    TTY the live line is suppressed (see ``loom.log.set_status``); the ▶/✓ lines remain."""
 
-    def __init__(self, emit=None):
-        if emit is None:
-            from .. import log
-            emit = log.event
-        self._emit = emit
+    def __init__(self, emit=None, status=None):
+        from .. import log
+        self._emit = emit if emit is not None else log.event
+        self._status = status if status is not None else log.set_status
+        self._active: dict[int, InferenceCall] = {}
 
     @staticmethod
     def _tally(call: InferenceCall) -> str:
@@ -111,14 +112,32 @@ class LogInferenceReporter(InferenceReporter):
             return ""
         return f" · {call.tokens} tok · {call.tok_s:.1f} tok/s"
 
+    def _render(self) -> None:
+        """Redraw the pinned status line from the set of in-flight calls (or clear it)."""
+        if not self._active:
+            self._status("")
+            return
+        parts = []
+        for c in self._active.values():
+            seg = f"{c.label} {c.elapsed:.0f}s"
+            if c.tokens:
+                seg += f"·{c.tokens}t"
+            parts.append(seg)
+        self._status("⏳ " + "   ".join(parts))
+
     def start(self, call: InferenceCall) -> None:
         who = call.label if call.label == call.model else f"{call.label} · {call.model}"
+        self._active[call.id] = call
         self._emit(f"llm ▶ {who} · #{call.id} generating…")
+        self._render()
 
     def progress(self, call: InferenceCall) -> None:
-        self._emit(f"llm … {call.label} · #{call.id} · {call.elapsed:.0f}s{self._tally(call)}")
+        self._active[call.id] = call
+        self._render()
 
     def finish(self, call: InferenceCall) -> None:
+        self._active.pop(call.id, None)
         mark = "✓" if call.ok else "✗"
         self._emit(f"llm {mark} {call.label} · #{call.id} · {call.elapsed:.1f}s"
                    f"{self._tally(call)}")
+        self._render()
