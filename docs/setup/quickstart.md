@@ -3,7 +3,7 @@
 One command takes you from a fresh clone to a running world:
 
 ```bash
-git clone <this repo> && cd forever-unstarted-game
+git clone https://github.com/Nadejde-games/loom.git && cd loom
 ./setup.sh
 ```
 

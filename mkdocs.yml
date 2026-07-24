@@ -1,11 +1,10 @@
 # Documentation site — built with MkDocs Material, deployed to GitHub Pages
 # by .github/workflows/docs.yml. Local preview: make docs (or: mkdocs serve).
-#
-# When the repo gets a GitHub remote, set these two lines to the real URLs:
-# site_url: https://<user>.github.io/forever-unstarted-game/
-# repo_url: https://github.com/<user>/forever-unstarted-game
 
 site_name: Loom
+site_url: https://nadejde-games.github.io/loom/
+repo_url: https://github.com/Nadejde-games/loom
+repo_name: Nadejde-games/loom
 site_description: >-
   A reusable, game-agnostic framework for AI-driven, text-first,
   server-client worlds — LLM-driven NPCs, a game-master director,

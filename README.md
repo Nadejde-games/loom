@@ -21,7 +21,7 @@ NPC upgrades with no code change.
 ## Quick start
 
 ```bash
-git clone <this repo> && cd forever-unstarted-game
+git clone https://github.com/Nadejde-games/loom.git && cd loom
 ./setup.sh
 ```
 
