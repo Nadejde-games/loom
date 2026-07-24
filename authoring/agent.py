@@ -300,19 +300,55 @@ _SYSTEM = (
 
 
 # ------------------------------------------------------------------- model / agent / run
-def build_model(model_name: str = AGENT_MODEL, api_key: str | None = None):
-    """The agent's OWN model — Pydantic-AI over OpenRouter, thinking bounded on tool turns (a
-    reasoning model can otherwise swallow a tool call into its reasoning channel). Returns None
-    when no OpenRouter key is in the environment, so a caller can fall back to a fake for
-    offline work. This is the authoring stack's provider, NOT ``loom.ai.provider``."""
+def _is_ollama() -> bool:
+    """Whether the authoring stack should target a local Ollama server (LOOM_PROVIDER=ollama),
+    rather than the hosted OpenRouter default. One switch shared by the agent's own model and
+    the tool-tier loom providers, so the whole workbench follows the game's backend choice."""
+    return os.environ.get("LOOM_PROVIDER", "").strip().lower() == "ollama"
+
+
+def _ollama_v1() -> str:
+    """The base_url for Ollama's OpenAI-compatible endpoint (LOOM_OLLAMA_HOST + /v1)."""
+    return os.environ.get("LOOM_OLLAMA_HOST", "http://localhost:11434").rstrip("/") + "/v1"
+
+
+def author_model_name() -> str:
+    """The director/author tier tag for the current backend — the model that drives the
+    authoring agent. On Ollama it is the game-master tier (LOOM_GM_MODEL), falling back to the
+    NPC tag then a dense default; on OpenRouter it is the hosted GM slug (AGENT_MODEL)."""
+    if _is_ollama():
+        return (os.environ.get("LOOM_GM_MODEL") or os.environ.get("LOOM_OLLAMA_MODEL")
+                or "qwen3.6:27b")
+    return os.environ.get("LOOM_GM_MODEL") or AGENT_MODEL
+
+
+def build_model(model_name: str | None = None, api_key: str | None = None):
+    """The agent's OWN model — Pydantic-AI native tool-calling. The backend follows the game's
+    LOOM_PROVIDER: a local Ollama server (``ollama``) via its OpenAI-compatible ``/v1`` endpoint,
+    else the hosted OpenRouter default. Thinking is bounded on tool turns (a reasoning model can
+    otherwise swallow a tool call into its reasoning channel). Returns None only when the hosted
+    path has no key, so a caller can fall back to a fake for offline work. This is the authoring
+    stack's provider, NOT ``loom.ai.provider``."""
     from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
+    if _is_ollama():
+        # Local backend: point Pydantic-AI's OpenAI model at Ollama's /v1. Qwen routes
+        # chain-of-thought into a separate channel counted against max_tokens, so send
+        # reasoning_effort "none" to keep the turn on tool-calling (the OllamaProvider does
+        # the same for the engine). Local tool-calling quality for authoring is live-verified.
+        from pydantic_ai.providers.openai import OpenAIProvider
+        return OpenAIChatModel(
+            model_name or author_model_name(),
+            provider=OpenAIProvider(base_url=_ollama_v1(), api_key="ollama"),
+            settings=OpenAIChatModelSettings(
+                extra_body={"reasoning_effort": "none"}, temperature=0.2),
+        )
     from pydantic_ai.providers.openrouter import OpenRouterProvider
     key = (api_key or os.environ.get("OPENROUTER_API_KEY")
            or os.environ.get("LOOM_OPENROUTER_API_KEY"))
     if not key:
         return None
     return OpenAIChatModel(
-        model_name,
+        model_name or author_model_name(),
         provider=OpenRouterProvider(api_key=key),
         settings=OpenAIChatModelSettings(
             extra_body={"reasoning": {"enabled": False}}, temperature=0.2),

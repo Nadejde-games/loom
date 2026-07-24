@@ -20,7 +20,7 @@ from textual.widgets import (Button, Checkbox, Footer, Header, Input, OptionList
                              Static, TextArea, Tree)
 from textual.widgets.option_list import Option
 
-from loom.ai import FakeProvider, OpenRouterProvider
+from loom.ai import FakeProvider, OllamaProvider, OpenRouterProvider
 from loom.atlas import survey
 from loom.explore import location_index, map_model, search
 from loom.worlddraft import Draft, commit, edit_entity, propose
@@ -28,11 +28,20 @@ from .cards import card, parse_ref
 from .play import PlayScreen
 
 
+def _is_ollama() -> bool:
+    """Whether the workbench should target a local Ollama server (LOOM_PROVIDER=ollama)."""
+    return os.environ.get("LOOM_PROVIDER", "").strip().lower() == "ollama"
+
+
 def _live_provider():
-    """Build the live NPC provider — OpenRouter, the NPC tier, keyed off the environment.
-    Explicit (not get_default_provider) so it resolves whenever OPENROUTER_API_KEY is
-    present regardless of LOOM_PROVIDER, and OpenRouter-only per the project rule. Returns
-    None when no key is set, so the caller can fall back to a dry run."""
+    """Build the live NPC provider, following the game's backend choice. LOOM_PROVIDER=ollama
+    → a local Ollama provider (no key needed); otherwise OpenRouter when OPENROUTER_API_KEY is
+    set. Explicit (not get_default_provider) so it resolves the NPC tier directly. Returns None
+    only when the hosted path has no key, so the caller can fall back to a dry run."""
+    if _is_ollama():
+        return OllamaProvider(
+            model=os.environ.get("LOOM_OLLAMA_MODEL", "qwen3.5:35b-a3b"),
+            host=os.environ.get("LOOM_OLLAMA_HOST", "http://localhost:11434"))
     key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LOOM_OPENROUTER_API_KEY")
     if not key:
         return None
@@ -340,7 +349,8 @@ class WorkbenchApp(App):
         provider = _live_provider()
         if provider is None:
             return FakeProvider(), "dry-run — no OPENROUTER_API_KEY in the environment"
-        return provider, "LIVE — real NPC minds (OpenRouter)"
+        backend = "Ollama" if _is_ollama() else "OpenRouter"
+        return provider, f"LIVE — real NPC minds ({backend})"
 
     def action_chat(self) -> None:
         """Toggle the left column between the navigator and the authoring-agent chat. The
@@ -384,11 +394,18 @@ class WorkbenchApp(App):
         return any(e.id == eid for e in pools.get(kind, ()))
 
     def _agent_tool_providers(self):
-        """The engine's loom providers the agent's tools use: the GM tier (qwen3.6-27b, a
-        generous token budget) for region_author, and the NPC tier for preview_play. Both
-        None when no OpenRouter key is set — region authoring then reports it needs a live
-        model, and preview-play falls back to the offline fake. Distinct from the agent's own
-        Pydantic-AI model, which the ChatPanel builds itself."""
+        """The engine's loom providers the agent's tools use: the GM/author tier (a generous
+        token budget) for region_author, and the NPC tier for preview_play. Backend follows
+        LOOM_PROVIDER — a local Ollama server or hosted OpenRouter. Both None when the hosted
+        path has no key — region authoring then reports it needs a live model, and preview-play
+        falls back to the offline fake. Distinct from the agent's own Pydantic-AI model, which
+        the ChatPanel builds itself."""
+        if _is_ollama():
+            gm = (os.environ.get("LOOM_GM_MODEL") or os.environ.get("LOOM_OLLAMA_MODEL")
+                  or "qwen3.6:27b")
+            host = os.environ.get("LOOM_OLLAMA_HOST", "http://localhost:11434")
+            author = OllamaProvider(model=gm, host=host, max_tokens=1200)
+            return author, _live_provider()
         key = os.environ.get("OPENROUTER_API_KEY") or os.environ.get("LOOM_OPENROUTER_API_KEY")
         if not key:
             return None, None

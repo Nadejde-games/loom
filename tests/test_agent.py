@@ -164,5 +164,76 @@ class AgentToolLoopTests(unittest.IsolatedAsyncioTestCase):
                          "Saved Hall")
 
 
+@unittest.skipUnless(_HAS_PYDANTIC_AI, "pydantic-ai (the authoring extra) is not installed")
+class BackendSelectionTests(unittest.TestCase):
+    """The authoring stack follows the game's LOOM_PROVIDER: a local Ollama server (no key) or
+    hosted OpenRouter. All offline — building a model/provider makes no network call."""
+
+    _KEYS = ("LOOM_PROVIDER", "LOOM_OLLAMA_HOST", "LOOM_OLLAMA_MODEL", "LOOM_GM_MODEL",
+             "OPENROUTER_API_KEY", "LOOM_OPENROUTER_API_KEY")
+
+    def setUp(self):
+        self._saved = {k: os.environ.get(k) for k in self._KEYS}
+        for k in self._KEYS:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    # -- the agent's own Pydantic-AI model -----------------------------------
+    def test_ollama_backend_builds_without_a_key(self):
+        from authoring.agent import build_model
+        os.environ["LOOM_PROVIDER"] = "ollama"          # and no OPENROUTER_API_KEY
+        model = build_model()
+        self.assertIsNotNone(model)                     # local path never needs a key
+        base_url = str(model._provider.base_url)
+        self.assertIn("11434", base_url)
+        self.assertIn("/v1", base_url)
+
+    def test_ollama_host_override(self):
+        from authoring.agent import build_model
+        os.environ["LOOM_PROVIDER"] = "ollama"
+        os.environ["LOOM_OLLAMA_HOST"] = "http://gpu-box:9999"
+        base_url = str(build_model()._provider.base_url)
+        self.assertIn("gpu-box:9999", base_url)
+        self.assertIn("/v1", base_url)
+
+    def test_author_model_name_tiers(self):
+        from authoring.agent import author_model_name
+        os.environ["LOOM_PROVIDER"] = "ollama"
+        self.assertEqual(author_model_name(), "qwen3.6:27b")            # dense default
+        os.environ["LOOM_OLLAMA_MODEL"] = "qwen3.5:35b-a3b"
+        self.assertEqual(author_model_name(), "qwen3.5:35b-a3b")        # falls to NPC tag
+        os.environ["LOOM_GM_MODEL"] = "loom-gm"
+        self.assertEqual(author_model_name(), "loom-gm")               # GM tier wins
+
+    def test_openrouter_without_key_is_none(self):
+        from authoring.agent import build_model
+        self.assertIsNone(build_model())               # default backend, no key → fake fallback
+
+    def test_openrouter_with_key_builds(self):
+        from authoring.agent import build_model
+        os.environ["OPENROUTER_API_KEY"] = "sk-or-test"
+        self.assertIsNotNone(build_model())
+
+    # -- the loom tool-tier providers (in app.py) ----------------------------
+    def test_live_provider_ollama_needs_no_key(self):
+        from authoring.app import _live_provider
+        from loom.ai import OllamaProvider
+        os.environ["LOOM_PROVIDER"] = "ollama"
+        os.environ["LOOM_OLLAMA_MODEL"] = "qwen3.5:35b-a3b"
+        provider = _live_provider()
+        self.assertIsInstance(provider, OllamaProvider)
+        self.assertEqual(provider.name, "ollama:qwen3.5:35b-a3b")
+
+    def test_live_provider_openrouter_without_key_is_none(self):
+        from authoring.app import _live_provider
+        self.assertIsNone(_live_provider())
+
+
 if __name__ == "__main__":
     unittest.main()
