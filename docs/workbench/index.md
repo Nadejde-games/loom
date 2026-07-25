@@ -34,9 +34,15 @@ Three capabilities, in one app:
   the **AI world-author**: "add a locked door to the cellar", "give Khalen a
   backstory", "off the hilltop, add a windswept moor running to a ruined
   watchtower". The agent can survey, search, preview-play, edit entities, spawn
-  NPCs and items, and author whole new regions.
+  NPCs and items, and author whole new regions — and it knows which entity you're
+  looking at, so "make **this room** colder" just works.
+- **Review before you commit.** Every change you haven't saved is tracked against
+  the version on disk: changed entities are badged in the tree (`✚` added, `✎`
+  edited, `✖` removed), and selecting one splits the inspector into a **saved vs
+  working** before/after that persists as you navigate — so a complex, multi-step
+  edit is always reviewable, right up until you save.
 
-## The safety gate: propose, validate, confirm
+## The safety gate: propose, validate, apply
 
 Every change — typed by you or proposed by the agent — goes through the same
 tested gate in the framework (`loom/worlddraft.py`), never through the agent's
@@ -47,13 +53,16 @@ good behavior:
 2. **Validate.** The candidate is surveyed by the atlas validator: dangling
    exits, bad directions, broken holders, id collisions are *errors* and block
    the merge; softer findings (a one-way exit, a thin persona) pass as warnings.
-3. **Confirm.** A candidate that surveys clean is *staged* with a
-   human-readable diff — and waits. The agent has **no tool that commits**; you
-   apply or discard. Multi-level undo covers you after the fact, and nothing is
-   written to disk until an explicit save (++ctrl+s++).
+3. **Refine, then apply.** A candidate that surveys clean is *staged* and shown
+   at once as a before/after — and you can keep talking to refine it, each
+   adjustment accumulating onto the same proposal. The agent has **no tool that
+   commits**; you apply (fold it into the staged draft) or discard. Multi-level
+   undo covers you after the fact.
 
 A candidate that doesn't survey clean is never staged at all — the agent gets
-the findings back as prose and is told to revise and re-propose.
+the findings back as prose and is told to revise and re-propose. Nothing reaches
+disk until you save (++ctrl+s++), which applies any open proposal first so a
+staged change is never lost.
 
 ## A deliberately separate stack
 

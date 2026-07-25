@@ -173,6 +173,37 @@ navigable **adjacency/room navigator** (rooms + their exits, click-to-select, ex
 links), not a drawn 2D node canvas — the layout engine is the field's weakest part everywhere
 and is deferred (see Deferrals).
 
+## Slice 3 refinements — the authoring loop (2026-07-25)
+
+Four changes made the agent loop feel like editing rather than a form-submit cycle. All
+offline-tested (`tests/test_agent.py`, `tests/test_chat.py`, `tests/test_worlddraft.py`); the
+safety gate and the "loom/ never imports the UI stack" arrow are untouched.
+
+- **The agent knows the inspector focus.** `AuthoringSession.focus` (the viewed `(kind, id)`) is
+  rendered by `focus_note()` into a **dynamic Pydantic-AI instruction** — re-evaluated each run,
+  never threaded into history — so "this room" / "here" / "it" resolves to what's on screen
+  without a grounding search, and a stale focus never lingers. Wired by `ChatPanel.focus_ref`.
+- **Proposals accumulate (refine in conversation).** The one-at-a-time refusal is gone: each
+  write builds on `_base_draft(session)` — the open proposal's candidate when one exists, else the
+  committed draft — so successive adjustments layer onto a single pending change. A dirty
+  refinement is rejected without clobbering the good pending. The human still applies.
+- **A saved-baseline diff model.** `Draft.baseline` (snapshot at load/save), `Draft.mark_saved()`,
+  and pure `diff_status(before, after)` → `(kind,id) -> '+'|'~'|'-'`. The app draws navigator
+  badges (`✚`/`✎`/`✖`, coloured Rich `Text`) + a subtitle tally from it, and any changed entity
+  opens a **persistent before/after** (saved-view over working-view) that survives navigation and
+  apply, until save. The working "after" folds in an in-flight proposal, so a proposal previews
+  and then persists seamlessly on apply.
+- **Save applies pending + re-baselines.** `AuthoringSession.save()` commits any open proposal
+  first (Save writes the working world; an un-applied proposal is not part of it — saving without
+  applying silently dropped work), then `mark_saved()` resets the baseline so badges/splits clear.
+  `Ctrl+S` in the app routes through the session; the reported "saved but nothing was there" bug.
+  Consequence: **apply is now optional** — save implies it; apply on its own only sets an undo
+  checkpoint or precedes a hand-edit (a hand-edit sets aside an open proposal to avoid a clobber).
+
+A related brittle-test fix landed the same session: `tests/test_atlas.py` counted exact entities
+of the shipped, editable demo world (a golden snapshot that re-broke on every legitimate world
+edit); rewritten to assert invariants (summary self-consistency, `reachable == locations`).
+
 ## Both gates
 
 - **Offline** — the workbench's *logic* is pure and testable on `FakeProvider`: the map-model

@@ -92,10 +92,12 @@ Try: `look`, `say hello`, `go north`, `go south`, `help`, `quit`.
 ## The authoring workbench
 
 A text-mode world editor (Textual). Explore the world graph, **play in the editor**,
-and edit either by hand or by **asking an AI author in natural language** ("add a
-locked door to the cellar", "give Khalen a backstory"). Every change — typed or
-agent-proposed — is built on a shadow copy, validated by the world survey, and applied
-only if the world still surveys clean.
+and edit either by hand or by **asking an AI author in natural language** ("make this
+room colder", "give Khalen a backstory") — the agent knows which entity you're viewing.
+Every change — typed or agent-proposed — is built on a shadow copy, validated by the
+world survey, and applied only if the world still surveys clean. A proposal is **refined
+in conversation** and previewed as a **before/after split**; unsaved changes are badged
+in the navigator (`✚`/`✎`/`✖`) until you save.
 
 ```bash
 make workbench                          # or: python -m authoring [world.json | world-dir]

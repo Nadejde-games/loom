@@ -17,11 +17,16 @@ in-editor play will use.
 Two columns. On the left, the **navigator**: a search box and a tree of the
 world grouped into Rooms, NPCs, and Items. On the right, the **inspector**: a
 card for the selected entity plus a list of jump-links. The header subtitle
-keeps a live tally — rooms · npcs · items · survey errors/warnings · play mode.
+keeps a live tally — rooms · npcs · items · survey errors/warnings · play mode —
+and, once you start changing things, an **unsaved-change count**
+(`unsaved ✚2 ✎1`).
 
 The tree marks what the world survey knows: `★` the start room, `⚠` an
 unreachable room or one with no entrance, `·` a dead end — the validator's
-findings surfaced where you browse, not buried in a lint report.
+findings surfaced where you browse, not buried in a lint report. Alongside those
+it carries a **change badge** for anything you've edited but not yet saved:
+`✚` added, `✎` edited, `✖` removed. (See
+[Tracking your changes](#tracking-your-changes).)
 
 **Cards show the authored record, not the player view.** A room card lists its
 description, exits (with `[one-way]` and `[dangling]` markers), entrances,
@@ -41,7 +46,7 @@ the room next door.
 | ++a++ | toggle the navigator ↔ the authoring-agent chat |
 | ++e++ | toggle the inspector ↔ the edit form |
 | ++f++ | toggle play between live minds and offline dry-run |
-| ++ctrl+s++ | save the staged world to disk |
+| ++ctrl+s++ | save to disk (applies any open agent proposal first) |
 | ++q++ | quit |
 
 ## Playing inside the editor
@@ -62,10 +67,11 @@ an NPC; aliases and portability for an item. Clearing a persona field drops it.
 
 Apply routes the edit through the exact same shadow-validate gate the agent
 uses — an edit that would break the world is rejected with the failing findings,
-and a clean one lands in the staged draft with a reminder that ++ctrl+s++ writes
-it to disk. Structural graph edits — exits, moving an entity — are deliberately
-*not* in the form; those are the agent's territory, where the survey can check
-the whole graph around the change.
+and a clean one lands in the staged draft. The edited entity now carries an `✎`
+badge in the tree and opens as a **before/after split** until you save. Structural
+graph edits — exits, moving an entity — are deliberately *not* in the form; those
+are the agent's territory, where the survey can check the whole graph around the
+change.
 
 ## The AI author
 
@@ -76,6 +82,12 @@ can watch the world while you talk about it). Talk to it in natural language:
 >
 > Off the hilltop, add a small windswept moor that runs to a ruined watchtower,
 > where a lonely beacon-keeper tends a cold signal-fire.
+
+**It knows what you're looking at.** The inspector's current selection is fed to
+the agent each turn, so a bare "make **this room** colder", "give **the
+blacksmith** a limp", or "rename **it**" resolves to the entity on screen — no
+need to name an id. It echoes back the concrete entity it resolved to, and asks
+only when the referent is genuinely ambiguous.
 
 The agent works with a small set of deliberate tools:
 
@@ -88,16 +100,44 @@ The agent works with a small set of deliberate tools:
   as `scripts/author.py`, where code owns the graph (ids, reciprocal exits,
   connectivity) and the model authors only the flavour.
 
-Every write ends the same way: a validated candidate is staged, the panel shows
-the diff (`+ room moor (The Windswept Moor)`, `~ npc khalen: persona`), and
-**apply / discard buttons appear**. Apply commits to the staged draft and
-repaints the explorer; discard drops it; undo steps back through applied
-changes; save writes `world.json`. One proposal is in flight at a time — the
-agent refuses to stack a second on top of an unconfirmed one.
+**Refine the proposal in conversation.** A write stages a validated candidate;
+the inspector shows it at once as a before/after split, and the panel reveals the
+**apply / discard** controls. You don't have to accept it before continuing —
+keep talking, and each adjustment *accumulates* onto the same open proposal ("now
+make it warmer", "and add a torch on the floor"). Nothing touches the world until
+you **apply** (fold the accumulated change into the staged draft) or **discard**
+(drop the whole set). A candidate that doesn't survey clean is never staged; the
+agent gets the findings back and revises.
+
+**Apply is optional — save implies it.** ++ctrl+s++ applies any open proposal
+*first* and then writes `world.json`, so a proposed change is never silently
+dropped on save. Reach for apply on its own only to set an undo checkpoint
+mid-session, or before switching to a hand-edit. The everyday loop is: talk until
+the split looks right → ++ctrl+s++.
 
 While the agent works you see its progress live — each tool call, token ticks,
 and elapsed time — including the inference the *tools* trigger (region
 authoring, preview play), which run on the engine's own providers.
+
+## Tracking your changes
+
+The workbench tracks everything you've changed since the **last save** and shows
+it two ways, so you can build up a complex edit and always see where you are:
+
+- **Badges in the navigator.** Every changed entity carries a coloured mark —
+  `✚` added, `✎` edited, `✖` removed — and the header keeps a running tally
+  (`unsaved ✚2 ✎1`). Navigate freely; the badges tell you what you've touched.
+- **A persistent before/after.** Selecting any changed entity splits the
+  inspector — the **saved** version on top, the **working** version below, with
+  the changed fields named. It stays put as you navigate away and back, and
+  survives **apply**; only **save** clears it. Unchanged entities show the normal
+  single card.
+
+The comparison is always against the version **on disk**: "before" is the last
+saved world, "after" is everything you've done since — agent changes, hand edits,
+and an in-flight proposal alike. **Save** writes it all and resets the baseline,
+so the badges and splits clear and the next round of deltas is measured from
+there. Nothing is ever written to disk until you save.
 
 ## Models and degradation
 
