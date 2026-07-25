@@ -49,8 +49,10 @@ class AuthoringSession:
     """Everything a run of the agent needs — and the human-driven side of the gate.
 
     ``draft`` is the staged world (the agent's tools read and propose against it). ``pending``
-    is the single validated-but-unconfirmed :class:`~loom.worlddraft.Proposal` (the agent
-    proposes one change at a time; ``confirm``/``reject`` are the human's move). The two
+    is the single validated-but-unconfirmed :class:`~loom.worlddraft.Proposal` — a *running* set
+    of changes the author refines in conversation: each further adjustment accumulates onto it
+    (see :func:`_base_draft`), and ``confirm``/``reject`` (the human's move) apply or drop the
+    whole set at once. The two
     ``*_provider`` slots are the *engine's* LLM providers — a loom provider for region
     authoring (the GM tier) and one for ``preview_play`` — distinct from the agent's own
     Pydantic-AI model; None degrades to the offline fake."""
@@ -59,6 +61,7 @@ class AuthoringSession:
     engine_provider: object = None        # loom LLMProvider for preview_play
     world_path: str | None = None
     pending: object = None                # loom.worlddraft.Proposal | None
+    focus: tuple | None = None            # (kind, id) the author is viewing in the inspector
 
     @classmethod
     def from_path(cls, path: str, **kw) -> "AuthoringSession":
@@ -85,15 +88,42 @@ class AuthoringSession:
         return undo(self.draft)
 
     def save(self, path: str | None = None) -> str:
-        """Write the staged world to ``path`` (default ``world_path``) as a full ``world.json``
-        — the explicit save. The authored file is untouched until this is called."""
+        """Write the staged world to ``path`` (default ``world_path``) as a full ``world.json`` —
+        the explicit save. An open proposal is APPLIED first: Save writes the working world, and a
+        pending proposal is not part of it until committed, so saving without applying would
+        silently drop proposed work. The authored file is untouched until this is called."""
+        if self.pending is not None:
+            self.confirm()               # fold the open proposal in — Save must persist it
         path = path or self.world_path
         if not path:
             raise ValueError("no path to save the world to")
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.draft.to_world_json(), f, indent=2, ensure_ascii=False)
             f.write("\n")
+        self.draft.mark_saved()          # the saved state is the new diff baseline
         return path
+
+    # ---- the inspector's focus, for the agent to ground deixis ----
+    def focus_note(self) -> str | None:
+        """A one-line note naming the entity the author is currently looking at in the
+        inspector, so the agent can resolve a bare deictic reference ('this room', 'here', 'it')
+        without a search. Returns None when nothing is focused, or the focused entity has since
+        vanished from the staged world. Fed to the agent as a per-turn instruction (never baked
+        into the threaded history), so it always reflects the CURRENT selection, not a stale one."""
+        if not self.focus:
+            return None
+        kind, eid = self.focus
+        pool = {"room": self.draft.locations, "npc": self.draft.npcs,
+                "item": self.draft.items}.get(kind, [])
+        ent = next((e for e in pool if e["id"] == eid), None)
+        if ent is None:
+            return None
+        name = ent.get("name") or eid
+        return (f'The author is currently viewing {kind} {eid} ("{name}") in the inspector. '
+                f"Resolve a bare deictic reference — 'this', 'here', 'this {kind}', 'it' — to "
+                f"{eid} unless they clearly name a different entity, and echo the id you "
+                "resolved to. This is only where they are looking; it is not by itself an "
+                "instruction to change it.")
 
 
 # --------------------------------------------------------------------- prose helpers
@@ -113,13 +143,30 @@ def _findings_prose(findings) -> str:
                      for f in findings)
 
 
-def _propose_and_stash(session: AuthoringSession, candidate: dict, what: str) -> str:
-    """The shared tail of every write tool: run the candidate through the gate, and — only if
-    it surveys clean — stage it for confirmation. A dirty candidate is NEVER staged; its
-    findings are returned so the agent can fix and re-propose. Nothing is ever committed here."""
+def _base_draft(session: AuthoringSession) -> Draft:
+    """The base the next proposed change is built on. With a proposal already open, that is the
+    proposal's own candidate — so adjustments the author asks for in conversation ACCUMULATE onto
+    it (a rename, then 'also make it warmer', become one pending change) rather than a fresh edit
+    that would drop the earlier one. With nothing pending, the committed staged draft. Either way
+    :func:`_propose_and_stash` diffs against the committed draft, so the before/after the author
+    sees is always the full pending set, not just the last tweak.
+
+    The transient draft shares the pending candidate's lists by reference, but every producer
+    (:func:`edit_entity` etc.) deep-copies via ``Draft.dicts()`` before mutating, so the open
+    proposal is only ever read here, never corrupted."""
     if session.pending is not None:
-        return ("A change is already proposed and awaiting confirmation. Ask the author to "
-                "confirm or reject it before proposing another.")
+        c = session.pending.candidate
+        return Draft(start=session.draft.start, locations=c["locations"],
+                     npcs=c["npcs"], items=c["items"], meta=session.draft.meta)
+    return session.draft
+
+
+def _propose_and_stash(session: AuthoringSession, candidate: dict, what: str) -> str:
+    """The shared tail of every write tool: run the candidate through the gate, and — only if it
+    surveys clean — stage it as the (possibly refined) pending proposal. A dirty candidate is
+    NEVER staged; its findings are returned so the agent can fix and re-propose, and any prior
+    clean proposal is left intact. Nothing is ever committed here — the human applies the set."""
+    refining = session.pending is not None
     p = propose(session.draft, candidate)
     if not p.ok:
         return (f"The change to {what} did NOT survey clean, so it was NOT applied:\n"
@@ -130,8 +177,10 @@ def _propose_and_stash(session: AuthoringSession, candidate: dict, what: str) ->
     warns = p.view.warnings
     note = ("\nWarnings (allowed, but worth a glance): "
             + "; ".join(f"{f.code}@{f.where or 'world'}" for f in warns)) if warns else ""
-    return (f"Proposed change to {what} — surveys clean. Nothing has changed yet.\n"
-            f"Diff:\n{diff}{note}\nAwaiting the author's confirmation to apply.")
+    verb = "Updated the proposed change" if refining else "Proposed change to " + what
+    return (f"{verb} — surveys clean. Nothing has changed yet; the full proposed change is shown "
+            f"in the inspector as before/after.\nDiff:\n{diff}{note}\n"
+            "Ask for more adjustments, or apply it when it looks right.")
 
 
 # --------------------------------------------------------------------------- the tools
@@ -198,14 +247,15 @@ async def region_author(ctx: RunContext[AuthoringSession], brief: str,
     s = ctx.deps
     if s.author_provider is None:
         return "Region authoring needs a live authoring model, which is not configured here."
-    anchor = attach_to or s.draft.start
-    if anchor not in {l["id"] for l in s.draft.locations}:
+    base = _base_draft(s)                 # build on the open proposal, if any (accumulate)
+    anchor = attach_to or base.start
+    if anchor not in {l["id"] for l in base.locations}:
         return f'No room "{anchor}" to attach to. Use world_search to find a room id.'
-    result = await author_region(s.author_provider, brief, base_world=s.draft.world(),
-                                 start=s.draft.start, attach_to=anchor)
+    result = await author_region(s.author_provider, brief, base_world=base.world(),
+                                 start=base.start, attach_to=anchor)
     if not result.ok:
         return f"Could not author a clean region: {result.reason}"
-    cand = fold_region(s.draft, result.region, result.attach)
+    cand = fold_region(base, result.region, result.attach)
     return _propose_and_stash(s, cand, f"a new region attached to {anchor}")
 
 
@@ -217,7 +267,7 @@ async def entity_edit(ctx: RunContext[AuthoringSession], entity_id: str,
     a character only — they are MERGED into its existing persona, not replaced (so adding a
     backstory keeps its traits). ``traits`` and ``goals`` are comma-separated lists. Does NOT
     change the world — it validates the edit and stages it for confirmation."""
-    draft = ctx.deps.draft
+    draft = _base_draft(ctx.deps)         # accumulate onto an open proposal (persona merges too)
     patch = {}
     if name:
         patch["name"] = name
@@ -256,7 +306,7 @@ async def entity_spawn(ctx: RunContext[AuthoringSession], kind: str, name: str,
     the addition for confirmation."""
     if kind not in ("npc", "item"):
         return "kind must be 'npc' or 'item'."
-    cand, new_id = spawn_entity(ctx.deps.draft, kind, name=name,
+    cand, new_id = spawn_entity(_base_draft(ctx.deps), kind, name=name,
                                 description=description, where=where)
     return _propose_and_stash(ctx.deps, cand, f'new {kind} "{name}" ({new_id})')
 
@@ -287,11 +337,18 @@ _SYSTEM = (
     "author's confirmation. Say plainly what you proposed and that it awaits confirmation; "
     "never claim a change was made when it was only proposed.\n"
     "- Echo the resolved referent: when the author says 'this room' or 'the blacksmith', name "
-    "the concrete id you resolved it to.\n"
+    "the concrete id you resolved it to. A note may tell you which entity they are currently "
+    "viewing in the inspector — resolve a bare 'this' / 'here' / 'it' to it unless they name "
+    "another.\n"
     "- Right tool for the scope: a whole new area (several rooms and who lives in them) -> "
     "region_author with a prose brief; a single new character or object in an existing room "
     "-> entity_spawn; renaming or rewording one thing -> entity_edit.\n"
-    "- One change at a time — propose a single change and let it be confirmed before the next.\n"
+    "- Refine the pending proposal in conversation — do NOT make the author confirm each step. A "
+    "proposed change is not yet applied; each further adjustment they ask for ACCUMULATES onto it "
+    "(a rename, then 'also make it warmer', become one pending change shown as before/after). "
+    "Keep adjusting the open proposal until they apply or discard it; never tell them to confirm "
+    "or reject before you can help — just make the next adjustment. Only when they say they are "
+    "done (or explicitly want a clean slate) do you leave it for them to apply.\n"
     "- Ask a brief clarifying question ONLY when a required detail or a referent is genuinely "
     "ambiguous; otherwise ground, then propose.\n"
     "- If a proposed change does not survey clean, the tool tells you why — fix it and propose "
@@ -361,8 +418,18 @@ def build_agent(model) -> Agent:
     """The authoring agent over ``model`` (a Pydantic-AI model, or a ``FunctionModel``/
     ``TestModel`` for the offline gate) — the tool catalogue and the one comprehensive rule
     set, typed on :class:`AuthoringSession` deps."""
-    return Agent(model, deps_type=AuthoringSession, system_prompt=_SYSTEM,
-                 tools=_TOOLS, retries=1)
+    agent = Agent(model, deps_type=AuthoringSession, system_prompt=_SYSTEM,
+                  tools=_TOOLS, retries=1)
+
+    @agent.instructions
+    def _focus_instruction(ctx: RunContext[AuthoringSession]) -> str:
+        # What the inspector is showing THIS turn — an instruction, not a system prompt, so it is
+        # re-evaluated each run and never threaded into history (a stale focus must not linger).
+        # Empty when nothing is focused; pydantic-ai drops an empty instruction, so no blank line
+        # reaches the model.
+        return ctx.deps.focus_note() or ""
+
+    return agent
 
 
 async def run_turn(agent: Agent, session: AuthoringSession, message: str, *,

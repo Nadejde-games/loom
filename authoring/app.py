@@ -13,7 +13,9 @@ Run it: ``python -m authoring [world.json | world-dir]`` (defaults to the shippe
 from __future__ import annotations
 import json
 import os
+from collections import Counter
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import (Button, Checkbox, Footer, Header, Input, OptionList,
@@ -23,9 +25,16 @@ from textual.widgets.option_list import Option
 from loom.ai import FakeProvider, OllamaProvider, OpenRouterProvider
 from loom.atlas import survey
 from loom.explore import location_index, map_model, search
-from loom.worlddraft import Draft, commit, edit_entity, propose
+from loom.worlddraft import Draft, commit, diff_status, edit_entity, propose
 from .cards import card, parse_ref
 from .play import PlayScreen
+
+
+# The unsaved-change badge per delta mark: a coloured glyph shown on each navigator entry and in
+# the inspector, so added / edited / removed entities read at a glance (Tree labels honour markup;
+# built as Rich Text so a bracket in an entity name is never mis-parsed).
+_DELTA = {"+": ("✚", "green"), "~": ("✎", "yellow"), "-": ("✖", "red")}
+_DELTA_WORD = {"+": "added", "~": "edited", "-": "removed"}
 
 
 def _is_ollama() -> bool:
@@ -63,6 +72,28 @@ def _split_csv(raw: str) -> list:
 def _join_csv(values) -> str:
     """A list -> a comma-separated field for the form (the inverse of _split_csv)."""
     return ", ".join(str(x) for x in (values or []))
+
+
+_LABEL_KIND = {"room": "room", "npc": "npc", "item": "item"}
+
+
+def _diff_refs(diff: list) -> list:
+    """Parse ``diff_worlds`` lines — ``+ room id (name)`` / ``~ npc id: fields`` /
+    ``- item id (name)`` — into ``(kind, id, mark)`` triples: the entities a proposal touches,
+    in diff order. A line the parser cannot read is skipped, never raised on."""
+    refs = []
+    for line in diff or []:
+        if not line or line[0] not in "+-~":
+            continue
+        mark, rest = line[0], line[1:].strip()
+        label, _, tail = rest.partition(" ")
+        kind = _LABEL_KIND.get(label)
+        if not kind:
+            continue
+        eid = tail.split(":", 1)[0].split("(", 1)[0].strip()
+        if eid:
+            refs.append((kind, eid, mark))
+    return refs
 
 
 # Edit-form field id -> the label shown in that field's top border line (its border_title).
@@ -104,6 +135,14 @@ class WorkbenchApp(App):
         color: $text-muted; background: transparent;
     }
     #edit-controls Button:hover { color: $text; background: $boost; }
+    /* The proposed-change before/after split — hidden until the agent stages a change. */
+    #diff-view { display: none; height: 1fr; }
+    #diff-summary { height: auto; color: $text-muted; padding: 0 1; margin-bottom: 1; }
+    #diff-before-label, #diff-after-label {
+        height: 1; color: $accent; text-style: bold; padding: 0 1;
+        border-top: solid $secondary;
+    }
+    #before-scroll, #after-scroll { height: 1fr; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -130,10 +169,16 @@ class WorkbenchApp(App):
         self._source_label = source_label or view.source or "world"
         self._world_path = world_path  # set when loaded from a path — play needs it
         self._dry_run = False          # play default: live minds (OpenRouter)
+        self._session = None           # authoring.AuthoringSession — set in compose when editable
         self._selected = None          # (kind, id) or None
         self._links = []               # parallel to the option-list, index-addressed
         self._syncing = False          # guard: cursor-move must not re-fire selection
         self._editing = False          # inspector edit-mode (the hand-editing form)
+        # The unsaved-change picture, all measured against the Draft's saved baseline:
+        self._status = {}              # (kind,id) -> '+'|'~'|'-' : every entity that differs
+        self._after = None             # the working {locations,npcs,items} the deltas are OF
+        self.baseline_view = None      # survey of the saved baseline — the 'before' cards
+        self._baseline_map = None
 
     # -- construction ------------------------------------------------------------
     @classmethod
@@ -152,9 +197,9 @@ class WorkbenchApp(App):
                     yield Tree(self._source_label, id="nav")
                 # The agent chat is the ALTERNATE view of this column (toggle with `a`), so the
                 # inspector on the right stays visible while you author. Built hidden; because it
-                # shares this Explorer's Draft, an Apply repaints the inspector at once (the
-                # on_applied callback). Lazy imports keep the read-only Explorer free of the
-                # agent stack until a world with a Draft is actually loaded.
+                # shares this Explorer's Draft, a staged/applied change repaints the inspector at
+                # once (the on_session_changed callback). Lazy imports keep the read-only Explorer
+                # free of the agent stack until a world with a Draft is actually loaded.
                 if self.draft is not None:
                     from .agent import AuthoringSession
                     from .chat import ChatPanel
@@ -162,7 +207,13 @@ class WorkbenchApp(App):
                     session = AuthoringSession(
                         draft=self.draft, author_provider=author_provider,
                         engine_provider=engine_provider, world_path=self._world_path)
-                    panel = ChatPanel(session=session, on_applied=self._refresh_from_draft)
+                    self._session = session          # the app reads .pending to render the split
+                    # focus_ref lets the agent see what the inspector is showing each turn, so
+                    # 'this room' / 'here' / 'it' resolves to the selected entity without a search.
+                    # on_session_changed repaints the inspector when a proposal is staged/resolved.
+                    panel = ChatPanel(session=session,
+                                      on_session_changed=self._on_session_changed,
+                                      focus_ref=lambda: self._selected)
                     panel.display = False
                     yield panel
             with Vertical(id="inspector"):
@@ -182,6 +233,18 @@ class WorkbenchApp(App):
                         yield TextArea("", id="f-aliases", soft_wrap=True,
                                        show_line_numbers=False)
                         yield Checkbox(id="f-portable")
+                # The before/after split (shown for any entity that differs from the saved world):
+                # the saved version over the current working version, so an unsaved change stays
+                # reviewable across navigation and Apply, until Save. markup=False so plain card
+                # text (e.g. [one-way]) renders literally. Driven by _show_entity_diff.
+                with Vertical(id="diff-view"):
+                    yield Static("", id="diff-summary")
+                    yield Static("── saved ──", id="diff-before-label")
+                    with VerticalScroll(id="before-scroll"):
+                        yield Static("", id="card-before", markup=False)
+                    yield Static("── working (unsaved) ──", id="diff-after-label")
+                    with VerticalScroll(id="after-scroll"):
+                        yield Static("", id="card-after", markup=False)
                 yield OptionList(id="links")
                 with Horizontal(id="edit-controls"):
                     yield Button("apply", id="edit-apply")
@@ -193,6 +256,7 @@ class WorkbenchApp(App):
         self.query_one("#inspector", Vertical).border_title = "inspector"
         for sel, title in _FIELD_TITLES.items():   # the label lives in each field's border line
             self.query_one(sel).border_title = title
+        self._recompute_baseline_view()            # the 'before' the deltas are measured against
         self._refresh_subtitle()
         self._rebuild_nav("")
         start = self.view.start or (self.view.rooms[0].id if self.view.rooms else "")
@@ -203,7 +267,17 @@ class WorkbenchApp(App):
         s = self.view.summary()
         mode = "dry-run" if self._dry_run else "live"
         self.sub_title = (f"{s['locations']} rooms · {s['npcs']} npcs · {s['items']} items"
-                          f" · {s['errors']}e/{s['warnings']}w · play: {mode}")
+                          f" · {s['errors']}e/{s['warnings']}w · play: {mode}"
+                          + self._unsaved_tag())
+
+    def _unsaved_tag(self) -> str:
+        """A compact ' · unsaved ✚2 ✎1 ✖0' tail for the subtitle — the legend for the badges and
+        the at-a-glance 'you have changes to save' signal. Empty when nothing differs from saved."""
+        if not self._status:
+            return ""
+        c = Counter(self._status.values())
+        parts = [f"{_DELTA[m][0]}{c[m]}" for m in ("+", "~", "-") if c[m]]
+        return " · unsaved " + " ".join(parts)
 
     # -- navigator ---------------------------------------------------------------
     def _rebuild_nav(self, query: str) -> None:
@@ -221,37 +295,124 @@ class WorkbenchApp(App):
                 "npc": [(c.id, c.name) for c in self.view.npcs],
                 "item": [(it.id, it.name) for it in self.view.items],
             }
+        # Entities removed since the save aren't in the working view, but the author still needs
+        # to find them to review/undo — surface them as ghost leaves under their kind.
+        removed = self._removed_by_kind(bool(query.strip()))
         titles = {"room": "Rooms", "npc": "NPCs", "item": "Items"}
         for kind in ("room", "npc", "item"):
-            entries = groups[kind]
+            entries = list(groups[kind]) + removed.get(kind, [])
             cat = tree.root.add(f"{titles[kind]} ({len(entries)})", expand=True)
             for eid, name in entries:
                 cat.add_leaf(self._leaf_label(kind, eid, name), data=(kind, eid))
         tree.root.expand()
 
-    def _leaf_label(self, kind: str, eid: str, name: str) -> str:
+    def _removed_by_kind(self, filtering: bool) -> dict:
+        """(kind -> [(id, name)]) for entities present in the saved baseline but gone from the
+        working world — the '-' deltas. Named from the baseline survey. Skipped while a search is
+        active (they are not in the searchable working view). Empty until a delete capability
+        exists; wired now so the badge model is complete."""
+        out: dict = {}
+        if filtering or self.baseline_view is None:
+            return out
+        names = {}
+        for pool in (self.baseline_view.rooms, self.baseline_view.npcs, self.baseline_view.items):
+            for e in pool:
+                names[e.id] = e.name
+        for (kind, eid), mark in self._status.items():
+            if mark == "-":
+                out.setdefault(kind, []).append((eid, names.get(eid, eid)))
+        return out
+
+    def _leaf_label(self, kind: str, eid: str, name: str) -> Text:
+        """The navigator leaf: the name, any room mark (★ start / ⚠ trouble), and — prepended —
+        the coloured unsaved-change badge (✚ added / ✎ edited / ✖ removed). A Rich Text (not a
+        markup string) so a bracket in a name is never parsed as markup."""
+        base = name
         if kind == "room":
             node = self.map.node(eid)
             if node and node.is_start:
-                return f"★ {name}"
-            if node:
+                base = f"★ {name}"
+            elif node:
                 for flag in node.flags:
                     if flag in _ROOM_MARK:
-                        return f"{_ROOM_MARK[flag]} {name}"
-        return name
+                        base = f"{_ROOM_MARK[flag]} {name}"
+                        break
+        mark = self._status.get((kind, eid))
+        if mark in _DELTA:
+            glyph, style = _DELTA[mark]
+            return Text.assemble((f"{glyph} ", style), base)
+        return Text(base)
 
     # -- selection ---------------------------------------------------------------
     def _select(self, kind: str, eid: str) -> None:
+        """Show an entity in the inspector. One that differs from the saved world (a delta) opens
+        the persistent before/after split — saved version over working version — so a change stays
+        reviewable as you navigate away and back, and even after Apply, until you Save. An
+        unchanged entity shows the normal single card."""
         self._selected = (kind, eid)
-        text, links = card(self.view, self.map, kind, eid)
+        mark = self._status.get((kind, eid))
+        if self.draft is not None and mark in _DELTA:
+            self._show_entity_diff(kind, eid, mark)
+        else:
+            self._show_entity_card(kind, eid)
+        self._sync_cursor(kind, eid)
+
+    def _set_links(self, links) -> None:
+        """Fill the jump-link option-list (exits, occupants, contents) — shown in both the card
+        and the split, so an exit is one keystroke away however the entity is displayed."""
         self._links = links
-        self.query_one("#card", Static).update(text)
-        self.query_one("#inspector", Vertical).border_title = f"inspector — {kind}:{eid}"
         ol = self.query_one("#links", OptionList)
         ol.clear_options()
         for label, _ref in links:
             ol.add_option(Option(label))
-        self._sync_cursor(kind, eid)
+
+    def _show_entity_card(self, kind: str, eid: str) -> None:
+        """The normal single card for an unchanged entity."""
+        self._exit_diff_mode()
+        text, links = card(self.view, self.map, kind, eid)
+        self.query_one("#card", Static).update(text)
+        self.query_one("#inspector", Vertical).border_title = f"inspector — {kind}:{eid}"
+        self._set_links(links)
+
+    def _show_entity_diff(self, kind: str, eid: str, mark: str) -> None:
+        """Split the inspector: the entity in the saved world (top) over the working world
+        (bottom). '+' has no saved side, '-' has no working side; jump-links come from whichever
+        side exists, so navigation still works from a split. The 'before' is the last-saved
+        baseline, so the split shows the whole unsaved change — not just the last tweak."""
+        if mark == "+":
+            before_text = "(new — not in the saved world yet)"
+        else:
+            before_text = card(self.baseline_view, self._baseline_map, kind, eid)[0]
+        if mark == "-":
+            after_text = "(removed — no longer in the working world)"
+            links = card(self.baseline_view, self._baseline_map, kind, eid)[1]
+        else:
+            after_text, links = card(self.view, self.map, kind, eid)
+        self._set_links(links)
+        self.query_one("#card-before", Static).update(before_text)
+        self.query_one("#card-after", Static).update(after_text)
+        self.query_one("#diff-summary", Static).update(self._diff_summary(kind, eid, mark))
+        self.query_one("#inspector", Vertical).border_title = f"{_DELTA_WORD[mark]} — {kind}:{eid}"
+        self._enter_diff_mode()
+
+    def _entity_from(self, dicts, kind: str, eid: str):
+        if not dicts:
+            return None
+        key = {"room": "locations", "npc": "npcs", "item": "items"}[kind]
+        return next((r for r in dicts.get(key, []) if r["id"] == eid), None)
+
+    def _diff_summary(self, kind: str, eid: str, mark: str) -> str:
+        """The line above the split: what changed on this entity, plus the world-wide unsaved
+        tally (which doubles as the badge legend)."""
+        head = f"{_DELTA_WORD[mark]} since last save"
+        if mark == "~":
+            b = self._entity_from(self.draft.baseline, kind, eid) or {}
+            a = self._entity_from(self._after, kind, eid) or {}
+            fields = sorted({f for f in set(a) | set(b) if a.get(f) != b.get(f)})
+            if fields:
+                head += " · changed: " + ", ".join(fields)
+        tag = self._unsaved_tag().replace(" · unsaved ", "")
+        return f"{head}\nunsaved: {tag.strip()}" if tag else head
 
     def _sync_cursor(self, kind: str, eid: str) -> None:
         """Move the navigator cursor onto the selected entity, so a selection made via
@@ -355,8 +516,8 @@ class WorkbenchApp(App):
     def action_chat(self) -> None:
         """Toggle the left column between the navigator and the authoring-agent chat. The
         inspector on the right stays visible in both modes, so the room/npc/item description is
-        never hidden while you author. The chat shares this Explorer's staged Draft, so an Apply
-        repaints the inspector at once (the panel's on_applied callback)."""
+        never hidden while you author. The chat shares this Explorer's staged Draft, so a staged
+        or applied change repaints the inspector at once (the on_session_changed callback)."""
         if self.draft is None:
             self.notify("No world file to author — the app was built from a view.",
                         severity="warning")
@@ -373,21 +534,109 @@ class WorkbenchApp(App):
         else:
             self._refresh_from_draft()      # back to the navigator — reflect any applied change
 
-    def _refresh_from_draft(self) -> None:
-        """Rebuild the view/map from the staged Draft and repaint the navigator, subtitle, and
-        inspector — preserving the search box and re-selecting the current entity if it still
-        exists (else the start)."""
-        self.view = survey(self.draft.world(), self.draft.start,
-                           source=self._source_label)
+    def _recompute_working(self) -> None:
+        """Recompute the working world (the staged draft, plus any open agent proposal overlaid)
+        and its deltas against the saved baseline. Sets view/map (what the nav + cards render),
+        ``_after`` (the working dicts), and ``_status`` (the badges, and which entities open a
+        split). A pending proposal is included, so a proposed change badges and previews at once
+        and stays seamlessly when Applied."""
+        if self.draft is None:                        # view-only mode — no deltas, no baseline
+            self._after, self._status = None, {}
+            return
+        pending = self._session.pending if self._session else None
+        if pending is not None:
+            self.view, self._after = pending.view, pending.candidate
+        else:
+            self.view, self._after = self.draft.view(source=self._source_label), self.draft.dicts()
         self.map = map_model(self.view)
+        self._status = diff_status(self.draft.baseline, self._after)
+
+    def _recompute_baseline_view(self) -> None:
+        """Survey the saved baseline into baseline_view/_baseline_map — the source of every
+        'before' card. The baseline changes only on load and save, so this is cheap to call on
+        each session move. Falls back to the working view in view-only mode."""
+        if self.draft is None or self.draft.baseline is None:
+            self.baseline_view, self._baseline_map = self.view, self.map
+            return
+        b = self.draft.baseline
+        bd = Draft(start=self.draft.start, locations=b["locations"],
+                   npcs=b["npcs"], items=b["items"], meta=self.draft.meta)
+        self.baseline_view = bd.view(source="(baseline)")
+        self._baseline_map = map_model(self.baseline_view)
+
+    def _resurvey(self) -> None:
+        """Recompute the working world + deltas, then repaint the navigator and subtitle. The
+        inspector is left to the caller (a card or a before/after split)."""
+        self._recompute_working()
         self._rebuild_nav(self.query_one("#search", Input).value)
         self._refresh_subtitle()
-        if self._selected and self._entity_exists(*self._selected):
+
+    def _select_current_or_start(self) -> None:
+        """Re-select the current entity if it still exists (or is a removed delta), else the
+        start room."""
+        if self._selected and (self._entity_exists(*self._selected)
+                               or self._selected in self._status):
             self._select(*self._selected)
         else:
             start = self.view.start or (self.view.rooms[0].id if self.view.rooms else "")
             if start:
                 self._select("room", start)
+
+    def _refresh_from_draft(self) -> None:
+        """Recompute and repaint, re-selecting the current entity — which shows its before/after
+        split if it now differs from the saved world, else its card. Used when returning from the
+        chat and after a hand edit."""
+        self._resurvey()
+        self._select_current_or_start()
+
+    # -- reacting to the agent session -------------------------------------------
+    def _on_session_changed(self) -> None:
+        """The chat panel moved the session — a proposal staged/refined, applied, discarded,
+        undone, or saved. Recompute the working world + deltas (a save resets the baseline, so
+        deltas clear), then focus the entity the agent just touched so the change is in view;
+        otherwise keep the current selection. The app is the sole authority on the inspector."""
+        self._recompute_baseline_view()      # catch a save issued from the chat panel
+        self._resurvey()
+        focus = None
+        pending = self._session.pending if self._session else None
+        if pending is not None:
+            focus = self._primary_changed_ref(pending)
+        if focus is not None:
+            self._select(*focus)
+        else:
+            self._select_current_or_start()
+
+    def _primary_changed_ref(self, pending):
+        """The entity to focus when the agent changes something: the current selection if the
+        change touches it (viewing the forge then editing it stays put), else the first
+        modified (~) / added (+) / removed (-) entity in the diff. None if there is no delta."""
+        refs = _diff_refs(pending.diff)
+        if not refs:
+            return None
+        if self._selected:
+            for kind, eid, _mark in refs:
+                if (kind, eid) == self._selected:
+                    return (kind, eid)
+        for want in ("~", "+", "-"):
+            for kind, eid, mark in refs:
+                if mark == want:
+                    return (kind, eid)
+        return (refs[0][0], refs[0][1])
+
+    def _enter_diff_mode(self) -> None:
+        """Hand the inspector to the before/after split (keeping the jump-links, so you can still
+        navigate onward from a diff), closing any open edit form."""
+        if self._editing:
+            self._set_edit_mode(False)
+        self.query_one("#card-scroll", VerticalScroll).display = False
+        self.query_one("#diff-view", Vertical).display = True
+        self.query_one("#links", OptionList).display = True
+
+    def _exit_diff_mode(self) -> None:
+        """Restore the normal single-card inspector (a no-op when the split is already hidden)."""
+        self.query_one("#diff-view", Vertical).display = False
+        self.query_one("#card-scroll", VerticalScroll).display = True
+        self.query_one("#links", OptionList).display = True
 
     def _entity_exists(self, kind: str, eid: str) -> bool:
         pools = {"room": self.view.rooms, "npc": self.view.npcs, "item": self.view.items}
@@ -426,6 +675,8 @@ class WorkbenchApp(App):
         Apply runs through the same shadow-validate-apply gate the agent uses."""
         if self._editing:
             self._set_edit_mode(False)
+            if self._selected:
+                self._select(*self._selected)       # restore the card or the split
             return
         if self.draft is None:
             self.notify("No editable world — the app was built from a view.",
@@ -441,6 +692,9 @@ class WorkbenchApp(App):
 
     def _set_edit_mode(self, on: bool) -> None:
         self._editing = on
+        if on:                                       # the form lives in card-scroll; leave the split
+            self.query_one("#diff-view", Vertical).display = False
+            self.query_one("#card-scroll", VerticalScroll).display = True
         self.query_one("#card", Static).display = not on
         self.query_one("#links", OptionList).display = not on
         self.query_one("#edit-form", Vertical).display = on
@@ -501,6 +755,12 @@ class WorkbenchApp(App):
         if not self._selected or self.draft is None:
             return
         kind, eid = self._selected
+        # A hand edit and an open agent proposal are conflicting drafts of the same world; the
+        # explicit hand edit wins. Set the proposal aside so a later Apply cannot clobber this.
+        if self._session is not None and self._session.pending is not None:
+            self._session.pending = None
+            self.notify("Set aside the agent's open proposal — it was built on the earlier state.",
+                        severity="warning")
         try:
             cand = edit_entity(self.draft, eid, self._gather_patch(kind, eid))
         except KeyError:
@@ -513,21 +773,34 @@ class WorkbenchApp(App):
             return
         commit(self.draft, p)
         self._set_edit_mode(False)
-        self._refresh_from_draft()          # re-survey + repaint, re-selecting the edited entity
-        self.notify("Edit applied. Ctrl+S to save to disk.")
+        self._refresh_from_draft()          # repaint, re-selecting the edited entity (now a diff)
+        self.notify("Edit applied — unsaved. Ctrl+S to write it to disk.")
 
     def action_save_world(self) -> None:
-        """Write the staged world (all applied edits, by hand or by the agent) to world.json."""
+        """Write the staged world (all edits, by hand or by the agent) to world.json, applying any
+        open agent proposal FIRST so Save never drops proposed work, then reset the diff baseline
+        to what was saved — so the unsaved-change badges and before/after splits clear, and future
+        deltas are measured against this save."""
         if self.draft is None or not self._world_path:
             self.notify("No world file to save.", severity="warning")
             return
+        had_pending = self._session is not None and self._session.pending is not None
         try:
-            with open(self._world_path, "w", encoding="utf-8") as f:
-                json.dump(self.draft.to_world_json(), f, indent=2, ensure_ascii=False)
-                f.write("\n")
-            self.notify(f"Saved to {os.path.relpath(self._world_path)}.")
+            if self._session is not None:
+                self._session.save(self._world_path)   # applies pending, writes, re-baselines
+            else:                                      # no agent session — direct write
+                with open(self._world_path, "w", encoding="utf-8") as f:
+                    json.dump(self.draft.to_world_json(), f, indent=2, ensure_ascii=False)
+                    f.write("\n")
+                self.draft.mark_saved()
         except Exception as exc:
             self.notify(f"Save failed: {exc}", severity="error")
+            return
+        self._recompute_baseline_view()
+        self._refresh_from_draft()          # badges + splits clear (deltas now empty)
+        where = os.path.relpath(self._world_path)
+        self.notify(f"Applied the open proposal and saved to {where}." if had_pending
+                    else f"Saved to {where}.")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         # Only the inspector's edit controls — the ChatPanel handles its own buttons.
@@ -535,3 +808,5 @@ class WorkbenchApp(App):
             self._apply_edit()
         elif event.button.id == "edit-cancel":
             self._set_edit_mode(False)
+            if self._selected:
+                self._select(*self._selected)       # restore the card or the split

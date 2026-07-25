@@ -110,7 +110,7 @@ class AgentToolLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(s.pending)
         self.assertTrue(any(line.startswith("+ item") for line in s.pending.diff))
 
-    async def test_second_write_refused_while_one_pending(self):
+    async def test_second_write_accumulates_onto_pending(self):
         s = self._session()
         agent = build_agent(_scripted([
             ("entity_spawn", {"kind": "item", "name": "a torch", "where": "hall"}),
@@ -118,8 +118,32 @@ class AgentToolLoopTests(unittest.IsolatedAsyncioTestCase):
         ]))
         await run_turn(agent, s, "add a torch and a lamp")
         self.assertIsNotNone(s.pending)
-        self.assertIn("torch", "\n".join(s.pending.diff))   # first held; second refused
-        self.assertNotIn("lamp", "\n".join(s.pending.diff))
+        diff = "\n".join(s.pending.diff)
+        self.assertIn("torch", diff)        # both adjustments accumulate into ONE pending change
+        self.assertIn("lamp", diff)
+        self.assertTrue(s.confirm())        # a single apply commits the whole set
+        names = {i["name"] for i in s.draft.items}
+        self.assertIn("a torch", names)
+        self.assertIn("a lamp", names)
+
+    async def test_conversational_refinement_preserves_earlier_edit(self):
+        # The heart of the refine-in-conversation flow: a second turn adjusts the OPEN proposal,
+        # building on its candidate — so the first edit survives instead of being dropped.
+        s = self._session()
+        a1 = build_agent(_scripted(
+            [("entity_edit", {"entity_id": "hall", "name": "The Great Hall"})]))
+        await run_turn(a1, s, "rename the hall")
+        self.assertIsNotNone(s.pending)
+        a2 = build_agent(_scripted(
+            [("entity_edit", {"entity_id": "hall", "description": "Torch-lit and warm."})]))
+        await run_turn(a2, s, "also make the description warmer")
+        staged = next(l for l in s.pending.candidate["locations"] if l["id"] == "hall")
+        self.assertEqual(staged["name"], "The Great Hall")            # first edit kept
+        self.assertEqual(staged["description"], "Torch-lit and warm.")  # second accumulated
+        self.assertTrue(s.confirm())
+        hall = next(l for l in s.draft.locations if l["id"] == "hall")
+        self.assertEqual(hall["name"], "The Great Hall")
+        self.assertEqual(hall["description"], "Torch-lit and warm.")
 
     async def test_reject_discards_pending(self):
         s = self._session()
@@ -147,6 +171,59 @@ class AgentToolLoopTests(unittest.IsolatedAsyncioTestCase):
             [("preview_play", {"room_id": "hall", "line": "look"})]))
         await run_turn(agent, s, "let me look around the hall")
         self.assertIsNone(s.pending)              # preview changes nothing
+
+    async def test_focus_note_resolves_name_and_drops_stale(self):
+        s = self._session()
+        s.focus = ("room", "hall")
+        note = s.focus_note()
+        self.assertIn("hall", note)
+        self.assertIn("The Hall", note)                 # resolves the id to its name
+        s.focus = ("room", "ghost-room")                # not in the staged world
+        self.assertIsNone(s.focus_note())               # a vanished referent yields no note
+        s.focus = None
+        self.assertIsNone(s.focus_note())               # nothing focused -> no note
+
+    async def test_focus_is_sent_to_the_model_as_a_per_turn_instruction(self):
+        s = self._session()
+        s.focus = ("room", "cave")
+        seen: list = []
+
+        def fn(messages, info):
+            for m in messages:
+                if getattr(m, "instructions", None):
+                    seen.append(m.instructions)
+            return ModelResponse(parts=[TextPart("noted")])
+        agent = build_agent(FunctionModel(fn))
+        await run_turn(agent, s, "make this room colder")
+        self.assertTrue(any("cave" in i for i in seen))  # the referent reached the model
+
+    async def test_no_focus_sends_no_viewing_instruction(self):
+        s = self._session()                              # focus defaults to None
+        seen: list = []
+
+        def fn(messages, info):
+            for m in messages:
+                if getattr(m, "instructions", None):
+                    seen.append(m.instructions)
+            return ModelResponse(parts=[TextPart("ok")])
+        agent = build_agent(FunctionModel(fn))
+        await run_turn(agent, s, "hello")
+        self.assertFalse(any("viewing" in i.lower() for i in seen))
+
+    async def test_save_applies_open_proposal_first(self):
+        # The reported trap: proposing then saving (without Apply) must NOT drop the proposed work.
+        s = self._session()
+        agent = build_agent(_scripted(
+            [("entity_edit", {"entity_id": "hall", "name": "Saved Hall"})]))
+        await run_turn(agent, s, "rename the hall")
+        self.assertIsNotNone(s.pending)               # proposed, NOT applied
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "world.json")
+            s.save(path)                              # save must apply it first
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        self.assertIsNone(s.pending)                  # applied by save
+        self.assertEqual({l["id"]: l["name"] for l in data["locations"]}["hall"], "Saved Hall")
 
     async def test_save_writes_full_world_json(self):
         s = self._session()

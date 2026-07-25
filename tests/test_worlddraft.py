@@ -10,6 +10,7 @@ import unittest
 from loom.world import World, Location, Npc, Item
 from loom.worlddraft import (
     Draft, edit_entity, spawn_entity, fold_region, propose, commit, undo, diff_worlds,
+    diff_status,
 )
 
 
@@ -185,6 +186,43 @@ class UndoTests(unittest.TestCase):
         cand = edit_entity(d, "hall", {"exits": {"north": "nowhere"}})
         self.assertFalse(commit(d, propose(d, cand)))
         self.assertEqual(d.checkpoints, [])
+
+
+class BaselineDiffTests(unittest.TestCase):
+    """The saved-baseline delta model the workbench draws badges + before/after from."""
+
+    def test_fresh_draft_has_no_deltas(self):
+        d = _draft()
+        self.assertIsNotNone(d.baseline)
+        self.assertEqual(diff_status(d.baseline, d.dicts()), {})   # loaded == baseline
+
+    def test_edit_shows_as_tilde_until_saved(self):
+        d = _draft()
+        commit(d, propose(d, edit_entity(d, "hall", {"name": "The Great Hall"})))
+        self.assertEqual(diff_status(d.baseline, d.dicts()), {("room", "hall"): "~"})
+
+    def test_spawn_shows_as_plus(self):
+        d = _draft()
+        cand, new_id = spawn_entity(d, "item", name="a torch", where="hall")
+        commit(d, propose(d, cand))
+        self.assertEqual(diff_status(d.baseline, d.dicts()), {("item", new_id): "+"})
+
+    def test_removed_entity_shows_as_minus(self):
+        # No delete tool exists yet, so exercise diff_status directly against a hand-built after.
+        d = _draft()
+        after = d.dicts()
+        after["items"] = [i for i in after["items"] if i["id"] != "key"]
+        self.assertEqual(diff_status(d.baseline, after), {("item", "key"): "-"})
+
+    def test_mark_saved_clears_deltas(self):
+        d = _draft()
+        commit(d, propose(d, edit_entity(d, "hall", {"name": "The Great Hall"})))
+        self.assertTrue(diff_status(d.baseline, d.dicts()))        # dirty before save
+        d.mark_saved()
+        self.assertEqual(diff_status(d.baseline, d.dicts()), {})   # clean after save
+        # a further edit is a delta against the NEW baseline
+        commit(d, propose(d, edit_entity(d, "hall", {"description": "Warmer now."})))
+        self.assertEqual(diff_status(d.baseline, d.dicts()), {("room", "hall"): "~"})
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@ import unittest
 
 try:
     from textual.app import App
-    from textual.widgets import Button, Checkbox, Input, TextArea, Tree
+    from textual.widgets import Button, Checkbox, Input, Static, TextArea, Tree
     _HAS_TEXTUAL = True
 except ImportError:
     _HAS_TEXTUAL = False
@@ -187,9 +187,131 @@ class ExplorerChatIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 [("entity_edit", {"entity_id": "hall", "name": "The Great Hall"})]))
             await panel._turn("rename the hall")
             await pilot.pause()
-            await pilot.click("#confirm")            # Apply -> on_applied -> Explorer repaints
+            await pilot.click("#confirm")            # Apply -> on_session_changed -> repaints
             await pilot.pause()
         self.assertEqual({r.id: r.name for r in app.view.rooms}["hall"], "The Great Hall")
+
+    async def test_proposed_edit_splits_inspector_before_after(self):
+        app = self._app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_chat()                        # reveal the chat panel
+            panel = app.query_one(ChatPanel)
+            panel.agent = build_agent(_scripted(
+                [("entity_edit", {"entity_id": "hall", "name": "The Great Hall"})]))
+            await panel._turn("rename the hall to The Great Hall")
+            await pilot.pause()
+            # while the change is pending the inspector splits: normal card hidden, split shown
+            self.assertTrue(app.query_one("#diff-view").display)
+            self.assertFalse(app.query_one("#card-scroll").display)
+            before = str(app.query_one("#card-before", Static).render())
+            after = str(app.query_one("#card-after", Static).render())
+            self.assertIn("The Hall", before)        # top half: the entity as it is now
+            self.assertIn("The Great Hall", after)   # bottom half: as proposed
+            self.assertNotIn("The Great Hall", before)
+            # discarding the proposal returns the inspector to the single card
+            await pilot.pause()
+            await pilot.click("#reject")
+            await pilot.pause()
+            self.assertIsNone(app._session.pending)
+            self.assertFalse(app.query_one("#diff-view").display)
+            self.assertTrue(app.query_one("#card-scroll").display)
+
+    async def test_proposed_spawn_marks_new_entity_in_before_half(self):
+        app = self._app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_chat()
+            panel = app.query_one(ChatPanel)
+            panel.agent = build_agent(_scripted(
+                [("entity_spawn", {"kind": "item", "name": "a torch", "where": "hall"})]))
+            await panel._turn("add a torch to the hall")
+            await pilot.pause()
+            self.assertTrue(app.query_one("#diff-view").display)
+            before = str(app.query_one("#card-before", Static).render())
+            after = str(app.query_one("#card-after", Static).render())
+            self.assertIn("not in the saved world", before.lower())   # nothing to compare against
+            self.assertIn("a torch", after)                           # the proposed new item
+
+    async def test_badge_and_split_persist_after_apply_until_save(self):
+        import os as _os, json as _json, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = _os.path.join(d, "world.json")
+            with open(path, "w", encoding="utf-8") as f:
+                _json.dump(Draft.from_world(_world(), "hall").to_world_json(), f)
+            app = WorkbenchApp.from_path(path)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.action_chat()
+                panel = app.query_one(ChatPanel)
+                panel.agent = build_agent(_scripted(
+                    [("entity_edit", {"entity_id": "hall", "name": "The Great Hall"})]))
+                await panel._turn("rename the hall to The Great Hall")
+                await pilot.pause()
+                await pilot.click("#confirm")                 # Apply — committed, still UNSAVED
+                await pilot.pause()
+                self.assertIsNone(app._session.pending)
+                self.assertEqual(app._status.get(("room", "hall")), "~")   # a delta vs saved
+                self.assertIn("✎", str(app._find_node("room", "hall").label))  # badged in nav
+                self.assertTrue(app.query_one("#diff-view").display)       # split persists
+                # navigate away to an unchanged room (plain card), then back (split returns)
+                app._select("room", "cave")
+                await pilot.pause()
+                self.assertFalse(app.query_one("#diff-view").display)
+                app._select("room", "hall")
+                await pilot.pause()
+                self.assertTrue(app.query_one("#diff-view").display)
+                before = str(app.query_one("#card-before", Static).render())
+                after = str(app.query_one("#card-after", Static).render())
+                self.assertIn("The Hall", before)            # saved side (baseline)
+                self.assertIn("The Great Hall", after)       # working side
+                # Save resets the baseline — badges and split clear
+                app.action_save_world()
+                await pilot.pause()
+                self.assertEqual(app._status, {})
+                self.assertFalse(app.query_one("#diff-view").display)
+                self.assertEqual(str(app._find_node("room", "hall").label), "★ The Great Hall")
+
+    async def test_save_applies_a_pending_proposal_and_persists_it(self):
+        # Reproduces the reported bug end-to-end: propose via the agent, DON'T Apply, hit Save,
+        # reload from disk — the change must be there.
+        import os as _os, json as _json, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = _os.path.join(d, "world.json")
+            with open(path, "w", encoding="utf-8") as f:
+                _json.dump(Draft.from_world(_world(), "hall").to_world_json(), f)
+            app = WorkbenchApp.from_path(path)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.action_chat()
+                panel = app.query_one(ChatPanel)
+                panel.agent = build_agent(_scripted(
+                    [("entity_edit", {"entity_id": "hall", "name": "The Great Hall"})]))
+                await panel._turn("rename the hall to The Great Hall")
+                await pilot.pause()
+                self.assertIsNotNone(app._session.pending)    # proposed, NOT applied
+                app.action_save_world()                        # Save should apply then persist
+                await pilot.pause()
+                self.assertIsNone(app._session.pending)        # applied by save
+                self.assertEqual(app._status, {})              # saved -> no unsaved deltas
+            with open(path, encoding="utf-8") as f:
+                data = _json.load(f)
+        self.assertEqual({l["id"]: l["name"] for l in data["locations"]}["hall"],
+                         "The Great Hall")                     # it is really on disk
+
+    async def test_hand_edit_badges_and_splits_the_entity(self):
+        app = self._app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._select("npc", "keeper")
+            app.action_edit()
+            await pilot.pause()
+            app.query_one("#f-backstory", TextArea).text = "Haunted by the deep."
+            app._apply_edit()
+            await pilot.pause()
+            self.assertEqual(app._status.get(("npc", "keeper")), "~")
+            self.assertTrue(app.query_one("#diff-view").display)          # edited -> split
+            self.assertIn("✎", str(app._find_node("npc", "keeper").label))
 
     async def test_inspector_edit_room_name_commits_through_gate(self):
         app = self._app()

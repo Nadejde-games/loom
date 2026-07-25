@@ -61,14 +61,18 @@ class Draft:
     items: list
     meta: dict = field(default_factory=dict)
     checkpoints: list = field(default_factory=list)
+    baseline: dict | None = None      # {locations,npcs,items} snapshot at the last save/load
 
     @classmethod
     def from_world(cls, world, start: str | None) -> "Draft":
         """Stage a live :class:`~loom.world.World` (structure via ``world_to_dicts``; the
-        world-level meta carried verbatim). The world is read, never retained or mutated."""
+        world-level meta carried verbatim). The world is read, never retained or mutated. The
+        diff ``baseline`` starts as the loaded state, so a freshly loaded world shows no deltas."""
         d = world_to_dicts(world)
-        return cls(start=start or "", locations=d["locations"], npcs=d["npcs"],
-                   items=d["items"], meta=dict(getattr(world, "meta", {}) or {}))
+        draft = cls(start=start or "", locations=d["locations"], npcs=d["npcs"],
+                    items=d["items"], meta=dict(getattr(world, "meta", {}) or {}))
+        draft.baseline = draft.dicts()
+        return draft
 
     @classmethod
     def from_path(cls, path: str) -> "Draft":
@@ -105,6 +109,12 @@ class Draft:
         out["npcs"] = copy.deepcopy(self.npcs)
         out["items"] = copy.deepcopy(self.items)
         return out
+
+    def mark_saved(self) -> None:
+        """Reset the diff baseline to the current staged state — called after the world is written
+        to disk. The 'unsaved changes' the workbench highlights (badges + before/after) then go
+        empty until the next edit; deltas are always measured against the last saved version."""
+        self.baseline = self.dicts()
 
 
 # ------------------------------------------------------------------- mutation producers
@@ -223,6 +233,27 @@ def undo(draft: Draft) -> bool:
 
 # ----------------------------------------------------------------------------- the diff
 _KIND_LABEL = {"locations": "room", "npcs": "npc", "items": "item"}
+
+
+def diff_status(before: dict | None, after: dict | None) -> dict:
+    """``(kind, id) -> '+' | '-' | '~'`` for every entity that differs between two world
+    snapshots (``{locations, npcs, items}`` dicts): ``'+'`` present only in ``after`` (added),
+    ``'-'`` present only in ``before`` (removed), ``'~'`` in both but changed. Unchanged entities
+    are omitted. Pure — the workbench drives the navigator's per-entity badges and the persistent
+    before/after inspector from this, measuring the staged world against the last-saved baseline."""
+    status: dict = {}
+    for kind, key in (("room", "locations"), ("npc", "npcs"), ("item", "items")):
+        b = {r["id"]: r for r in (before or {}).get(key, [])}
+        a = {r["id"]: r for r in (after or {}).get(key, [])}
+        for eid, rec in a.items():
+            if eid not in b:
+                status[(kind, eid)] = "+"
+            elif rec != b[eid]:
+                status[(kind, eid)] = "~"
+        for eid in b:
+            if eid not in a:
+                status[(kind, eid)] = "-"
+    return status
 
 
 def diff_worlds(draft: Draft, candidate: dict) -> list:

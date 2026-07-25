@@ -6,12 +6,16 @@ while you author. What you type goes to the agent (``authoring.agent``); the age
 calls its tools, and — for a write — stages a validated proposal. The panel shows the proposed
 diff and reveals the Apply / Discard controls; **nothing reaches the staged world until you
 Apply**, and nothing reaches disk until Save. When you Apply, the inspector repaints at once
-(the ``on_applied`` callback). Escape returns to the navigator.
+(the ``on_session_changed`` callback). Escape returns to the navigator.
 
 UI only — the agent, the tools, and the safety gate live in ``authoring.agent`` /
 ``loom.worlddraft``; this panel just supplies the transcript, the input, and the human's
 apply/discard/undo/save moves. The agent runs off the UI thread in a Textual worker, so a
 model call never freezes the screen.
+
+Every session move — a proposal staged, applied, discarded, or undone — fires the
+``on_session_changed`` callback, so the Explorer repaints the inspector: a staged change shows
+as a before/after split on the affected entity, and Apply/Discard/Undo return it to the card.
 """
 from __future__ import annotations
 import io
@@ -51,9 +55,14 @@ class ChatPanel(Vertical):
     """The embedded authoring-agent panel over one world.
 
     Built with a shared :class:`~authoring.agent.AuthoringSession` (so it edits the same staged
-    ``Draft`` the Explorer shows) and an ``on_applied`` callback the Explorer passes to repaint
-    on a commit. For tests, an ``agent`` (a ``FunctionModel``-backed agent) can be injected so
-    the panel runs with no network."""
+    ``Draft`` the Explorer shows) and the callbacks the Explorer passes to repaint the inspector.
+    ``focus_ref`` is an
+    ``() -> (kind, id) | None`` the Explorer passes so the panel can tell the agent which entity
+    the inspector is showing each turn — deixis ('this room', 'here', 'it') then resolves to it.
+    ``on_session_changed`` is a ``() -> None`` fired whenever the session moves (a proposal
+    staged / applied / discarded / undone) so the Explorer repaints the inspector. For tests, an
+    ``agent`` (a ``FunctionModel``-backed agent) can be injected so the panel runs with no
+    network."""
 
     BINDINGS = [
         ("escape", "leave", "Navigator"),
@@ -78,11 +87,13 @@ class ChatPanel(Vertical):
     ChatPanel #msg { border: none; }
     """
 
-    def __init__(self, *, session, agent=None, on_applied=None):
+    def __init__(self, *, session, agent=None, on_session_changed=None, focus_ref=None):
         super().__init__()
         self.session = session
         self._injected_agent = agent
-        self._on_applied = on_applied         # () -> None: repaint the Explorer after a commit
+        # () -> None: fired on every session move so the Explorer repaints the inspector.
+        self._on_session_changed = on_session_changed
+        self._focus_ref = focus_ref           # () -> (kind, id) | None: the inspector's selection
         self.agent = None
         self._history = None                  # threaded message history across turns
         self._lines: list[str] = []           # the transcript, line by line (also the save-log)
@@ -175,33 +186,39 @@ class ChatPanel(Vertical):
         self.query_one("#reject", Button).display = pending
         self.query_one("#undo", Button).display = has_undo
 
-    def _applied(self) -> None:
-        """After a commit/undo: repaint the Explorer so the inspector reflects the change."""
-        if self._on_applied is not None:
-            self._on_applied()
+    def _session_changed(self) -> None:
+        """Tell the Explorer the session moved — a proposal was staged, applied, discarded, or
+        undone — so it repaints the inspector: the proposed before/after split when a change is
+        pending, else the normal card. A no-op when hosted without the callback (e.g. tests)."""
+        if self._on_session_changed is not None:
+            self._on_session_changed()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
         if bid == "confirm":
             if self.session.confirm():
                 self._log_system("Applied to the staged world (Save to write it to disk).")
-                self._applied()
+                self._session_changed()
         elif bid == "reject":
             if self.session.reject():
                 self._log_system("Discarded the proposal — nothing changed.")
+                self._session_changed()
         elif bid == "undo":
             if self.session.undo():
                 self._log_system("Undid the last applied change.")
-                self._applied()
+                self._session_changed()
         elif bid == "save":
             self._save()
         self._refresh_controls()
 
     def _save(self) -> None:
         try:
-            path = self.session.save()
-            self._log_system(f"Saved the world to {path}.")
-        except Exception as exc:                       # no path, or a write error
+            applied = self.session.pending is not None  # save applies an open proposal first
+            path = self.session.save()                  # also resets the draft's diff baseline
+            self._log_system((f"Applied the open proposal and saved the world to {path}."
+                              if applied else f"Saved the world to {path}."))
+            self._session_changed()                     # let the Explorer clear the unsaved badges
+        except Exception as exc:                        # no path, or a write error
             self._log_system(f"Save failed: {exc}")
 
     # -- the turn ----------------------------------------------------------------
@@ -276,6 +293,10 @@ class ChatPanel(Vertical):
         self._start_infer()
         ok = True
         try:
+            if self._focus_ref is not None:
+                # Tell the agent what the inspector is showing right now, so a bare 'this room' /
+                # 'here' / 'it' resolves to it without a grounding search. Read at submit time.
+                self.session.focus = self._focus_ref()
             result = await run_turn(self.agent, self.session, msg, history=self._history,
                                     event_handler=self._on_agent_event)
             self._history = result.all_messages()
@@ -291,6 +312,9 @@ class ChatPanel(Vertical):
             box.disabled = False
             box.focus()
             self._refresh_controls()
+            # Repaint the inspector: a staged proposal becomes the before/after split; a read-only
+            # or failed turn (nothing pending) leaves the normal card in place.
+            self._session_changed()
 
     def action_save_log(self) -> None:
         """Save the whole transcript to a file (`ctrl+l`) — robust over SSH, and the reliable
