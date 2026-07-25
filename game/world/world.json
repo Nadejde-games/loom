@@ -189,9 +189,10 @@
     {
       "id": "hilltop",
       "name": "The Hilltop",
-      "description": "The path gives out on the bald, windswept crown of the hill. A ring of blackened, tumbled stones marks where a signal-fire once burned, long cold now. From here the whole valley lies open below, grey and folded, and the wind never quite stops. The path falls away downward to the south.",
+      "description": "A windswept hilltop overlooking a vast, misty landscape. To the east, a narrow wooden bridge stretches precariously across a dark, shadowed ravine. The bridge sways slightly in the wind, its planks worn smooth by time. Below, the ravine drops into darkness, with only the faint sound of distant water echoing up from the depths. The air is cold and thin here, carrying the scent of pine and damp earth.",
       "exits": {
-        "down": "hill_path"
+        "down": "hill_path",
+        "north": "windy_ridge"
       }
     },
     {
@@ -225,7 +226,7 @@
     {
       "id": "deep_chamber",
       "name": "Deep Chamber",
-      "description": "The tunnel opens into a vast, shadowy chamber dominated by a still underground pool. Faint light from above filters down to shimmer across the dark water's surface. The air here is cool and carries the heavy scent of wet stone.",
+      "description": "The Deep Chamber stretches before you, a vast underground space carved from living stone. Flickering wall torches cast dancing shadows across ancient stonework, their warm glow revealing intricate carvings that line the walls. In the center stands an imposing stone altar, its surface worn smooth by centuries of ritual use. Faint symbols of a forgotten language spiral around its edges, and a small depression in the center holds the faint residue of old offerings. The air here is thick with age and mystery, carrying whispers of ceremonies long past. This was once a sacred place where pilgrims came to commune with the earth spirits, leaving gifts and prayers in the hope of safe passage through the dangerous tunnels beyond. The silence is profound, broken only by the occasional drip of water and the crackle of torch flames.",
       "exits": {
         "east": "narrow_passage",
         "south": "hidden_grotto"
@@ -238,6 +239,50 @@
       "exits": {
         "north": "deep_chamber",
         "south": "echoing_cavern"
+      }
+    },
+    {
+      "id": "windy_ridge",
+      "name": "Windy Ridge",
+      "description": "You stand on a barren, windswept outcrop of jagged rock, the air here sharp and biting as it howls through the sparse tufts of grass. Below, the dark maw of the ravine churns with mist, while the distant sound of rushing water echoes faintly from the depths.",
+      "exits": {
+        "north": "singing_bridge",
+        "west": "misty_pass",
+        "east": "shrine_of_echoes",
+        "south": "hilltop"
+      }
+    },
+    {
+      "id": "singing_bridge",
+      "name": "The Far Hilltop",
+      "description": "The rickety wooden bridge sways behind you, its planks groaning under the weight of the wind as it stretches back across the dark, misty ravine. Below, the deep chasm is a shadowed void, punctuated only by the distant, rhythmic sound of rushing water. You stand on a rocky outcrop covered in sparse, hardy grass, feeling the stark isolation of this windswept peak as you look out over the edge.",
+      "exits": {
+        "south": "windy_ridge"
+      }
+    },
+    {
+      "id": "misty_pass",
+      "name": "Far Hilltop",
+      "description": "You stand on a rocky outcrop adorned with sparse, windswept grass. The air whistles through the stones, carrying the faint, distant echo of water roaring from the ravine far below. Behind you, the rickety wooden bridge sways gently, leading back into the misty chasm.",
+      "exits": {
+        "east": "windy_ridge"
+      }
+    },
+    {
+      "id": "shrine_of_echoes",
+      "name": "The Distant Hilltop",
+      "description": "You stand on a rocky outcrop, the sparse grass whipping about your ankles in the relentless breeze. Below, the dark ravine swallows the view, broken only by the distant murmur of water echoing up from the depths. A stone shrine sits quietly in the center of the windswept plateau, its surface worn smooth by time and weather.",
+      "exits": {
+        "west": "windy_ridge",
+        "down": "ravine_edge"
+      }
+    },
+    {
+      "id": "ravine_edge",
+      "name": "The Far Hilltop",
+      "description": "You stand on the rocky outcrop of the far hilltop, the sparse grass at your feet whipping in the relentless wind. The narrow wooden bridge behind you sways precariously over the deep, shadowed ravine, where the distant sound of water echoes faintly. The isolation is palpable, broken only by the gusts that batter this windswept perch.",
+      "exits": {
+        "up": "shrine_of_echoes"
       }
     }
   ],
@@ -296,19 +341,19 @@
       "description": "A gaunt figure crouching low to avoid the dripping stalactites, wiping water from their goggles with a grimy sleeve.",
       "location": "narrow_passage",
       "persona": {
-        "backstory": "Kaelen grew up in the deep caverns beneath the mountain, where echoes were not mere reverberations but warnings. As a child, she heard an echo repeat her own voice back to her — but the words were wrong, twisted into a prophecy of her family's death in a cave-in. The echo had spoken the truth before it happened. Since then, she has believed that echoes carry fragments of fate, and to ignore them is to invite disaster. She listens carefully to every echo, searching for omens, and avoids speaking in places where her voice might return to her altered.",
+        "backstory": "Kaelen was once a scout for a caravan that was ambushed in these passages. She survived by hiding and listening, but lost her companions. Since then, she has stayed in the narrow passage, watching and waiting, hoping to prevent others from suffering the same fate. She knows the dangers of this place intimately but has been too traumatized to speak of it until now.",
         "traits": [
+          "guarded",
           "observant",
-          "patient",
-          "cash-strapped",
-          "superstitious about echoes"
+          "reluctant to share",
+          "superstitious"
         ],
         "goals": [
-          "Find the source of the faint light in the Deep Chamber",
-          "Avoid getting lost in the loop forever",
-          "Equipped with a lantern that is running low on oil"
+          "share her story",
+          "help travelers",
+          "warn about dangers"
         ],
-        "voice": "Speaks in hushed, urgent tones, often commenting on the acoustics or the dampness of the air; uses short, practical sentences."
+        "voice": "soft-spoken, hesitant, but willing to answer direct questions"
       },
       "wanders": true
     },
@@ -357,6 +402,51 @@
         "voice": "Soft-spoken and rhythmic, often using metaphors related to light, sound, and growth. You speak slowly, as if testing the air with each word, and rarely raise your voice, preferring the hum of the crystals to carry your presence."
       },
       "wanders": false
+    },
+    {
+      "id": "shrine_of_echoes_2",
+      "name": "Elara the Silent Keeper",
+      "description": "A figure in tattered grey robes stands motionless amidst the ruins, eyes closed as if listening to whispers only they can hear.",
+      "location": "shrine_of_echoes",
+      "persona": {
+        "backstory": "You are the last descendant of a lineage sworn to guard the Shrine of Echoes, a place where the boundary between the living world and the misty void below is thin. Years ago, you sealed yourself away from society to prevent the ravine’s ancient secrets from leaking into the world above. You no longer remember the taste of fresh bread or the warmth of a human embrace, only the constant, cold draft of the chasm and the voices that swirl in the mist.",
+        "traits": [
+          "Melancholic",
+          "Stoic",
+          "Attentive",
+          "Isolationist",
+          "Mystical"
+        ],
+        "goals": [
+          "Maintain the silence of the shrine to keep the echoes contained",
+          "Prevent intruders from crossing the bridge into the sacred space",
+          "Decipher the final message hidden in the wind before your own mind fades"
+        ],
+        "voice": "Speaks rarely and in a hushed, reedy tone, as if afraid that loud sounds might disturb the delicate balance of the air. Uses metaphors related to wind, stone, and memory."
+      },
+      "wanders": false
+    },
+    {
+      "id": "windy_ridge_2",
+      "name": "Elara Vance",
+      "description": "A woman in a tattered, wind-battered coat stands precariously on the rocky outcrop, her eyes squinting against the gale as she peers into the mist below.",
+      "location": "windy_ridge",
+      "persona": {
+        "backstory": "You are Elara, a former cartographer who lost your sense of direction—and your husband—to this very ravine five years ago. Since then, you have anchored yourself to this windy ridge, mapping the invisible currents of the mist and listening for echoes that might carry his voice home. You are no longer sure if you are waiting for rescue or simply refusing to leave the edge where you lost everything.",
+        "traits": [
+          "Obsessive",
+          "Weathered",
+          "Melancholic",
+          "Hyper-vigilant"
+        ],
+        "goals": [
+          "Decode the pattern of the wind to find a safe crossing",
+          "Preserve the memory of the lost bridge",
+          "Deter others from falling into the ravine"
+        ],
+        "voice": "Your speech is clipped and breathless, often interrupted by sharp coughs from the cold air; you use nautical and topographical metaphors to describe emotions, speaking with a brittle mix of warning and longing."
+      },
+      "wanders": true
     }
   ],
   "items": [
@@ -417,6 +507,60 @@
         "quartz",
         "crystal",
         "fragment"
+      ],
+      "portable": true
+    },
+    {
+      "id": "wall_torches",
+      "name": "wall torches",
+      "description": "A cluster of flickering torches mounted on the stone walls, casting dancing shadows across the chamber. Their warm glow pushes back the darkness, revealing more of the ancient stonework.",
+      "holder": "deep_chamber",
+      "aliases": [],
+      "portable": true
+    },
+    {
+      "id": "stone_altar",
+      "name": "stone altar",
+      "description": "An ancient stone altar stands in the center of the chamber, its surface worn smooth by centuries of use. Faint carvings of forgotten symbols line its edges, and a small depression in the center suggests it was once used for offerings.",
+      "holder": "deep_chamber",
+      "aliases": [],
+      "portable": true
+    },
+    {
+      "id": "windy_ridge_3",
+      "name": "a tattered wind-chime",
+      "description": "Rusted wire holds together shards of glass and hollow bone, clacking a mournful rhythm against the stone. It was once a ward against the ravine's whispers, now broken and silent save for the gale.",
+      "holder": "windy_ridge",
+      "aliases": [
+        "chime",
+        "wind-chime",
+        "ward"
+      ],
+      "portable": true
+    },
+    {
+      "id": "singing_bridge_2",
+      "name": "a rusted iron shackle",
+      "description": "This heavy manacle is bolted to the bridge's railing, its chain long since snapped and dragged into the mist below. Scratches on the metal suggest it was used to secure prisoners transported across this terrifying span, their screams echoing off the canyon walls.",
+      "holder": "singing_bridge",
+      "aliases": [
+        "shackle",
+        "manacle",
+        "chain",
+        "bolt"
+      ],
+      "portable": true
+    },
+    {
+      "id": "shrine_of_echoes_3",
+      "name": "a wind-scoured bone flute",
+      "description": "Carved from the femur of some long-dead beast, the flute is etched with spiral runes that seem to vibrate in the gale. It feels unnaturally light, humming with a faint, mournful resonance even when untouched.",
+      "holder": "shrine_of_echoes",
+      "aliases": [
+        "bone",
+        "flute",
+        "instrument",
+        "drumstick"
       ],
       "portable": true
     }
