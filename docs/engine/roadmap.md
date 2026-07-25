@@ -55,6 +55,17 @@ design sign-off):
   client can render the world — the protocol already carries the channel names
 - hardening true multiplayer presence
 
+**World-data-model hardening** (build-vs-adopt decided 2026-07-25; the survey and
+argument are in the repo, `docs/spikes/world-data-model.md`). The custom JSON model
+stays canonical — a prior-art survey of the field found no engine-neutral
+world-state standard to adopt, and the model is coupled to the golden rule and to
+AI authoring. The aspiration is to give it the discipline mature file-based engines
+converged on: a published JSON Schema, a top-level `format_version` with
+tolerant-load and pure migrations, and a loader that accepts one file or a directory
+of region shards. Established formats enter only as boundary adapters — a Diku-area
+importer to seed the forever-world from the existing area corpus, and an optional
+Ink/Yarn adapter for the narrative layer — never as the store.
+
 Beyond it, the open threads: measuring the director on a dedicated wide-context
 model variant (the wiring exists; it has never been exercised), richer command
 handling (`but`/exclusion, cross-command disambiguation, an LLM decompose mode

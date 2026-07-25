@@ -831,5 +831,46 @@ client could offer structured input, but text parsing is the base).
 
 ---
 
-*Add new observations below with an ID (`B12…`), a date, and the same
+## B12 — World data model: keep custom canonical; standards as boundary adapters  — DESIGN RECORDED 2026-07-25 (not scheduled)
+*Decided 2026-07-25 after a two-stage prior-art survey — see `docs/spikes/world-data-model.md`.*
+
+**Decision.** The custom JSON world model stays the **canonical in-engine representation.** The
+survey of the established landscape (Diku area files, LambdaMOO/DGD/LPMud object DBs, Evennia's
+ORM, Ranvier bundles) found **no engine-neutral world-state standard** to adopt — every
+established format is bound to an engine and imports its game model. The custom model is
+structurally coupled to Loom's differentiators (the golden-rule action layer, LLM minds, the AI
+author, game-agnosticism), which a foreign canonical format would break. Verdict shape matches
+`taleweave-ai.md` and `persistence.md`: **build the core, adopt at the edges.**
+
+**Want** — harden with standard *practices*, not a standard *format*:
+- **Published JSON Schema** for the world file — the same specs the loader/validator already
+  read, emitted as a schema the authoring agent and external tools can check against.
+- **Explicit top-level `format_version`** + tolerant load + pure migration functions (the exact
+  recipe `persistence.md` prescribes for the runtime overlay, applied to authored content).
+- **Sharding-ready loader** — indifferent to one `world.json` vs a directory of region shards,
+  so the monolith can split by area/kind (the Diku/Ranvier move) without a rewrite, when
+  authoring friction or file size demands it.
+- **Boundary adapters, never the store:**
+  - a **Diku-area importer** (`.are`/`.wld`/`.mob`/`.obj` → Loom JSON) to seed the forever-world
+    from the large existing area corpus;
+  - an **optional Ink/Yarn adapter** for the narrative/quest/dialogue layer — the one place a
+    widely-shipped standard genuinely fits — if that authoring outgrows the current approach.
+
+**Where it lands:** the world loader / `loom/content.py` (schema emission, `format_version` +
+migrations, shard-aware load); `loom/worlddraft.py` (validate against the published schema); new
+`scripts/` importer(s) for the boundary adapters. Do **not** touch the canonical model to
+accommodate any foreign format.
+
+**Considerations:** not scheduled — the single-file model is correct at today's scale; these are
+the moves mature file-based engines all converged on once worlds grew. Sequence when authoring
+turns multi-author/multi-agent or the file grows unwieldy. The `format_version` + migration
+slice is the cheapest and highest-leverage — do it first if any is done.
+
+**Related:** `docs/spikes/world-data-model.md` (full survey + build-vs-adopt argument),
+`docs/spikes/persistence.md` (the versioning/migration recipe reused here), B7 (AI world
+authoring — the schema serves the author), Design commitment #2 in `docs/PLAN.md`.
+
+---
+
+*Add new observations below with an ID (`B13…`), a date, and the same
 what / where-it-lands / considerations shape.*

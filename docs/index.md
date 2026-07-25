@@ -33,7 +33,9 @@ Four commitments shape everything in the engine:
   configuration alone.
 - **The world is editable data, not code.** A world is a JSON file the loader
   ingests; authoring means editing data, and the engine works on any world that
-  passes its structural survey.
+  passes its structural survey. The custom model is canonical by design —
+  established formats are adopted only as edge adapters, never as the store (the
+  [engine commitments](engine/index.md#design-commitments) carry the reasoning).
 - **Protocol is separated from transport.** Clients speak newline-delimited JSON
   envelopes — over TCP today, over WebSocket later, with the same schema.
 

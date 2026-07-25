@@ -158,7 +158,17 @@ Loom must remain packageable and independent of any one game's content.
    `{"c":channel,"d":data}`. TCP now → WebSocket later, same schema. A terminal
    reads `text`/`system`; rich clients add `map`/`entities`/`tiles` additively.
 2. **World is editable data, not code.** Rooms/NPCs/items live in human-readable
-   files behind a schema — the surface an authoring agent edits.
+   files behind a schema — the surface an authoring agent edits. **Build-vs-adopt
+   decided 2026-07-25 (survey + argument in `docs/spikes/world-data-model.md`):**
+   the custom JSON model stays the **canonical** in-engine representation — no
+   engine-neutral world-state standard exists to adopt, and the model is
+   structurally coupled to the golden rule, the LLM minds, and the AI author,
+   which a foreign format would break. Harden it with standard *practices*, not a
+   standard *format*: a published JSON Schema, a top-level `format_version` with
+   tolerant-load + pure migrations, and a loader indifferent to one file vs a
+   directory of region shards. Adopt established formats only as **boundary
+   adapters** — a Diku-area importer to seed content, an optional Ink/Yarn adapter
+   for the narrative layer — never as the store. Captured in `docs/BACKLOG.md` B12.
 3. **AI behind one interface.** Everything depends on `LLMProvider`; the engine
    can't tell fake from real. Provider is swappable and lazy.
 4. **Never execute raw model text.** Dialogue may be shown; every *state change*

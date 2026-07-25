@@ -63,7 +63,12 @@ connectivity) and lets the model write only descriptions.
   to more channels — it isn't a different game.
 - **The world is editable data, not code.** One JSON file (or a directory of
   region files) defines rooms, NPCs, items, and the world-level config blocks —
-  and a structural survey can validate any world the engine is pointed at.
+  and a structural survey can validate any world the engine is pointed at. This
+  custom model stays canonical by design: it is coupled to the golden rule and
+  built for AI authoring, and no engine-neutral world-state standard exists to
+  replace it — so established formats (Diku area files, Ink/Yarn narrative) are
+  adopted only as import/export adapters at the edges, never as the store. The
+  reasoning is a full prior-art survey (`docs/spikes/world-data-model.md`).
 - **AI behind one interface.** The entire dependency the engine has on AI is one
   protocol: `complete(system, messages, schema, temperature) -> str`. Fake,
   Ollama, vLLM, OpenRouter, and Anthropic providers all satisfy it; the engine
