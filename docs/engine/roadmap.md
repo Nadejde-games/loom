@@ -48,7 +48,19 @@ design sign-off):
 
 ## Planned
 
-**Phase 6 — rich transport and multiplayer** is the next big phase:
+**Phase 9 — RPG systems & stakes** *(design complete; see the repo's
+`docs/spikes/rpg-systems.md`)* is the largest planned addition — a full text-RPG
+mechanics layer that turns "talk and move" into "act, risk, and grow": character
+sheets (data-declared stats and resource pools), a **use-based skills system** (you
+get better at what you do), gear and modifiers, abilities, real-time combat, mobs,
+hunger, XP and leveling, and real multi-objective quests. Two invariants govern the
+whole arc — generic mechanisms live in the engine while every race, class, number,
+and formula is world *data*; and combat is resolved in deterministic, seeded,
+offline-testable code with the model only *narrating* (the golden rule extended to
+numbers). It builds bottom-up across four tiers (the sheet → progression & gear →
+abilities & combat → mobs, hunger, quests), each landed behind both gates.
+
+**Phase 6 — rich transport and multiplayer** remains a major planned phase:
 
 - a WebSocket transport implementing the same three-method `Handler` contract
 - emitting the reserved `map` / `entities` channels so an ascii-map or 2D

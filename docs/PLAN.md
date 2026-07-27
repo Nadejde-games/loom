@@ -1084,6 +1084,41 @@ Umbrella spike: `docs/spikes/workbench.md`. Deferrals (next candidates): a drawn
 `textual serve` browser, git-backed undo, structural hand-edits (exits / relocation, currently
 agent-only). `pydantic-ai-slim[openai]` joined the `authoring` extra alongside Textual.
 
+### Phase 9 — RPG systems & stakes  ○ (design underway 2026-07-25; nothing at stake yet — see `docs/spikes/rpg-systems.md`)
+The world can talk, move, and trade, but nothing is *at stake* — no character to build, no
+numbers to grow, nothing that can hurt you. Phase 9 adds a full text-RPG mechanics layer
+(backgrounds, races, classes, HP/mana, hunger, gear, a stat-point system, abilities, combat,
+mobs, real quests, XP/leveling) as **one coherent "stakes" layer** hanging off a new primitive:
+a **character sheet** (stats + resource pools + level/xp). **Two invariants govern the whole arc**
+(signed off 2026-07-25): (1) *mechanism in `loom/`, rules-as-data in `game/`* — the framework
+ships the stat/pool/effect/combat/XP machinery, the game supplies every race, class, number, and
+formula as world data (no `STR/DEX` enum, no HP formula, no `class Fighter` in the framework — the
+same split the clock, weather, and loot forge already use); (2) *code resolves, the model narrates*
+— HP, damage, hit/miss, XP are computed by deterministic seeded offline-testable code; the LLM only
+chooses intent through the validated action seam and *narrates* the outcome (the loot forge's proven
+shape). The dependency order forces the build sequence: **Tier 0** the sheet (stats · pools ·
+character creation) → **Tier 1** progression & gear (XP/leveling · equipment + modifier stack) →
+**Tier 2** action & combat (abilities · the combat resolver · death/stakes) → **Tier 3** the world
+reacts (mobs · hunger/thirst · real quests/missions). Content-rich world-building follows the
+mechanisms, not the reverse. **Tier 0 designed & signed off** (a data-declared stat vocabulary;
+generic resource pools with a derived read-only `max`; derivations as **sandboxed arithmetic
+expressions** over an `ast`-whitelist evaluator — one mechanism reused by pools now, XP curves and
+combat later; an opt-in `Sheet` component so sheetless narrative NPCs are unregressed; **qualitative
+perception** so minds/onlookers read condition cues, never raw HP — the golden rule for numbers; a
+`score` surface; overlay persistence). New opt-in subpackage `loom/rpg/`, attached by the game like
+clock/weather (adds no deps). Each tier lands behind BOTH gates. Prior art surveyed
+(DikuMUD/CircleMUD tables, D&D 5e SRD math, Evennia's TraitHandler gauge trichotomy, `simpleeval`
+safe-eval) → `docs/spikes/rpg-systems.md`. **The whole arc (Tiers 0–3) is now designed and signed
+off** (2026-07-25): classic-six attributes + point-buy as the balancing discipline; one assigned
+default sheet with growth-through-play (player-directed `train` spending earned points); a parallel
+*use-based* **skills** system (each skill XP-and-levels through use, feeding action formulas alongside
+attributes; abilities are skill-governed); additive
+modifier stacking; real-time combat rounds with two-stage to-hit-then-damage and a game-swappable
+death policy (default respawn + penalty); hybrid mob AI (per-mob optional mind, deterministic
+rounds); non-lethal hunger; multi-objective quests offered both authored-through-dialogue and
+mind-improvised. **Next: build**, bottom-up from Tier 0 (its prior-art survey is done; Tiers 1–3
+get a focused survey before each build).
+
 ## Testing discipline — two gates, run BOTH after every implementation phase
 
 There are two layers to every feature, and they need two different gates.
