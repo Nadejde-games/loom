@@ -11,6 +11,7 @@ from loom.ai import (get_default_provider, get_default_embedder, OllamaProvider,
                      VLLMProvider, OpenRouterProvider, MemoryStore)
 from loom.content import load_world
 from loom.world import Npc
+from loom.rpg import Ruleset, RegenSystem
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(HERE)
@@ -246,6 +247,30 @@ async def main(host: str = "127.0.0.1", port: int = 4000) -> None:
                   f"{len(loot_cfg.get('tags', []))} tags, via "
                   f"{getattr(gm_provider or provider, 'name', 'engine provider')} "
                   "(on quest completion)")
+
+    # RPG systems (Phase 9, Tier 0): stats, resource pools, and the character sheet — the
+    # opt-in loom.rpg layer, attached like the clock and weather. The vocabulary (attributes,
+    # derivations, pools, skills, character templates) is all authored in the world's "stats"
+    # block; the framework hardcodes none of it. A connecting player is furnished with the
+    # default template stack's sheet (build through play — no creation screen), and pools
+    # regenerate on the loop via the RegenSystem. Off unless a "stats" block is authored; a
+    # sheetless world is wholly unchanged. LOOM_REGEN_PULSES tunes the regen cadence.
+    stats_cfg = world.meta.get("stats")
+    if stats_cfg and stats_cfg.get("attributes"):
+        ruleset = Ruleset.from_meta(stats_cfg)
+        engine.player_hook = lambda player: setattr(player, "sheet", ruleset.default_sheet())
+        regen_pulses = int(os.environ.get("LOOM_REGEN_PULSES", "3"))
+        RegenSystem(engine, period_pulses=regen_pulses).install(loop)
+        # The first wired XP source (Tier 1): completing a quest grants experience, so leveling
+        # is observable through the existing start-quests. Authored in the "progression" block.
+        engine.xp_per_quest = int((stats_cfg.get("progression") or {}).get("quest_xp", 0))
+        pool_keys = ", ".join(p.key for p in ruleset.pools)
+        print(f"[game] RPG sheets: {len(ruleset.stats.names())} attributes, "
+              f"pools [{pool_keys}], "
+              f"{len(ruleset.skills.names()) if ruleset.skills else 0} skills, "
+              f"default sheet from templates {ruleset.default_templates or '[]'}; "
+              f"regen every {regen_pulses} pulses"
+              + (f", {engine.xp_per_quest} xp/quest" if engine.xp_per_quest else ""))
 
     # Starting quests: a goal every connecting player is handed, so the world has a
     # purpose from the first step — and a deterministic way to reach the loot forge (walk

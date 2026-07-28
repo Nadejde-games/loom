@@ -51,4 +51,4 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["loom", "loom.world", "loom.ai"]
+packages = ["loom", "loom.world", "loom.ai", "loom.rpg"]

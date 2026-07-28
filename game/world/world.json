@@ -166,6 +166,77 @@
       "destination": "cave_interior"
     }
   ],
+  "stats": {
+    "attributes": [
+      {"name": "str", "min": 3, "max": 20, "default": 10},
+      {"name": "dex", "min": 3, "max": 20, "default": 10},
+      {"name": "con", "min": 3, "max": 20, "default": 10},
+      {"name": "int", "min": 3, "max": 20, "default": 10},
+      {"name": "wis", "min": 3, "max": 20, "default": 10},
+      {"name": "cha", "min": 3, "max": 20, "default": 10}
+    ],
+    "derived": {
+      "str_mod": "(str - 10) // 2",
+      "dex_mod": "(dex - 10) // 2",
+      "con_mod": "(con - 10) // 2",
+      "int_mod": "(int - 10) // 2",
+      "wis_mod": "(wis - 10) // 2",
+      "cha_mod": "(cha - 10) // 2",
+      "prof": "2 + (level - 1) // 4"
+    },
+    "hit_die": 8,
+    "pools": {
+      "hp": {
+        "max": "10 + hit_die * level + con_mod * level",
+        "regen": "con_mod + 1",
+        "floor": 0,
+        "policy": "vital",
+        "cues": [[100, "unharmed"], [75, "grazed"], [50, "wounded"], [25, "badly wounded"], [1, "near death"], [0, "dead"]]
+      },
+      "mana": {
+        "max": "max(0, wis_mod * level) + 4",
+        "regen": "max(1, wis_mod)",
+        "floor": 0,
+        "cues": [[100, "clear-minded"], [40, "tiring"], [1, "spent"], [0, "empty"]]
+      },
+      "stamina": {
+        "max": "20 + str_mod * 2",
+        "regen": "3",
+        "floor": 0,
+        "cues": [[100, "fresh"], [40, "winded"], [1, "exhausted"], [0, "collapsed"]]
+      }
+    },
+    "point_buy": {
+      "budget": 27,
+      "floor": 8,
+      "ceil": 15,
+      "cost": {"8": 0, "9": 1, "10": 2, "11": 3, "12": 4, "13": 5, "14": 7, "15": 9}
+    },
+    "progression": {
+      "curve": "50 * (level - 1) * level",
+      "points_per_level": 2,
+      "max_level": 20,
+      "quest_xp": 120
+    },
+    "skills": {
+      "curve": "50 * level * level",
+      "xp_per_use": 5,
+      "success_bonus": 5,
+      "list": [
+        {"name": "unarmed", "governing": "str_mod"},
+        {"name": "blades", "governing": "str_mod"},
+        {"name": "archery", "governing": "dex_mod"},
+        {"name": "evocation", "governing": "int_mod"},
+        {"name": "observation", "governing": "wis_mod"},
+        {"name": "survival", "governing": "wis_mod"}
+      ]
+    },
+    "templates": [
+      {"name": "human", "kind": "race", "stats": {"con": 1, "cha": 1}},
+      {"name": "wanderer", "kind": "background", "stats": {"dex": 1, "wis": 1}, "skills": {"observation": 1, "survival": 1}, "points": 2}
+    ],
+    "default": ["human", "wanderer"]
+  },
   "start_location": "cave_mouth",
   "locations": [
     {
@@ -461,6 +532,24 @@
         "light"
       ],
       "portable": true
+    },
+    {
+      "id": "walking_staff",
+      "name": "a stout walking staff",
+      "description": "A traveller's staff of seasoned ash, worn smooth where a hand has gripped it for many miles. Steady in a fight, and steadier on a long road.",
+      "holder": "cave_mouth",
+      "aliases": [
+        "staff",
+        "stave",
+        "ash",
+        "stick"
+      ],
+      "portable": true,
+      "slot": "main_hand",
+      "modifiers": [
+        {"target": "str", "value": 1},
+        {"target": "max_stamina", "value": 4}
+      ]
     },
     {
       "id": "brass_key",

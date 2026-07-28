@@ -148,6 +148,10 @@ def default_verbs() -> dict:
     go = Verb("go", "query", target="go", dobj=Slot("direction", RAW))
     inv = Verb("inventory", "query", target="inventory")
     quests = Verb("quests", "query", target="quests")
+    score = Verb("score", "query", target="score")
+    train = Verb("train", "query", target="train", dobj=Slot("stat", RAW))
+    equip = Verb("equip", "query", target="equip", dobj=Slot("item", INVENTORY))
+    unequip = Verb("unequip", "query", target="unequip", dobj=Slot("item", INVENTORY))
     who = Verb("who", "query", target="who")
     hlp = Verb("help", "query", target="help")
     quit_ = Verb("quit", "query", target="quit")
@@ -162,6 +166,10 @@ def default_verbs() -> dict:
         "go": go, "move": go, "walk": go,
         "inventory": inv, "inv": inv, "i": inv,
         "quests": quests, "quest": quests, "journal": quests, "log": quests,
+        "score": score, "sheet": score, "stats": score, "character": score,
+        "train": train, "spend": train,
+        "equip": equip, "wear": equip, "wield": equip,
+        "unequip": unequip, "remove": unequip, "unwield": unequip,
         "who": who,
         "help": hlp, "?": hlp, "commands": hlp,
         "quit": quit_, "exit": quit_,

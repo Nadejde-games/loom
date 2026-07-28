@@ -328,6 +328,43 @@ in dialogue.
 
 ---
 
+## Prior art (the survey, 2026-07-28 — Tier 1: progression & gear)
+
+- **XP curves & leveling.** Every system uses a *monotonic increasing* threshold: DikuMUD/
+  CircleMUD ship a per-class `exp_to_level` **table**; D&D 5e a fixed level→XP table (roughly
+  quadratic early); RuneScape the famous closed-form exponential (`sum floor(l + 300·2^(l/7))/4`).
+  Consensus: the shape is content — a formula or a table — and a single XP grant may cross
+  **several** thresholds at once (catch-up). → *We express `xp_to_level(level)` through the Tier 0
+  evaluator (the one-mechanism rule), level up in a multi-threshold loop, and grant build points
+  per level. Because `level` is already a pool-derivation variable, HP/mana grow for free.*
+  Sources: 5thsrd.org (Character Advancement); CircleMUD `class.c` (`exp_to_level`); RS Wiki.
+- **Points/`train` growth economy.** GURPS/Hero buy attributes with points at an **escalating**
+  cost; Diku gates stat/skill gains behind a **trainer + practice points** earned per level; the
+  Elder Scrolls raise attributes from use. Signed off: player-directed `train` spends
+  level-granted build points through the **same point-buy cost table** used at authoring — one
+  escalating curve spans creation-budget and play-growth. → *Diku's practice-points is the direct
+  ancestor; we make the cost table the shared spine.* Source: CircleMUD `spec_procs.c` (guild/
+  practice); GURPS Basic Set (point costs).
+- **Modifier / stat stacking.** ARPGs separate a **flat additive** sum from later **increased/
+  more** multipliers and typed caps (Path of Exile, Diablo); D&D 3.5 stacks different **bonus
+  types** but takes the largest of a repeated type; CircleMUD's `struct affected_type` is a
+  modifier bundle — an `apply` location (which field), a `modifier`, a `bitvector`, and a
+  **duration** — added/removed as a unit on equip or spell. Consensus recompute pipeline:
+  base → apply flat mods → (later) apply multipliers → derive → clamp. Signed off: **additive-
+  first**, with a reserved `type` field so typed/capped stacking drops in with no mechanism
+  change. → *Our `Effect` = a timed `affected_type`; the recompute is base stats → stat mods →
+  derive → pool/derived mods → clamp `current` to the new `max`.* Sources: CircleMUD `structs.h`
+  (`affected_type`) + `constants.c` (`apply_types`); PoE Wiki (added vs increased); SRD 3.5
+  (bonus types).
+- **Equip model.** Diku wear-slots (`WEAR_HEAD`/`BODY`/`WIELD`…) apply their mods on wear and
+  strip them on remove; a worn item is a **holder/state change**, not a consumed thing. → *We
+  data-declare the slot vocabulary and put the apply-pairs on the item as code-owned `modifiers`
+  (the golden rule, like the loot forge's `tier`/`tags`); the engine translates equipped gear
+  into sheet modifiers tagged by source, so the `Sheet` never holds an item reference.* Source:
+  CircleMUD `constants.c` (`wear_bits`), `act.item.c` (`equip_char`/`unequip_char`).
+
+---
+
 ## Status
 
 - **Signed off (via AskUserQuestion, 2026-07-25):** the two invariants; start bottom-up at
@@ -343,7 +380,23 @@ in dialogue.
   rounds), non-lethal hunger/thirst penalties, and multi-objective quests offered both authored-
   through-dialogue and mind-improvised.
 - **The whole arc (Tiers 0–3) is designed and signed off.** Design phase complete.
-- **Next:** *build*, bottom-up from Tier 0. Each tier gets a focused prior-art survey before its
-  build (Tier 0's is done, above) and lands behind BOTH gates. Then grow the world with real,
-  interesting things to do.
+- **Build progress:**
+  - **Tier 0 — BUILT (2026-07-28), behind the offline gate.** The opt-in `loom/rpg/` subpackage:
+    `expr.py` (the sandboxed evaluator), `stats.py` (stat vocabulary + point-buy), `pool.py`
+    (gauge + `RegenSystem`), `sheet.py` (`Sheet` + `Ruleset` + qualitative perception + `score`),
+    `skills.py` (use-based skill mechanism), `template.py` (race/class/background composition).
+    Wired into the demo world (`game/world/world.json` `"stats"` block; `game/main.py` gives each
+    player the default sheet and installs regen). The `score`/`sheet` verb, `look`/`Scene` health
+    cues, an `Engine.player_hook`, and `SAVE_VERSION = 3` (a tolerant `sheets` overlay) landed.
+    Client is pull-only (`score`); a live HUD is deferred until Tier 1 growth exists (user's call).
+  - **Tier 1 — BUILT (2026-07-28), behind the offline gate.** Survey done (above). Slice A —
+    `progression.py` (XP curve, multi-level level-up granting build points, pools auto-grow) and
+    the `train` verb spending points via the point-buy table; the first wired XP *source* is
+    quest completion (`engine.xp_per_quest`, authored `progression.quest_xp`). Slice B —
+    `effects.py` (the additive `Modifier`/`Effect` stack), `Item.slot`/`modifiers`, the
+    `equip`/`unequip` verbs, effective-stat fold + pool-bound modifiers, worn-item marking, and
+    equipment/modifier persistence. Demo: a `walking_staff` (+1 str, +4 max_stamina). The play
+    loop now closes — complete a quest → gain XP → level → `train` a stat, and `equip` gear.
+- **Next:** Tier 2 (abilities + combat — where the behavioral harness first engages; the skill
+  award hook wires to skill-tagged actions here), then Tier 3. Each tier behind BOTH gates.
 - **Roadmap entry:** `docs/PLAN.md` Phase 9.

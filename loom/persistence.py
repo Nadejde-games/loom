@@ -41,7 +41,11 @@ from . import identity
 #      ``items``. No active migration is needed — a v1 save simply has no ``players``
 #      block (tolerant default: no durable players) and its player-held items already
 #      lie on the floor (the pre-identity behaviour), which loads unchanged.
-SAVE_VERSION = 2
+#   v3 (Phase 9, Tier 0): a ``sheets`` block of RPG character-sheet live-state (pool
+#      current values, level/xp/points, skills, trained stats), keyed by entity id. No
+#      active migration is needed — a v2 save simply has no ``sheets`` block (tolerant
+#      default: sheets reset to their authored base), which loads unchanged.
+SAVE_VERSION = 3
 
 # from_version -> pure function(save: dict) -> save: dict. v1->v2 needs no active
 # migration (tolerant defaults suffice); the dispatch loop is the seam a future
@@ -98,8 +102,23 @@ def snapshot(engine) -> dict:
         "memory": memory,
         "players": {slug: rec.to_dict()
                     for slug, rec in engine.player_records.items()},
+        "sheets": _sheets_state(world),
         "chronicle": engine.chronicle.state(),
     }
+
+
+def _sheets_state(world) -> dict:
+    """The RPG character-sheet live-state overlay (Phase 9, Tier 0): entity id -> the sheet's
+    mutable delta. Duck-typed (``entity.sheet``) so persistence stays uncoupled from the opt-in
+    ``loom.rpg`` layer; a sheetless world yields ``{}``. Keyed by entity id — an authored NPC's
+    id is stable, so its sheet round-trips; a transient player body (materialised on login) has
+    no stable id here, so its growth persists with its ``PlayerRecord`` (a later tier)."""
+    sheets = {}
+    for eid, ent in world.entities.items():
+        sheet = getattr(ent, "sheet", None)
+        if sheet is not None:
+            sheets[eid] = sheet.live_state()
+    return sheets
 
 
 def _durable_player_held(engine, item: Item) -> bool:
@@ -163,8 +182,20 @@ def restore(engine, save: dict) -> None:
     _restore_weather(engine.weather, save.get("weather"))
     _restore_memory(engine, save.get("memory") or {})
     _restore_players(engine, save.get("players") or {})
+    _restore_sheets(world, save.get("sheets") or {})
     if "chronicle" in save:
         engine.chronicle.load_state(save["chronicle"])
+
+
+def _restore_sheets(world, sheets: dict) -> None:
+    """Compose saved sheet live-state back onto the entities that carry a sheet. Tolerant: an
+    id with no live entity, or an entity whose sheet the RPG layer has not built, is skipped —
+    so a save from a run with the RPG layer attached loads harmlessly into one without it."""
+    for eid, data in sheets.items():
+        ent = world.entities.get(eid)
+        sheet = getattr(ent, "sheet", None) if ent is not None else None
+        if sheet is not None and isinstance(data, dict):
+            sheet.load_live_state(data)
 
 
 def _restore_players(engine, players: dict) -> None:

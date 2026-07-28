@@ -72,8 +72,13 @@ class DemoWorldTests(unittest.TestCase):
                          msg=[f.message for f in self.view.warnings])
 
     def test_meta_blocks_surface(self):
-        self.assertEqual(set(self.view.meta),
-                         {"director", "clock", "weather", "loot", "start_quests"})
+        # The authored non-structural blocks each surface in the atlas view's meta. Asserted
+        # as a subset (every known block present) rather than an exact set, so adding a new
+        # authored block — e.g. the Phase 9 "stats" ruleset — extends the world without
+        # tripping this invariant.
+        self.assertLessEqual(
+            {"director", "clock", "weather", "loot", "start_quests", "stats"},
+            set(self.view.meta))
 
 
 class SurveyShapeTests(unittest.TestCase):

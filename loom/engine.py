@@ -185,6 +185,17 @@ class Engine:
         # forged). Authored as world content (the "start_quests" block); empty = the base
         # engine hands out nothing.
         self.start_quests: list = []
+        # A new-player initialisation hook (Phase 9, Tier 0): a callable ``(player) -> None``
+        # the game sets to furnish a freshly-minted player body — attaching an RPG character
+        # sheet (``loom.rpg``). Called on every creation path, anonymous and durable. Kept an
+        # opaque callback so the base engine stays uncoupled from the opt-in RPG layer; None
+        # (the default) leaves a player sheetless, exactly as before.
+        self.player_hook = None
+        # XP awarded to a sheeted player on completing a quest (Phase 9, Tier 1) — the first
+        # wired XP *source*, so leveling is observable in play through the existing start-quests.
+        # 0 (the default) grants none; the game sets it from the "progression" block. Duck-typed:
+        # granting calls ``player.sheet.grant_xp`` only when a sheet is present.
+        self.xp_per_quest = 0
         # Persistence (Phase 5): where the mutable runtime overlay is saved, and the
         # autosave cadence. None/0 until a game opts in (attach_persistence) — the
         # base engine persists nothing; the authored world.json is always the
@@ -232,6 +243,7 @@ class Engine:
         player = Player(id=pid, name=f"Wanderer-{self._pcount}",
                         location_id=self.start_location, session_id=session.id)
         self.world.add_entity(player)
+        self._init_player(player)
         self.players[session.id] = player
         self.sessions[session.id] = session
         session.player_id = pid
@@ -289,11 +301,23 @@ class Engine:
         player = Player(id=record.id, name=record.name, location_id=loc,
                         session_id=session.id)
         self.world.add_entity(player)
+        self._init_player(player)
         for rec in record.held:
             self.world.add_entity(identity.rebuild_item(rec, holder=player.id))
         self.players[session.id] = player
         session.player_id = player.id
         return player
+
+    def _init_player(self, player) -> None:
+        """Run the game's new-player hook on a freshly-minted body — furnishing it with a
+        character sheet (or anything else the game front-loads). A no-op when unset, so a
+        sheetless world is unchanged. Kept defensive: a hook error never breaks the login."""
+        if self.player_hook is None:
+            return
+        try:
+            self.player_hook(player)
+        except Exception as e:                          # a bad hook must not fell a connect
+            log.event(f"player_hook failed for {player.id}: {e}")
 
     async def _usurp(self, old_sid: str, session: Session) -> None:
         """Take over a name already live on another (usually zombie) session: rebind the
@@ -517,6 +541,14 @@ class Engine:
             await self._inventory(session, player)
         elif t == "quests":
             await self._quests(session, player)
+        elif t == "score":
+            await self._score(session, player)
+        elif t == "train":
+            await self._train(session, player, p.dobj)
+        elif t == "equip":
+            await self._equip(session, player, p.dobj)
+        elif t == "unequip":
+            await self._unequip(session, player, p.dobj)
         elif t == "who":
             names = [e.name for e in
                      self.world.occupants(player.location_id, exclude=player.id)]
@@ -553,7 +585,7 @@ class Engine:
         others = self.world.occupants(loc.id, exclude=player.id)
         if others:
             parts += ["\n", "You see: ",
-                      *join_styled([o.name for o in others], Style.NAME), "."]
+                      *join_styled([self._perceived_name(o) for o in others], Style.NAME), "."]
         here_items = self.world.contents(loc.id)
         if here_items:
             parts += ["\n", "Items here: ",
@@ -758,13 +790,20 @@ class Engine:
         loc = self.world.locations.get(location_id)
         if loc is None:
             return Scene()
-        others = [e.name for e in self.world.occupants(location_id, exclude=actor.id)]
+        others = [self._perceived_name(e)
+                  for e in self.world.occupants(location_id, exclude=actor.id)]
         items = [i.name for i in self.world.contents(location_id)]
         inventory = [i.name for i in self.world.contents(actor.id)]
         # World-wide conditions (the clock's time of day) plus this place's own —
         # so a mind reacting "to the storm" or acting by nightfall perceives both.
         conditions = (self.world.conditions.world_texts()
                       + self.world.conditions.texts(location_id))
+        # The actor's own body (§E): a sheeted mind perceives its condition qualitatively —
+        # "You are wounded", "You are starving" — so a hurt NPC can choose to flee and a
+        # starving one to seek food, reasoning over cues, never numbers. Sheetless ⇒ nothing.
+        actor_sheet = getattr(actor, "sheet", None)
+        if actor_sheet is not None:
+            conditions = conditions + [f"You are {cue}." for cue in actor_sheet.notable_cues()]
         return Scene(location=loc.name, description=loc.description,
                      exits=list(loc.exits.keys()), others=others, items=items,
                      inventory=inventory, conditions=conditions)
@@ -1477,9 +1516,15 @@ class Engine:
         if not held:
             await session.send_text("You are carrying nothing.")
             return
+        sheet = getattr(player, "sheet", None)
+
+        def label(item) -> str:
+            if sheet is not None and sheet.is_equipped(item.id):
+                return f"{item.name} (worn)"
+            return item.name
         await session.send_text(styled(
             "You are carrying: ",
-            *join_styled([i.name for i in held], Style.ITEM), "."))
+            *join_styled([label(i) for i in held], Style.ITEM), "."))
 
     async def _quests(self, session: Session, player) -> None:
         """The player's quest journal (a read-only query, no seam) — what the
@@ -1499,6 +1544,105 @@ class Engine:
                 parts.append("  (done)")
         await session.send_text(styled(*parts))
 
+    async def _score(self, session: Session, player) -> None:
+        """The player's own character sheet (a read-only query, no seam) — the one place exact
+        numbers appear (§F). Empty for a sheetless player (the RPG layer is opt-in), so a world
+        that never attached it answers plainly rather than erroring. Duck-typed: the engine
+        never imports ``loom.rpg`` — it renders whatever ``player.sheet`` is."""
+        sheet = getattr(player, "sheet", None)
+        if sheet is None:
+            await session.send_text("You have no character sheet in this world.")
+            return
+        await session.send_text(sheet.render(name=player.name))
+
+    async def _train(self, session: Session, player, phrase: str) -> None:
+        """Spend build points to raise an attribute (Tier 1) — a player self-mutation meta-command
+        (like ``score``, handled directly, never the NPC action seam; it touches only the actor's
+        own sheet). Duck-typed: the engine calls ``sheet.train`` without importing ``loom.rpg``."""
+        sheet = getattr(player, "sheet", None)
+        if sheet is None:
+            await session.send_text("You have no character sheet in this world.")
+            return
+        stat = (phrase or "").strip().lower()
+        if not stat:
+            await session.send_text("Train which attribute? (e.g. \"train str\")")
+            return
+        result = sheet.train(stat)
+        if result.get("ok"):
+            await session.send_text(
+                f"You train {result['stat']} to {result['value']} "
+                f"(−{result['spent']} points; {result['points']} remaining).")
+        else:
+            await session.send_text(result.get("reason", "You cannot train that."))
+
+    async def _equip(self, session: Session, player, phrase: str) -> None:
+        """Wear an item from inventory (Tier 1) — resolves the item, checks it has a slot, and
+        folds its modifiers into the sheet. A self-scoped meta-command (touches only the actor's
+        inventory + sheet). Duck-typed: the engine reads ``item.slot``/``item.modifiers`` and calls
+        ``sheet.equip`` without importing ``loom.rpg``."""
+        sheet = getattr(player, "sheet", None)
+        if sheet is None:
+            await session.send_text("You have no character sheet in this world.")
+            return
+        if not (phrase or "").strip():
+            await session.send_text("Equip what?")
+            return
+        match = resolve(phrase, self.world.contents(player.id))
+        if isinstance(match, Ambiguous):
+            await session.send_text(self._which(match))
+            return
+        if not isinstance(match, Resolved):
+            await session.send_text(f'You are not carrying any "{phrase}".')
+            return
+        item = match.entity
+        if not getattr(item, "slot", ""):
+            await session.send_text(f"You cannot equip {item.name}.")
+            return
+        if sheet.is_equipped(item.id):
+            await session.send_text(f"{item.name} is already equipped.")
+            return
+        result = sheet.equip(item.slot, item.id, getattr(item, "modifiers", []) or [])
+        msg = f"You equip {item.name}."
+        replaced = self.world.entities.get(result.get("replaced")) if result.get("replaced") else None
+        if replaced is not None:
+            msg += f" (You remove {replaced.name}.)"
+        await session.send_text(msg)
+
+    async def _unequip(self, session: Session, player, phrase: str) -> None:
+        """Take off a worn item (Tier 1), stripping its modifiers from the sheet."""
+        sheet = getattr(player, "sheet", None)
+        if sheet is None:
+            await session.send_text("You have no character sheet in this world.")
+            return
+        if not (phrase or "").strip():
+            await session.send_text("Remove what?")
+            return
+        worn = [self.world.entities[i] for i in sheet.equipment.values()
+                if i in self.world.entities]
+        match = resolve(phrase, worn)
+        if isinstance(match, Ambiguous):
+            await session.send_text(self._which(match))
+            return
+        if not isinstance(match, Resolved):
+            await session.send_text(f'You have no "{phrase}" equipped.')
+            return
+        item = match.entity
+        if sheet.unequip_item(item.id).get("ok"):
+            await session.send_text(f"You remove {item.name}.")
+        else:
+            await session.send_text(f"{item.name} is not equipped.")
+
+    def _perceived_name(self, entity) -> str:
+        """An entity's name as an onlooker sees it, with a qualitative health cue appended when
+        it has a sheet and is hurt (§E) — ``Odd (bloodied)``, never a number. A sheetless
+        entity reads exactly as before, so nothing in a narrative world changes."""
+        sheet = getattr(entity, "sheet", None)
+        if sheet is not None:
+            cue = sheet.health_descriptor()
+            if cue:
+                return f"{entity.name} ({cue})"
+        return entity.name
+
     async def _check_arrival_quests(self, session: Session, player,
                                     location_id: str) -> None:
         """The deterministic quest-completion check, bound to the player-arrival
@@ -1512,6 +1656,23 @@ class Engine:
             # A completed quest earns a forged reward — a context-themed item authored
             # off the loop (Phase 4). No-op unless a loot forge is attached.
             self._spawn_forge_reward(session, player, q, location_id)
+            # …and experience (Phase 9, Tier 1) — the first wired XP source, so leveling is
+            # observable through the existing quests. No-op unless the game set xp_per_quest
+            # and the player carries a sheet.
+            await self._award_quest_xp(session, player)
+
+    async def _award_quest_xp(self, session: Session, player) -> None:
+        """Grant the configured per-quest XP to a sheeted player and announce any level gained.
+        Duck-typed (``sheet.grant_xp``); silent when there is no reward or no sheet."""
+        sheet = getattr(player, "sheet", None)
+        if not self.xp_per_quest or sheet is None:
+            return
+        result = sheet.grant_xp(self.xp_per_quest)
+        await session.send_system(f"You gain {self.xp_per_quest} experience.")
+        if result.get("gained"):
+            await session.send_system(
+                f"You reach level {result['level']}. "
+                f"({result['points']} build points to spend — try \"train <stat>\".)")
 
     @staticmethod
     def _which(match) -> str:
@@ -1529,5 +1690,8 @@ class Engine:
                 "  go <dir> — or just n/s/e/w/u/d\n"
                 "  take <item> [from <who>] (get/grab/pick up) · drop <item> (put down)\n"
                 "  give <item> to <who> (hand) · inventory (i)\n"
-                "  say <words> · who · quests (journal) · help · quit\n"
+                "  say <words> · who · quests (journal) · score (sheet)\n"
+                "  train <stat> — spend build points to raise an attribute\n"
+                "  equip <item> (wear/wield) · unequip <item> (remove)\n"
+                "  help · quit\n"
                 "Phrasing is flexible, and \"the\"/\"a\" are fine.")

@@ -14,6 +14,13 @@ class Entity:
 @dataclass
 class Character(Entity):
     location_id: str | None = None
+    # Optional RPG character sheet (Phase 9, Tier 0) — a ``loom.rpg.sheet.Sheet`` when this
+    # character has stats/pools, else ``None``. Kept an opaque slot so the pure world model
+    # stays decoupled from the opt-in ``loom.rpg`` layer: a sheetless character (every
+    # narrative NPC, an anonymous player before a game attaches the RPG layer) is unchanged,
+    # and the engine touches ``.sheet`` only by duck type. Never serialised into ``world.json``
+    # (its live delta rides the save overlay); the authored base is built by the RPG layer.
+    sheet: object | None = None
 
 
 @dataclass
@@ -60,3 +67,10 @@ class Item(Entity):
     tier: str = ""
     tags: list = field(default_factory=list)
     theme: str = ""
+    # --- code-owned gear mechanics (the RPG layer, Phase 9, Tier 1) ---
+    # An equippable item declares a ``slot`` (an authored slot name — "main_hand", "head")
+    # and a list of ``modifiers`` (``{target, value, op, type}`` apply-pairs). Like tier/tags
+    # above, these are mechanical and code-read (the golden rule): the RPG layer folds an
+    # equipped item's modifiers into the wearer's sheet. Empty ⇒ a plain, non-equippable item.
+    slot: str = ""
+    modifiers: list = field(default_factory=list)

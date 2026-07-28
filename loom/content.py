@@ -95,6 +95,8 @@ def _ingest(world: World, data: dict) -> str | None:
             holder=it.get("holder"),
             aliases=list(it.get("aliases", [])),
             portable=bool(it.get("portable", True)),
+            slot=str(it.get("slot", "")),
+            modifiers=list(it.get("modifiers", [])),
         ))
     for key, val in data.items():
         if key in _STRUCTURAL:
